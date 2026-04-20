@@ -129,6 +129,10 @@ class OrgRuntime:
         self._node_consecutive_failures: dict[str, int] = {}
         self._org_quota_failures: dict[str, int] = {}
 
+        self._post_hook_cooldown: dict[str, float] = {}
+        self._suppress_post_hook: dict[str, bool] = {}
+        self._latest_root_result: dict[str, dict] = {}
+
         self._started = False
 
         global _runtime_instance
@@ -498,6 +502,7 @@ class OrgRuntime:
         org.updated_at = _now_iso()
         self._manager.update(org_id, {"status": org.status.value})
         self._org_quota_failures.pop(org_id, None)
+        self._suppress_post_hook.pop(org_id, None)
         if org_id not in self._active_orgs:
             self._activate_org(org)
         self.get_event_store(org_id).emit("org_resumed", "system")
@@ -552,7 +557,22 @@ class OrgRuntime:
         else:
             tagged_content = content
 
+        self._suppress_post_hook.pop(org_id, None)
+
+        if self._is_stop_intent(content):
+            await self._soft_stop_org(org_id)
+            result = await self._activate_and_run(org, target, tagged_content, chain_id=chain_id)
+            if chain_id and isinstance(result, dict):
+                result["chain_id"] = chain_id
+            return result
+
         result = await self._activate_and_run(org, target, tagged_content, chain_id=chain_id)
+
+        if self._has_active_delegations(org_id, target.id):
+            final = await self._wait_delegation_completion(org_id, target.id, timeout=300)
+            if final:
+                result = final
+
         if chain_id and isinstance(result, dict):
             result["chain_id"] = chain_id
         return result
@@ -769,6 +789,10 @@ class OrgRuntime:
                 "org_id": org.id, "node_id": node.id,
                 "result_preview": result_text[:_LIM_WS] if result_text else "",
             })
+
+            is_root = (node.level == 0 or not org.get_parent(node.id))
+            if is_root:
+                self._latest_root_result[org.id] = {"node_id": node.id, "result": result_text}
 
             asyncio.ensure_future(self._post_task_hook(org, node))
 
@@ -1312,6 +1336,9 @@ class OrgRuntime:
             logger.debug(f"Skipping expired message {msg.id}")
             return
 
+        if self._suppress_post_hook.get(org_id):
+            return
+
         org = self._active_orgs.get(org_id) or self._manager.get(org_id)
         if not org:
             return
@@ -1595,6 +1622,11 @@ class OrgRuntime:
         self._identities.pop(org_id, None)
         self._policies.pop(org_id, None)
         self._org_quota_failures.pop(org_id, None)
+        self._suppress_post_hook.pop(org_id, None)
+        self._post_hook_cooldown = {
+            k: v for k, v in self._post_hook_cooldown.items()
+            if not k.startswith(f"{org_id}:")
+        }
 
         keys_to_remove = [k for k in self._agent_cache if k.startswith(f"{org_id}:")]
         for k in keys_to_remove:
@@ -1771,6 +1803,8 @@ class OrgRuntime:
         Processes up to *max_msgs* messages (0 = fill all available
         concurrency slots).  Returns the number of messages dispatched.
         """
+        if self._suppress_post_hook.get(org.id):
+            return 0
         messenger = self.get_messenger(org.id)
         if not messenger:
             return 0
@@ -1813,10 +1847,15 @@ class OrgRuntime:
         1. Drain THIS node's own pending messages (it just freed a slot).
         2. If parent has pending messages (e.g. deliverables from children),
            drain those instead of creating a new "completion notification".
-        3. Only when parent has NO pending messages, send the notification.
+        3. Only when parent has NO pending messages, send the notification
+           (rate-limited by cooldown to prevent cascade).
         """
         try:
             await asyncio.sleep(2)
+
+            if self._suppress_post_hook.get(org.id):
+                return
+
             org = self.get_org(org.id)
             if not org or org.status not in (OrgStatus.ACTIVE, OrgStatus.RUNNING):
                 return
@@ -1844,15 +1883,79 @@ class OrgRuntime:
             if parent.status == NodeStatus.BUSY:
                 return
 
+            cooldown_key = f"{org.id}:{parent.id}"
+            now = time.monotonic()
+            last = self._post_hook_cooldown.get(cooldown_key, 0)
+            if now - last < 15:
+                return
+            self._post_hook_cooldown[cooldown_key] = now
+
             role_title = node.role_title or node.id
             prompt = (
-                f"[任务完成通知] {role_title} 刚完成了一项任务并回到空闲状态。\n"
-                f"请检查当前进展，看是否有新任务需要分配给 {role_title} 或其他成员。\n"
-                f"如果所有工作已完成，请更新黑板上的进度记录。"
+                f"[通知] {role_title} 已完成一项任务。\n"
+                f"如有待验收的交付物，请处理。如无，则无需任何操作。\n"
+                f"⚠️ 禁止：不要分配新任务、不要扩展工作范围、不要主动发起任何工作。"
             )
             await self._activate_and_run(org, parent, prompt)
         except Exception as e:
             logger.debug(f"[OrgRuntime] Post-task hook error: {e}")
+
+    _STOP_KEYWORDS = frozenset({
+        "暂停", "停止", "取消", "别做了", "先不做", "到此为止",
+        "不要继续", "停下来", "先暂停", "不用做了", "够了",
+        "终止", "中止", "全部停止", "不做了",
+    })
+
+    def _is_stop_intent(self, content: str) -> bool:
+        return any(kw in content for kw in self._STOP_KEYWORDS)
+
+    async def _soft_stop_org(self, org_id: str) -> None:
+        self._suppress_post_hook[org_id] = True
+        messenger = self.get_messenger(org_id)
+        org = self.get_org(org_id)
+        if not org:
+            return
+        for node in org.nodes:
+            if node.status == NodeStatus.BUSY:
+                try:
+                    await self.cancel_node_task(org_id, node.id)
+                except Exception:
+                    pass
+            elif node.status in (NodeStatus.WAITING, NodeStatus.ERROR):
+                self._set_node_status(org, node, NodeStatus.IDLE, "soft_stop")
+            if messenger:
+                messenger.clear_node_pending(node.id)
+        self.get_event_store(org_id).emit("soft_stop", "user", {})
+
+    def _has_active_delegations(self, org_id: str, root_node_id: str) -> bool:
+        org = self.get_org(org_id)
+        if not org:
+            return False
+        for node in org.nodes:
+            if node.id != root_node_id and node.status in (NodeStatus.BUSY, NodeStatus.WAITING):
+                return True
+        messenger = self.get_messenger(org_id)
+        if messenger:
+            for node in org.nodes:
+                if node.id != root_node_id and messenger.get_pending_count(node.id) > 0:
+                    return True
+        return False
+
+    async def _wait_delegation_completion(
+        self, org_id: str, root_node_id: str, timeout: int = 300,
+    ) -> dict | None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(5)
+            org = self.get_org(org_id)
+            if not org or org.status not in (OrgStatus.ACTIVE, OrgStatus.RUNNING):
+                break
+            root = org.get_node(root_node_id)
+            if not root:
+                break
+            if root.status == NodeStatus.IDLE and not self._has_active_delegations(org_id, root_node_id):
+                return self._latest_root_result.pop(org_id, None)
+        return self._latest_root_result.pop(org_id, None)
 
     async def _health_check_loop(self, org_id: str) -> None:
         """Command mode: only check node health, recover ERROR nodes to IDLE.
@@ -1999,6 +2102,8 @@ class OrgRuntime:
                 if mode == "autonomous":
                     last_activity = self._heartbeat._last_activity.get(org_id, 0)
                     if last_activity > 0 and (now - last_activity) >= silence_threshold:
+                        if self._suppress_post_hook.get(org_id):
+                            continue
                         roots = org.get_root_nodes()
                         if roots:
                             root = roots[0]
@@ -2081,6 +2186,8 @@ class OrgRuntime:
 
                         node_last_probed[node.id] = now
                         node_thresholds[node.id] = min(threshold * 1.5, 600)
+                        if self._suppress_post_hook.get(org_id):
+                            continue
                         await self._activate_and_run(org, node, prompt)
                         break
 
@@ -2244,7 +2351,7 @@ class OrgRuntime:
             return
 
         entry = bb.write_org(
-            content=f"📎 产出{ext_label}：**{filename}**",
+            content=f"📎 产出{ext_label}：**{filename}**\n📂 路径：`{str(p)}`",
             source_node=node_id,
             memory_type=MemoryType.RESOURCE,
             tags=["file_output", ext.lstrip(".")],
@@ -2256,4 +2363,37 @@ class OrgRuntime:
             asyncio.ensure_future(self._broadcast_ws("org:blackboard_update", {
                 "org_id": org_id, "scope": "org", "node_id": node_id,
                 "memory_type": "resource",
+                "filename": filename,
+                "file_path": str(p),
+                "file_size": size_bytes,
             }))
+
+        _TEXT_EXTS = {".md", ".txt", ".html", ".json", ".yaml", ".yml", ".csv", ".xml"}
+        text_preview = ""
+        if ext.lower() in _TEXT_EXTS and size_bytes < 50_000:
+            try:
+                text_preview = p.read_text(encoding="utf-8", errors="replace")[:3000]
+            except Exception:
+                pass
+
+        content_for_task = f"📎 产出文件：**{filename}**\n📂 路径：`{str(p)}`"
+        if text_preview:
+            content_for_task += (
+                f"\n\n<details><summary>文件内容预览</summary>\n\n"
+                f"{text_preview}\n\n</details>"
+            )
+
+        chain_id = self.get_current_chain_id(org_id, node_id)
+        if chain_id:
+            try:
+                self._tool_handler._link_project_task(
+                    org_id, chain_id,
+                    deliverable_content=content_for_task,
+                    file_attachment={
+                        "filename": filename,
+                        "file_path": str(p),
+                        "file_size": size_bytes,
+                    },
+                )
+            except Exception:
+                pass

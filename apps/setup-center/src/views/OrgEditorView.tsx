@@ -709,6 +709,7 @@ export function OrgEditorView({
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768 || IS_CAPACITOR);
   const [showLeftPanel, setShowLeftPanel] = useState(true);
   const [showRightPanel, setShowRightPanel] = useState(false);
+  const [showBlackboardPanel, setShowBlackboardPanel] = useState(false);
   const [creatingOrg, setCreatingOrg] = useState(false);
   const orgCreateBusyRef = useRef(false);
   const wasRunningRef = useRef(false);
@@ -1608,11 +1609,11 @@ export function OrgEditorView({
               <button className="org-tb-btn org-tb-btn--ok" onClick={handleStartOrg} title="启动组织">
                 <IconPlay size={13} /> {!isMobile && "启动"}
               </button>
-            ) : (
+            ) : (<>
               <button className="org-tb-btn org-tb-btn--danger" onClick={handleStopOrg} title="停止组织">
                 <IconStop size={13} /> {!isMobile && "停止"}
               </button>
-            )}
+            </>)}
             <button
               className={`org-tb-btn${(showRightPanel && !selectedNode && !selectedEdge) ? " org-tb-btn--active" : ""}`}
               onClick={() => { setShowRightPanel(!showRightPanel); setSelectedNodeId(null); setSelectedEdgeId(null); }}
@@ -2298,18 +2299,33 @@ export function OrgEditorView({
           </div>
           )}
 
-          {/* ═══ Floating Chat FAB (always visible when org selected) ═══ */}
+          {/* ═══ Floating FAB group (bottom-right) ═══ */}
           {selectedOrgId && !chatPanelOpen && (
-            <button
-              onClick={() => setActiveDrawer("chat")}
-              className="org-chat-fab"
-              title="打开组织指挥台"
-            >
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-              <span className="org-chat-fab-label">指挥台</span>
-            </button>
+            <div className="org-fab-group">
+              <button
+                onClick={() => setShowBlackboardPanel(v => !v)}
+                className={`org-bb-fab${showBlackboardPanel ? " org-bb-fab--active" : ""}`}
+                title="组织黑板"
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <line x1="8" y1="8" x2="16" y2="8" />
+                  <line x1="8" y1="12" x2="14" y2="12" />
+                  <line x1="8" y1="16" x2="12" y2="16" />
+                </svg>
+                <span className="org-bb-fab-label">黑板</span>
+              </button>
+              <button
+                onClick={() => setActiveDrawer("chat")}
+                className="org-chat-fab"
+                title="打开组织指挥台"
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                <span className="org-chat-fab-label">指挥台</span>
+              </button>
+            </div>
           )}
 
           {/* ═══ Slide-out Drawers (Chat / Inbox) — shared overlay, mutually exclusive ═══ */}
@@ -2344,15 +2360,18 @@ export function OrgEditorView({
           )}
 
           <style>{`
-            .org-chat-fab {
+            .org-fab-group {
               position: absolute; bottom: 20px; right: 20px; z-index: 40;
-              display: flex; align-items: center; gap: 8px;
+              display: flex; flex-direction: column; align-items: stretch; gap: 10px;
+              animation: org-fab-in 0.4s cubic-bezier(0.34,1.56,0.64,1);
+            }
+            .org-chat-fab {
+              display: flex; align-items: center; justify-content: center; gap: 8px;
               padding: 12px 20px; border: none; border-radius: 16px;
               background: linear-gradient(135deg, #3b82f6, #6366f1) !important;
               color: #ffffff !important; cursor: pointer; font-size: 13px; font-weight: 600;
               box-shadow: 0 4px 20px rgba(99,102,241,0.4), 0 0 40px rgba(99,102,241,0.15);
               transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
-              animation: org-fab-in 0.4s cubic-bezier(0.34,1.56,0.64,1);
               -webkit-text-fill-color: #ffffff !important;
             }
             @keyframes org-fab-in {
@@ -2369,6 +2388,27 @@ export function OrgEditorView({
             .org-chat-fab:active { transform: scale(0.97); }
             .org-chat-fab svg { stroke: #ffffff !important; }
             .org-chat-fab-label { letter-spacing: 0.5px; color: #ffffff !important; -webkit-text-fill-color: #ffffff !important; }
+            .org-bb-fab {
+              display: flex; align-items: center; justify-content: center; gap: 8px;
+              padding: 12px 20px; border: none; border-radius: 16px;
+              background: linear-gradient(135deg, #10b981, #059669) !important;
+              color: #ffffff !important; cursor: pointer; font-size: 13px; font-weight: 600;
+              box-shadow: 0 4px 20px rgba(16,185,129,0.4), 0 0 40px rgba(16,185,129,0.15);
+              transition: all 0.3s cubic-bezier(0.4,0,0.2,1);
+              -webkit-text-fill-color: #ffffff !important;
+            }
+            .org-bb-fab:hover {
+              transform: translateY(-2px) scale(1.02);
+              background: linear-gradient(135deg, #059669, #047857) !important;
+              box-shadow: 0 6px 28px rgba(16,185,129,0.6), 0 0 60px rgba(16,185,129,0.25);
+            }
+            .org-bb-fab--active {
+              background: linear-gradient(135deg, #047857, #065f46) !important;
+              box-shadow: 0 2px 10px rgba(16,185,129,0.3), inset 0 1px 2px rgba(0,0,0,0.1);
+            }
+            .org-bb-fab:active { transform: scale(0.97); }
+            .org-bb-fab svg { stroke: #ffffff !important; }
+            .org-bb-fab-label { letter-spacing: 0.5px; color: #ffffff !important; -webkit-text-fill-color: #ffffff !important; }
 
             .org-drawer-overlay {
               position: absolute; inset: 0; z-index: 80;
@@ -2380,7 +2420,7 @@ export function OrgEditorView({
 
             .org-drawer-slide {
               position: absolute; top: 0; right: 0; bottom: 0; z-index: 90;
-              width: min(420px, 85%);
+              width: min(560px, 85%);
               background: var(--bg-app);
               border-left: 1px solid var(--line, rgba(51,65,85,0.5));
               box-shadow: -8px 0 30px rgba(0,0,0,0.3);
@@ -2947,7 +2987,6 @@ export function OrgEditorView({
           nodeId={selectedNode.id}
           apiBaseUrl={apiBaseUrl}
           nodes={nodes}
-          mdModules={mdModules}
           visible={visible}
         />
       )}
@@ -4159,14 +4198,33 @@ export function OrgEditorView({
         </div>
       )}
 
-      {/* ── Right Panel: Org Blackboard (second-layer drawer) ── */}
-      {currentOrg && !selectedNode && !selectedEdge && !isMobile && showRightPanel && (
+      {/* ── Right Panel: Org Blackboard (standalone, triggered by FAB) ── */}
+      {currentOrg && !isMobile && showBlackboardPanel && (
+        <>
+          <div
+            onClick={() => setShowBlackboardPanel(false)}
+            style={{ position: "absolute", inset: 0, zIndex: 35, cursor: "default" }}
+          />
+          <div style={{ width: 520, flexShrink: 0, borderLeft: "1px solid var(--line)", display: "flex", flexDirection: "column", background: "var(--bg-app)", animation: "org-panel-in 0.3s cubic-bezier(0.4,0,0.2,1) 0s both", zIndex: 36 }}>
+            <OrgBlackboardPanel
+              ref={bbPanelRef}
+              orgId={currentOrg.id}
+              apiBaseUrl={apiBaseUrl}
+              nodes={nodes}
+              fullWidth
+              onClose={() => setShowBlackboardPanel(false)}
+            />
+          </div>
+        </>
+      )}
+
+      {/* ── Right Panel: Org Blackboard (second-layer drawer, alongside settings) ── */}
+      {currentOrg && !selectedNode && !selectedEdge && !isMobile && showRightPanel && !showBlackboardPanel && (
         <OrgBlackboardPanel
           ref={bbPanelRef}
           orgId={currentOrg.id}
           apiBaseUrl={apiBaseUrl}
           nodes={nodes}
-          mdModules={mdModules}
         />
       )}
 

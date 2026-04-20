@@ -121,7 +121,7 @@ class TestHealthEndpoint:
 
 
 class TestRestartOrchestratorRecovery:
-    async def test_agent_mode_toggle(self, shutdown_event):
+    async def test_agent_mode_endpoint_keeps_multi_agent_enabled(self, shutdown_event):
         mock_orchestrator = MagicMock()
         app = create_app(
             agent=MagicMock(initialized=True, _tools=[], tool_catalog=MagicMock(), handler_registry=MagicMock()),
@@ -138,10 +138,12 @@ class TestRestartOrchestratorRecovery:
                 patch("synapse.config.runtime_state") as mock_rs,
                 patch("synapse.api.routes.config._hot_patch_agent_tools"),
             ):
-                mock_settings.multi_agent_enabled = False
+                mock_settings.multi_agent_enabled = True
                 mock_settings.data_dir = MagicMock()
-                resp = await c.post("/api/config/agent-mode", json={"enabled": False})
+                resp = await c.post("/api/config/agent-mode", json={"enabled": True})
 
         assert resp.status_code == 200
-        assert resp.json()["status"] == "ok"
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["multi_agent_enabled"] is True
         shutdown_event.clear()

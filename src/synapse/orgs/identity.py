@@ -216,7 +216,11 @@ class OrgIdentity:
                 "2. 完成后直接在回复中总结成果，结果会自动返回给指挥者\n"
                 "3. 重要成果同时写入 org_write_blackboard 供团队查阅\n"
                 "4. **不要**使用 org_submit_deliverable，你没有上级节点可提交\n\n"
-                "验收下属交付物时，用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）。"
+                "验收下属交付物时，用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）。\n\n"
+                "⚠️ 严格约束：\n"
+                "- 只执行指挥者明确下达的指令，不要自行扩展工作范围\n"
+                "- 指令完成后停止，不要主动发起新的项目或任务\n"
+                "- 如果认为有后续工作需要做，在回复中建议即可，等指挥者确认后再行动"
             )
         else:
             delivery_flow = (
@@ -226,7 +230,11 @@ class OrgIdentity:
                 "3. 委派人用 org_accept_deliverable（通过）或 org_reject_deliverable（打回）验收\n"
                 "4. 被打回时根据反馈修改后重新提交\n"
                 "5. 验收通过后任务完结\n\n"
-                "缺少工具时，用 org_request_tools 向上级申请。"
+                "缺少工具时，用 org_request_tools 向上级申请。\n\n"
+                "⚠️ 工作范围约束：\n"
+                "- 只完成上级分配给你的任务，不要自行发起新的项目或扩展工作范围\n"
+                "- 任务完成并被验收后停止，等待上级下达新指令\n"
+                "- 如果认为有后续工作需要做，在交付物中建议即可，由上级决定是否执行"
             )
 
         has_external = bool(node.external_tools)

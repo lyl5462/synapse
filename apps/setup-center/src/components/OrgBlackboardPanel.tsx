@@ -2,40 +2,20 @@
  * Organization Blackboard Panel — standalone second-layer drawer.
  * Manages its own data fetching, scope filtering, and WebSocket refresh.
  */
-import { useState, useEffect, useCallback, useImperativeHandle, forwardRef, type ComponentType } from "react";
+import { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from "react";
 import { safeFetch } from "../providers";
-import { saveAttachment } from "../platform";
+import { onWsEvent } from "../platform";
 import type { Node } from "@xyflow/react";
 import { fmtShortDate, BB_TYPE_COLORS, BB_TYPE_LABELS } from "../views/orgEditorConstants";
-
-function fmtFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-const FILE_ICON_MAP: Record<string, string> = {
-  md: "📄", txt: "📄", csv: "📊", json: "📋",
-  py: "🐍", js: "📜", ts: "📜", html: "🌐",
-  png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", webp: "🖼️", svg: "🎨",
-  pdf: "📑", xlsx: "📊", docx: "📝", zip: "📦",
-};
-
-function getFileIcon(filename: string): string {
-  const ext = filename.split(".").pop()?.toLowerCase() || "";
-  return FILE_ICON_MAP[ext] || "📎";
-}
-
-type MdModules = {
-  ReactMarkdown: ComponentType<{ children: string; remarkPlugins?: any[] }>;
-  remarkGfm?: any;
-} | null;
+import { useMdModules } from "../views/chat/hooks/useMdModules";
+import { FileAttachmentCard } from "./FileAttachmentCard";
 
 export interface OrgBlackboardPanelProps {
   orgId: string;
   apiBaseUrl: string;
   nodes: Node[];
-  mdModules: MdModules;
+  fullWidth?: boolean;
+  onClose?: () => void;
 }
 
 export interface OrgBlackboardPanelHandle {
@@ -43,7 +23,8 @@ export interface OrgBlackboardPanelHandle {
 }
 
 export const OrgBlackboardPanel = forwardRef<OrgBlackboardPanelHandle, OrgBlackboardPanelProps>(
-  function OrgBlackboardPanel({ orgId, apiBaseUrl, nodes, mdModules }, ref) {
+  function OrgBlackboardPanel({ orgId, apiBaseUrl, nodes, fullWidth, onClose }, ref) {
+    const mdModules = useMdModules();
     const [entries, setEntries] = useState<any[]>([]);
     const [scope, setScope] = useState<"all" | "org" | "department" | "node">("all");
     const [loading, setLoading] = useState(false);
@@ -65,6 +46,16 @@ export const OrgBlackboardPanel = forwardRef<OrgBlackboardPanelHandle, OrgBlackb
 
     useEffect(() => {
       fetchData(scope);
+    }, [orgId, scope, fetchData]);
+
+    useEffect(() => {
+      const unsub = onWsEvent((event: string, raw: unknown) => {
+        const d = raw as Record<string, unknown> | null;
+        if (event === "org:blackboard_update" && d?.org_id === orgId) {
+          fetchData(scope);
+        }
+      });
+      return unsub;
     }, [orgId, scope, fetchData]);
 
     useImperativeHandle(ref, () => ({
@@ -94,11 +85,11 @@ export const OrgBlackboardPanel = forwardRef<OrgBlackboardPanelHandle, OrgBlackb
     return (
       <div
         style={{
-          width: 380, flexShrink: 0,
-          borderLeft: "1px solid var(--line)",
+          width: fullWidth ? "100%" : 380, flexShrink: 0, flex: fullWidth ? 1 : undefined,
+          borderLeft: fullWidth ? "none" : "1px solid var(--line)",
           overflowY: "auto", scrollbarGutter: "stable",
           background: "var(--bg-app)",
-          animation: "org-panel-in 0.3s cubic-bezier(0.4,0,0.2,1) 0s both",
+          animation: fullWidth ? "none" : "org-panel-in 0.3s cubic-bezier(0.4,0,0.2,1) 0s both",
         }}
       >
         <div style={{ padding: "12px 14px 8px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -130,6 +121,15 @@ export const OrgBlackboardPanel = forwardRef<OrgBlackboardPanelHandle, OrgBlackb
             >
               {loading ? "..." : "刷新"}
             </button>
+            {onClose && (
+              <button
+                onClick={onClose}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--muted)", padding: 2, borderRadius: 4, display: "flex", alignItems: "center", justifyContent: "center", marginLeft: 2 }}
+                title="关闭黑板"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            )}
           </div>
         </div>
 
@@ -139,7 +139,9 @@ export const OrgBlackboardPanel = forwardRef<OrgBlackboardPanelHandle, OrgBlackb
               fontSize: 12, color: "var(--muted)", padding: "32px 16px",
               textAlign: "center", border: "1px dashed var(--line)", borderRadius: 8,
             }}>
-              {loading ? "加载中..." : "暂无黑板记录"}
+              {loading ? "加载中..." : scope === "node"
+                ? "节点级黑板用于存储各 Agent 的私有记录，当前暂无节点级数据。"
+                : "暂无黑板记录"}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -180,57 +182,21 @@ export const OrgBlackboardPanel = forwardRef<OrgBlackboardPanelHandle, OrgBlackb
                     </div>
                     <div className="bb-entry-content">
                       {mdModules ? (
-                        <mdModules.ReactMarkdown remarkPlugins={[mdModules.remarkGfm]}>
-                          {entry.content}
+                        <mdModules.ReactMarkdown remarkPlugins={mdModules.remarkPlugins} rehypePlugins={mdModules.rehypePlugins}>
+                          {entry.content ?? ""}
                         </mdModules.ReactMarkdown>
                       ) : (
-                        <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{entry.content}</pre>
+                        <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{entry.content ?? ""}</pre>
                       )}
                     </div>
                     {Array.isArray(entry.attachments) && entry.attachments.length > 0 && (
                       <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
                         {entry.attachments.map((att: any, idx: number) => (
-                          <button
+                          <FileAttachmentCard
                             key={att.path || idx}
-                            className="btnSmall"
-                            style={{
-                              display: "flex", alignItems: "center", gap: 6,
-                              padding: "6px 10px", borderRadius: 5,
-                              background: "rgba(8,145,178,0.08)",
-                              border: "1px solid rgba(8,145,178,0.2)",
-                              cursor: "pointer", width: "100%",
-                              textAlign: "left", fontSize: 12,
-                              transition: "background 0.15s",
-                            }}
-                            title={`另存为：${att.filename}`}
-                            onMouseEnter={e => { e.currentTarget.style.background = "rgba(8,145,178,0.16)"; }}
-                            onMouseLeave={e => { e.currentTarget.style.background = "rgba(8,145,178,0.08)"; }}
-                            onClick={async () => {
-                              try {
-                                await saveAttachment({
-                                  apiUrl: `${apiBaseUrl}/api/files?path=${encodeURIComponent(att.path)}`,
-                                  filename: att.filename,
-                                });
-                              } catch (e) {
-                                console.error("File save failed:", e);
-                              }
-                            }}
-                          >
-                            <span style={{ fontSize: 16, lineHeight: 1, flexShrink: 0 }}>
-                              {getFileIcon(att.filename)}
-                            </span>
-                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>
-                              {att.filename}
-                            </span>
-                            {att.size_bytes != null && (
-                              <span style={{ fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>
-                                {fmtFileSize(att.size_bytes)}
-                              </span>
-                            )}
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: "#0891b2" }}>
-                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                            </svg>
-                          </button>
+                            file={{ filename: att.filename, file_path: att.path, file_size: att.size_bytes }}
+                            apiBaseUrl={apiBaseUrl}
+                          />
                         ))}
                       </div>
                     )}

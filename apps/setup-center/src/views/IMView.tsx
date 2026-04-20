@@ -1242,7 +1242,7 @@ function GroupPolicyTab({ apiBase }: { apiBase: string }) {
 
 // ─── Bot Configuration Tab ──────────────────────────────────────────────
 
-export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, venvDir, apiBaseUrl }: { apiBase: string; multiAgentEnabled?: boolean; onRequestRestart?: () => void; venvDir?: string; apiBaseUrl?: string; enabledChannels?: string[] }) {
+export function BotConfigTab({ apiBase, onRequestRestart, venvDir, apiBaseUrl }: { apiBase: string; onRequestRestart?: () => void; venvDir?: string; apiBaseUrl?: string; enabledChannels?: string[] }) {
   const { t } = useTranslation();
   const [bots, setBots] = useState<IMBot[]>([]);
   const [profiles, setProfiles] = useState<AgentProfile[]>([]);
@@ -2013,7 +2013,6 @@ export function BotConfigTab({ apiBase, multiAgentEnabled, onRequestRestart, ven
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
         apiBase={apiBase}
-        multiAgentEnabled={multiAgentEnabled}
         profiles={profiles}
         onRequestRestart={onRequestRestart}
         venvDir={venvDir}
@@ -2088,7 +2087,6 @@ function BotCreationWizard({
   open,
   onClose,
   apiBase,
-  multiAgentEnabled,
   profiles,
   onRequestRestart,
   venvDir,
@@ -2098,7 +2096,6 @@ function BotCreationWizard({
   open: boolean;
   onClose: () => void;
   apiBase: string;
-  multiAgentEnabled?: boolean;
   profiles: AgentProfile[];
   onRequestRestart?: () => void;
   venvDir?: string;
@@ -2304,7 +2301,6 @@ function BotCreationWizard({
                 <Select
                   value={bot.agent_profile_id}
                   onValueChange={(v) => setBot((prev) => ({ ...prev, agent_profile_id: v }))}
-                  disabled={!multiAgentEnabled}
                 >
                   <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent position="popper" side="bottom" sideOffset={4}>
@@ -2314,9 +2310,6 @@ function BotCreationWizard({
                     ))}
                   </SelectContent>
                 </Select>
-                {!multiAgentEnabled && (
-                  <p className="text-[11px] text-muted-foreground">{t("im.needMultiAgent")}</p>
-                )}
                   </div>
             )}
 

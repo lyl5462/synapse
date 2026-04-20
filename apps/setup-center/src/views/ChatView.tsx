@@ -87,14 +87,12 @@ export function ChatView({
   onStartService,
   apiBaseUrl = "http://127.0.0.1:18900",
   visible = true,
-  multiAgentEnabled = false,
 }: {
   serviceRunning: boolean;
   endpoints: EndpointSummary[];
   onStartService: () => void;
   apiBaseUrl?: string;
   visible?: boolean;
-  multiAgentEnabled?: boolean;
 }) {
   const { t, i18n } = useTranslation();
   const mdModules = useMdModules();
@@ -572,16 +570,14 @@ export function ChatView({
 
     convSwitchScrollRef.current = true;
     const conv = conversations.find((c) => c.id === activeConvId);
-    if (multiAgentEnabled) {
-      const agentId = conv?.agentProfileId || "default";
-      isConvSwitchRef.current = true;
-      setSelectedAgent(agentId);
-    }
+    const agentId = conv?.agentProfileId || "default";
+    isConvSwitchRef.current = true;
+    setSelectedAgent(agentId);
     setSelectedEndpoint(conv?.endpointId || "auto");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- conversations 故意排除：
     // 此 effect 语义是"切换对话时加载消息"，不应因 messageCount/title 等元数据变更而重新 hydrate，
     // 否则流结束后 setConversations 更新 messageCount 会触发竞态覆盖。
-  }, [activeConvId, hydrateConversationMessages, multiAgentEnabled]);
+  }, [activeConvId, hydrateConversationMessages]);
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -637,10 +633,6 @@ export function ChatView({
   }, [serviceRunning, apiBaseUrl]);
 
   useEffect(() => {
-    if (!multiAgentEnabled) {
-      setAgentProfiles([]);
-      return;
-    }
     if (!visible) return;
     const fetchProfiles = async () => {
       try {
@@ -652,10 +644,10 @@ export function ChatView({
       }
     };
     fetchProfiles();
-  }, [multiAgentEnabled, apiBaseUrl, serviceRunning, visible]);
+  }, [apiBaseUrl, serviceRunning, visible]);
 
   useEffect(() => {
-    if (!multiAgentEnabled || !visible || !serviceRunning) return;
+    if (!visible || !serviceRunning) return;
     const fetchOrgs = async () => {
       try {
         const res = await safeFetch(`${apiBaseUrl}/api/orgs`);
@@ -664,7 +656,7 @@ export function ChatView({
       } catch { /* ignore */ }
     };
     fetchOrgs();
-  }, [multiAgentEnabled, apiBaseUrl, serviceRunning, visible]);
+  }, [apiBaseUrl, serviceRunning, visible]);
 
   // Sync selectedAgent → current conversation's agentProfileId
   // Only react to selectedAgent changes (not activeConvId) to avoid overwriting
@@ -673,7 +665,6 @@ export function ChatView({
   const prevSelectedAgentRef = useRef(selectedAgent);
   const isConvSwitchRef = useRef(false);
   useEffect(() => {
-    if (!multiAgentEnabled) return;
     if (selectedAgent === prevSelectedAgentRef.current) return;
     prevSelectedAgentRef.current = selectedAgent;
     if (isConvSwitchRef.current) {
@@ -687,7 +678,7 @@ export function ChatView({
       if (current?.agentProfileId === selectedAgent) return prev;
       return prev.map((c) => c.id === convId ? { ...c, agentProfileId: selectedAgent } : c);
     });
-  }, [selectedAgent, multiAgentEnabled]);
+  }, [selectedAgent]);
 
   // Sync selectedEndpoint → current conversation's endpointId
   const prevSelectedEndpointRef = useRef(selectedEndpoint);
@@ -1290,9 +1281,9 @@ export function ChatView({
       lastMessage: "",
       timestamp: Date.now(),
       messageCount: 0,
-      agentProfileId: multiAgentEnabled ? selectedAgent : undefined,
+      agentProfileId: selectedAgent,
     }, ...prev]);
-  }, [activeConvId, messages, multiAgentEnabled, selectedAgent]);
+  }, [activeConvId, messages, selectedAgent]);
 
   // ── 删除对话（实际执行） ──
   const doDeleteConversation = useCallback(async (convId: string) => {
@@ -1651,7 +1642,7 @@ export function ChatView({
         timestamp: Date.now(),
         messageCount: 1,
         status: "running",
-        agentProfileId: multiAgentEnabled ? selectedAgent : undefined,
+        agentProfileId: selectedAgent,
         endpointId: selectedEndpoint !== "auto" ? selectedEndpoint : undefined,
       }, ...prev]);
     } else {
@@ -1833,7 +1824,7 @@ export function ChatView({
         endpoint: selectedEndpoint === "auto" ? null : selectedEndpoint,
         thinking_mode: thinkingMode !== "auto" ? thinkingMode : null,
         thinking_depth: thinkingMode !== "off" ? thinkingDepth : null,
-        agent_profile_id: multiAgentEnabled ? selectedAgent : undefined,
+        agent_profile_id: selectedAgent,
         client_id: getClientId(),
       };
 
@@ -2112,7 +2103,7 @@ export function ChatView({
                 if (_isAgentTool) {
                   logger.info("Chat", "Agent tool detected in SSE", {
                     tool: toolName, args: JSON.stringify(event.args || {}).slice(0, 200),
-                    multiAgentEnabled: String(multiAgentEnabled),
+                    multiAgentEnabled: "true",
                     activeConv: activeConvIdRef.current, thisConv: thisConvId,
                     subAgentsCount: sctx.activeSubAgents.length,
                   });
@@ -3232,7 +3223,7 @@ export function ChatView({
     const cursor = e.target.selectionStart ?? val.length;
     const beforeCursor = val.slice(0, cursor);
     const atMatch = beforeCursor.match(/@(\w*)$/);
-    if (atMatch && multiAgentEnabled && agentProfiles.length > 0) {
+    if (atMatch && agentProfiles.length > 0) {
       setAtAgentOpen(true);
       setAtAgentFilter(atMatch[1].toLowerCase());
       setAtAgentIdx(0);
@@ -3247,7 +3238,7 @@ export function ChatView({
     } else {
       setSlashOpen(false);
     }
-  }, [orgMode, orgList, multiAgentEnabled, agentProfiles.length, pushUndoSnapshot]);
+  }, [orgMode, orgList, agentProfiles.length, pushUndoSnapshot]);
 
   // ── Filtered + grouped conversations for Cursor-style sidebar ──
   const filteredConversations = useMemo(() => {
@@ -3988,7 +3979,7 @@ export function ChatView({
                 <span className="chatModelPickerLabel">
                   {selectedEndpoint === "auto"
                     ? (() => {
-                        const ap = multiAgentEnabled ? agentProfiles.find(p => p.id === selectedAgent) : null;
+                        const ap = agentProfiles.find(p => p.id === selectedAgent) || null;
                         const pe = ap?.preferred_endpoint;
                         if (pe) {
                           const ep = endpoints.find(e => e.name === pe);
@@ -4025,7 +4016,7 @@ export function ChatView({
                   })}
                 </div>
               )}
-              {multiAgentEnabled && agentProfiles.length > 0 && !orgMode && (
+              {agentProfiles.length > 0 && !orgMode && (
                 <div ref={agentMenuRef} style={{ position: "relative", marginLeft: 8 }}>
                   <button
                     className="chatModelPickerBtn"
@@ -4068,7 +4059,7 @@ export function ChatView({
                 </div>
               )}
               {/* Org mode selector */}
-              {multiAgentEnabled && orgList.length > 0 && (
+              {orgList.length > 0 && (
                 <div ref={orgMenuRef} style={{ position: "relative", marginLeft: 8 }}>
                   <button
                     className="chatModelPickerBtn"

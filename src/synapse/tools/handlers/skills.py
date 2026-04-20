@@ -632,14 +632,14 @@ class SkillsHandler:
 
         # 热重载
         try:
-            from synapse.core.agent import _collect_preset_referenced_skills
+            from synapse.skills.preset_utils import collect_preset_referenced_skills
 
             effective = (
                 loader.compute_effective_allowlist(existing_allowlist)
                 if loader
                 else existing_allowlist
             )
-            agent_skills = _collect_preset_referenced_skills()
+            agent_skills = collect_preset_referenced_skills()
             if loader:
                 loader.prune_external_by_allowlist(effective, agent_referenced_skills=agent_skills)
             catalog = getattr(self.agent, "skill_catalog", None)

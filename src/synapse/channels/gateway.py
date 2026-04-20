@@ -1200,17 +1200,12 @@ class MessageGateway:
 
     async def _handle_agent_command(self, message: UnifiedMessage, user_text: str) -> str | None:
         """
-        处理多Agent相关命令。仅当 multi_agent_enabled 时执行；否则返回提示。
+        处理多Agent相关命令。
 
         支持: /切换 /switch /状态 /status /重置 /agent_reset
         """
-        from ..config import settings
-
-        if not settings.multi_agent_enabled:
-            t = user_text.strip().lower()
-            if t in ("/状态", "/status"):
-                return None
-            return "多Agent模式未开启。发送 `/模式 开启` 开启。"
+        if getattr(self, "_orchestrator_ref", None) is None:
+            return "多Agent系统正在初始化，请稍后再试。"
 
         session = self.session_manager.get_session(
             channel=message.channel,
@@ -1309,16 +1304,15 @@ class MessageGateway:
 
         lines.append(format_help(scope="im"))
 
-        if settings.multi_agent_enabled:
-            lines.extend(
-                [
-                    "**多Agent:**",
-                    "  `/切换` / `/switch` — 列出或切换 Agent",
-                    "  `/状态` / `/status` — 查看当前 Agent 信息",
-                    "  `/重置` / `/agent_reset` — 重置为默认 Agent",
-                    "",
-                ]
-            )
+        lines.extend(
+            [
+                "**多Agent:**",
+                "  `/切换` / `/switch` — 列出或切换 Agent",
+                "  `/状态` / `/status` — 查看当前 Agent 信息",
+                "  `/重置` / `/agent_reset` — 重置为默认 Agent",
+                "",
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -2770,7 +2764,7 @@ class MessageGateway:
                     await self._send_response(message, response_text)
                     return
 
-            # 检查是否是模式切换命令（/模式 始终可用，不受 multi_agent_enabled 影响）
+            # 检查是否是模式查看命令（/模式 始终可用）
             _cmd_lower = user_text.lower().strip()
             if _cmd_lower in ("/模式", "/mode") or _cmd_lower.startswith(("/模式 ", "/mode ")):
                 response_text = await self._handle_mode_command(user_text)
@@ -3838,16 +3832,11 @@ class MessageGateway:
                 and hasattr(adapter, "is_streaming_enabled")
                 and adapter.is_streaming_enabled(is_group)
                 and self.agent_handler_stream is not None
-                and not (
-                    _cfg.multi_agent_enabled
-                    and getattr(self, "_orchestrator_ref", None) is not None
-                )
+                and getattr(self, "_orchestrator_ref", None) is None
             )
 
             streamed_ok = False
-            _has_orchestrator = (
-                _cfg.multi_agent_enabled and getattr(self, "_orchestrator_ref", None) is not None
-            )
+            _has_orchestrator = getattr(self, "_orchestrator_ref", None) is not None
             if use_streaming:
                 response, streamed_ok = await self._call_agent_streaming(
                     session,

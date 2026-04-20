@@ -432,12 +432,11 @@ class Agent:
             from ..tools.desktop import DESKTOP_TOOLS as _DT
 
             _all_tools.extend(_DT)
-        if settings.multi_agent_enabled:
-            from ..tools.definitions.agent import AGENT_TOOLS
-            from ..tools.definitions.org_setup import ORG_SETUP_TOOLS
+        from ..tools.definitions.agent import AGENT_TOOLS
+        from ..tools.definitions.org_setup import ORG_SETUP_TOOLS
 
-            _all_tools.extend(AGENT_TOOLS)
-            _all_tools.extend(ORG_SETUP_TOOLS)
+        _all_tools.extend(AGENT_TOOLS)
+        _all_tools.extend(ORG_SETUP_TOOLS)
         if opencli_available():
             from ..tools.definitions.opencli import OPENCLI_TOOLS as _OC
 
@@ -535,16 +534,14 @@ class Agent:
             self._tools.extend(CLI_ANYTHING_TOOLS)
             logger.info(f"CLI-Anything tools enabled ({len(CLI_ANYTHING_TOOLS)} tools)")
 
-        # Multi-agent tools (only when enabled)
-        if settings.multi_agent_enabled:
-            from ..tools.definitions.agent import AGENT_TOOLS
-            from ..tools.definitions.org_setup import ORG_SETUP_TOOLS
+        from ..tools.definitions.agent import AGENT_TOOLS
+        from ..tools.definitions.org_setup import ORG_SETUP_TOOLS
 
-            self._tools.extend(AGENT_TOOLS)
-            self._tools.extend(ORG_SETUP_TOOLS)
-            logger.info(
-                f"Multi-agent tools enabled ({len(AGENT_TOOLS) + len(ORG_SETUP_TOOLS)} tools)"
-            )
+        self._tools.extend(AGENT_TOOLS)
+        self._tools.extend(ORG_SETUP_TOOLS)
+        logger.info(
+            f"Multi-agent tools enabled ({len(AGENT_TOOLS) + len(ORG_SETUP_TOOLS)} tools)"
+        )
 
         # Platform hub tools (Agent Hub + Skill Store, only when enabled)
         if settings.hub_enabled:
@@ -1351,12 +1348,10 @@ class Agent:
             self.handler_registry.register("cli_anything", create_cli_anything_handler(self))
             logger.info("CLI-Anything handler registered (cli-anything-* tools detected)")
 
-        # Multi-agent tools (only when multi_agent_enabled)
-        if settings.multi_agent_enabled:
-            self.handler_registry.register("agent", create_agent_tool_handler(self))
-            from ..tools.handlers.org_setup import create_handler as create_org_setup_handler
+        self.handler_registry.register("agent", create_agent_tool_handler(self))
+        from ..tools.handlers.org_setup import create_handler as create_org_setup_handler
 
-            self.handler_registry.register("org_setup", create_org_setup_handler(self))
+        self.handler_registry.register("org_setup", create_org_setup_handler(self))
 
         logger.info(
             f"Initialized {len(self.handler_registry._handlers)} handlers with {len(self.handler_registry._tool_to_handler)} tools"
@@ -2118,7 +2113,7 @@ class Agent:
     def _build_multi_agent_prompt_section(self) -> str:
         """Generate a system prompt section describing the multi-agent system.
 
-        Only called when settings.multi_agent_enabled is True.
+        Always called (multi-agent mode is always on).
         Tells the LLM: identity, roster, delegation rules with strict priority:
         delegate > spawn > create.
 
@@ -2129,11 +2124,6 @@ class Agent:
             return ""
 
         from ..agents.presets import SYSTEM_PRESETS
-        from ..config import settings
-
-        if not settings.multi_agent_enabled:
-            return ""
-
         if self._is_sub_agent_call:
             return (
                 "\n\n---\n"
@@ -4851,9 +4841,11 @@ class Agent:
                     param_hint = str(kv) if kv else ""
 
                 result_hint = ""
+                is_error = False
                 for tr in it.get("tool_results", []):
                     if tr.get("tool_use_id") == tc.get("id", ""):
                         raw = str(tr.get("result_content", tr.get("result_preview", "")))
+                        is_error = tr.get("is_error", False)
                         max_len = 800 if name in self._DELEGATION_TOOLS else per_tool_budget
                         if len(raw) > max_len:
                             result_hint = raw[:max_len].replace("\n", " ") + "..."
@@ -4864,7 +4856,8 @@ class Agent:
                             result_hint = raw.replace("\n", " ")
                         break
 
-                line = f"- {name}"
+                status_mark = "❌ " if is_error else ""
+                line = f"- {status_mark}{name}"
                 if param_hint:
                     line += f"({param_hint})"
                 if result_hint:

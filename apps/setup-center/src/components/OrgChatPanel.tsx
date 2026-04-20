@@ -3,37 +3,12 @@
  * Renders a scrollable message list, input box, and real-time WS progress.
  * Messages are persisted to backend session API (same as main ChatView).
  */
-import { useState, useRef, useEffect, useCallback, type ComponentType } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { safeFetch } from "../providers";
 import { onWsEvent } from "../platform";
-
-// ── Lazy-loaded markdown modules (same pattern as ChatView) ──
-type MdMods = {
-  ReactMarkdown: ComponentType<{ children: string; remarkPlugins?: any[]; rehypePlugins?: any[] }>;
-  remarkGfm: any;
-  rehypeHighlight: any;
-};
-let _md: MdMods | null = null;
-let _mdTried = false;
-
-function useMd(): MdMods | null {
-  const [m, setM] = useState<MdMods | null>(() => _md);
-  useEffect(() => {
-    if (_md) { setM(_md); return; }
-    if (_mdTried) return;
-    _mdTried = true;
-    try { new RegExp("\\p{L}", "u"); new RegExp("(?<=a)b"); } catch { return; }
-    Promise.all([
-      import("react-markdown"),
-      import("remark-gfm"),
-      import("rehype-highlight"),
-    ]).then(([md, gfm, hl]) => {
-      _md = { ReactMarkdown: md.default, remarkGfm: gfm.default, rehypeHighlight: hl.default };
-      setM(_md);
-    }).catch(() => {});
-  }, []);
-  return m;
-}
+import { useMdModules } from "../views/chat/hooks/useMdModules";
+import { FileAttachmentCard } from "./FileAttachmentCard";
+import type { FileAttachment } from "./FileAttachmentCard";
 
 interface ChatMsg {
   id: string;
@@ -41,6 +16,16 @@ interface ChatMsg {
   content: string;
   timestamp: number;
   streaming?: boolean;
+  attachments?: FileAttachment[];
+}
+
+interface TimelineSegment {
+  nodeId: string;
+  nodeName: string;
+  lines: string[];
+  files: FileAttachment[];
+  done: boolean;
+  resultPreview?: string;
 }
 
 export interface OrgChatPanelProps {
@@ -69,7 +54,9 @@ interface PendingCmd {
   commandId: string;
   orgId: string;
   placeholderId: string;
-  progressLines: string[];
+  lastRendered: string;
+  segmentCount: number;
+  allFiles: FileAttachment[];
   finalContent: string | null;
 }
 const _pendingCmds = new Map<string, PendingCmd>();
@@ -78,7 +65,11 @@ function saveToLocalStorage(cid: string, msgs: ChatMsg[]): void {
   try {
     const slim = msgs
       .filter(m => !m.streaming)
-      .map(({ id, role, content, timestamp }) => ({ id, role, content, timestamp }));
+      .map(({ id, role, content, timestamp, attachments }) => {
+        const o: Record<string, unknown> = { id, role, content, timestamp };
+        if (attachments && attachments.length > 0) o.attachments = attachments;
+        return o;
+      });
     localStorage.setItem(LS_PREFIX + cid, JSON.stringify(slim));
   } catch { /* quota exceeded */ }
 }
@@ -91,7 +82,7 @@ function loadFromLocalStorage(cid: string): ChatMsg[] {
 }
 
 export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, title, onClose, nodeNames }: OrgChatPanelProps) {
-  const md = useMd();
+  const md = useMdModules();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -182,9 +173,7 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
     // Command still running — show progress and resume polling
     let cancelled = false;
     const phId = pending.placeholderId;
-    const progress = pending.progressLines.length > 0
-      ? pending.progressLines.slice(-8).join("\n\n")
-      : "思考中...";
+    const progress = pending.lastRendered || "思考中...";
 
     setMessages(prev => {
       if (prev.some(m => m.streaming)) return prev;
@@ -197,9 +186,8 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
         await new Promise(r => setTimeout(r, 3000));
         if (cancelled || !_pendingCmds.has(convId)) break;
 
-        if (mountedRef.current && pending.progressLines.length > 0) {
-          const preview = pending.progressLines.slice(-8).join("\n\n");
-          setMessages(prev => prev.map(m => m.id === phId && m.streaming ? { ...m, content: preview } : m));
+        if (mountedRef.current && pending.lastRendered) {
+          setMessages(prev => prev.map(m => m.id === phId && m.streaming ? { ...m, content: pending.lastRendered } : m));
         }
 
         try {
@@ -209,19 +197,18 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
             if (!_pendingCmds.has(convId)) break;
             _pendingCmds.delete(convId);
             const resultText = data.result?.result || data.result?.error || data.error || JSON.stringify(data);
-            const progressSummary = pending.progressLines.length > 0
-              ? pending.progressLines.join("\n\n") + "\n\n---\n\n"
-              : "";
-            const content = progressSummary + resultText;
+            const steps = pending.lastRendered;
+            const content = steps
+              ? `<details>\n<summary>执行过程（${pending.segmentCount} 步）</summary>\n\n${steps}\n\n</details>\n\n${resultText}`
+              : resultText;
             if (mountedRef.current) {
-              setMessages(prev => prev.map(m => m.id === phId ? { ...m, content, streaming: false } : m));
+              setMessages(prev => prev.map(m => m.id === phId ? { ...m, content, streaming: false, attachments: pending.allFiles.length > 0 ? pending.allFiles : undefined } : m));
               setSending(false);
             }
             return;
           }
         } catch { /* poll retry */ }
       }
-      // Original handler resolved while we were polling — reload from localStorage
       if (!cancelled && mountedRef.current && !_pendingCmds.has(convId)) {
         const saved = loadFromLocalStorage(convId);
         if (saved.length > 0) setMessages(saved);
@@ -297,57 +284,138 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
 
     const nn = (id: string) => nodeNamesRef.current?.[id] || id;
 
-    const progressLines: string[] = [];
-    const pushProgress = (line: string) => {
-      progressLines.push(line);
+    const segments: TimelineSegment[] = [];
+    const activeSegIdx = new Map<string, number>();
+    const cmdStartTime = Date.now();
+    const activity = { last: Date.now() };
+
+    function findOrCreateSeg(nodeId: string): TimelineSegment {
+      let idx = activeSegIdx.get(nodeId);
+      if (idx != null && !segments[idx].done) return segments[idx];
+      const seg: TimelineSegment = { nodeId, nodeName: nn(nodeId), lines: [], files: [], done: false };
+      segments.push(seg);
+      activeSegIdx.set(nodeId, segments.length - 1);
+      return seg;
+    }
+
+    function renderTimeline(): string {
+      return segments.map(seg => {
+        const body = seg.lines.join("\n\n");
+        if (seg.done) {
+          return `<details>\n<summary>✓ ${seg.nodeName}</summary>\n\n${body}\n\n</details>`;
+        }
+        return `**● ${seg.nodeName} 处理中...**\n\n${body}`;
+      }).join("\n\n");
+    }
+
+    function updatePreview() {
+      activity.last = Date.now();
+      const rendered = renderTimeline();
+      const pending = _pendingCmds.get(convId);
+      if (pending) {
+        pending.lastRendered = rendered;
+        pending.segmentCount = segments.length;
+        pending.allFiles = segments.flatMap(s => s.files);
+      }
       if (!mountedRef.current) return;
-      const preview = progressLines.slice(-8).join("\n\n");
-      setMessages(prev => prev.map(m => m.id === placeholderId ? { ...m, content: preview } : m));
-    };
+      setMessages(prev => prev.map(m => m.id === placeholderId ? { ...m, content: rendered || "思考中..." } : m));
+    }
 
     const unsubProgress = onWsEvent((event, raw) => {
       const d = raw as Record<string, unknown> | null;
       if (!d || d.org_id !== orgId) return;
       const nid = (d.node_id || d.from_node || "") as string;
       const toN = (d.to_node || "") as string;
+
       if (event === "org:node_status") {
         const st = d.status as string;
         if (st === "busy") {
           const task = (d.current_task || "") as string;
-          const taskBrief = task.length > 80 ? task.slice(0, 80) + "…" : task;
-          pushProgress(`🔄 **${nn(nid)}** 开始处理${taskBrief ? `：${taskBrief}` : ""}`);
-        } else if (st === "idle") pushProgress(`✅ **${nn(nid)}** 完成`);
-        else if (st === "error") pushProgress(`❌ **${nn(nid)}** 出错`);
+          if (task.startsWith("[通知]")) return;
+          const seg = findOrCreateSeg(nid);
+          seg.lines.push(`● **${nn(nid)}** 开始处理${task ? `：${task}` : ""}`);
+          updatePreview();
+        } else if (st === "idle") {
+          const idx = activeSegIdx.get(nid);
+          if (idx != null && segments[idx]) {
+            segments[idx].done = true;
+            segments[idx].lines.push(`✓ **${nn(nid)}** 完成`);
+          }
+          updatePreview();
+        } else if (st === "error") {
+          const seg = findOrCreateSeg(nid);
+          seg.done = true;
+          seg.lines.push(`✗ **${nn(nid)}** 出错`);
+          updatePreview();
+        }
       } else if (event === "org:task_delegated") {
         const task = ((d.task || "") as string);
-        const taskBrief = task.length > 80 ? task.slice(0, 80) + "…" : task;
-        pushProgress(`📋 **${nn(nid)}** → **${nn(toN)}** 分配任务：${taskBrief}`);
+        const seg = findOrCreateSeg(nid);
+        seg.lines.push(`→ **${nn(nid)}** → **${nn(toN)}** 分配任务：${task}`);
+        updatePreview();
+      } else if (event === "org:task_delivered") {
+        const summary = ((d.summary || "") as string);
+        const seg = findOrCreateSeg(nid);
+        seg.lines.push(`📦 **${nn(nid)}** 提交交付${summary ? `：${summary}` : ""}`);
+        updatePreview();
       } else if (event === "org:task_complete") {
-        pushProgress(`✅ **${nn(nid)}** 任务完成`);
+        const preview = ((d.result_preview || "") as string);
+        const idx = activeSegIdx.get(nid);
+        if (idx != null && segments[idx]) {
+          segments[idx].resultPreview = preview;
+        }
       } else if (event === "org:blackboard_update") {
-        pushProgress(`📝 **${nn(nid)}** 更新黑板`);
+        const mt = d.memory_type as string;
+        const fname = d.filename as string | undefined;
+        const fpath = d.file_path as string | undefined;
+        const fsize = d.file_size as number | undefined;
+        if (mt === "resource" && fname && fpath) {
+          const seg = findOrCreateSeg(nid);
+          seg.lines.push(`📎 **${nn(nid)}** 产出文件：${fname}`);
+          seg.files.push({ filename: fname, file_path: fpath, file_size: fsize });
+          updatePreview();
+        } else {
+          const seg = findOrCreateSeg(nid);
+          seg.lines.push(`~ **${nn(nid)}** 更新黑板`);
+          updatePreview();
+        }
       }
     });
 
-    const finalizeResult = (content: string, role: "assistant" | "system" = "assistant") => {
+    function collectAllFiles(): FileAttachment[] {
+      return segments.flatMap(s => s.files);
+    }
+
+    const finalizeResult = (content: string, files?: FileAttachment[], role: "assistant" | "system" = "assistant") => {
       const pending = _pendingCmds.get(convId);
       if (pending) {
         if (pending.placeholderId !== placeholderId) return;
         pending.finalContent = content;
         _pendingCmds.delete(convId);
       }
+      const atts = files && files.length > 0 ? files : undefined;
       if (mountedRef.current) {
         setMessages(prev => prev.map(m =>
-          m.id === placeholderId ? { ...m, content, streaming: false, role } : m
+          m.id === placeholderId ? { ...m, content, streaming: false, role, attachments: atts } : m
         ));
       } else {
         const existing = loadFromLocalStorage(convId);
-        const msg: ChatMsg = { id: placeholderId, role, content, timestamp: Date.now() };
+        const msg: ChatMsg = { id: placeholderId, role, content, timestamp: Date.now(), attachments: atts };
         const hasUser = existing.some(m => m.id === userMsg.id);
         const toSave = hasUser ? [...existing, msg] : [...existing, userMsg, msg];
         saveToLocalStorage(convId, toSave);
         persistToBackend(apiBaseUrl, convId, toSave.map(m => ({ role: m.role, content: m.content })), true);
       }
+    };
+
+    const wrapWithProcess = (resultText: string): string => {
+      const doneBanner = '\n\n<div class="ocp-done-banner">&#x2705; 任务已完成</div>';
+      if (segments.length === 0) return resultText + doneBanner;
+      const allCollapsed = segments.map(seg => {
+        const body = seg.lines.join("\n\n");
+        return `<details>\n<summary>✓ ${seg.nodeName}</summary>\n\n${body}\n\n</details>`;
+      }).join("\n\n");
+      return `${allCollapsed}\n\n---\n\n${resultText}${doneBanner}`;
     };
 
     let finalContent = "";
@@ -364,7 +432,7 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
         finalContent = data.result || data.error || JSON.stringify(data);
         finalizeResult(finalContent);
       } else {
-        _pendingCmds.set(convId, { commandId, orgId, placeholderId, progressLines, finalContent: null });
+        _pendingCmds.set(convId, { commandId, orgId, placeholderId, lastRendered: "", segmentCount: 0, allFiles: [], finalContent: null });
 
         let resolved = false;
         const unsubDone = onWsEvent((evt, raw) => {
@@ -375,14 +443,12 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
           const result = d.result as Record<string, unknown> | null;
           const error = d.error as string | undefined;
           const resultText = String((result && (result.result || result.error)) || error || JSON.stringify(d));
-          const progressSummary = progressLines.length > 0
-            ? progressLines.join("\n\n") + "\n\n---\n\n"
-            : "";
-          finalContent = progressSummary + resultText;
-          finalizeResult(finalContent);
+          setTimeout(() => {
+            finalContent = wrapWithProcess(resultText);
+            finalizeResult(finalContent, collectAllFiles());
+          }, 500);
         });
 
-        let lastActivity = Date.now();
         while (!resolved) {
           await new Promise(r => setTimeout(r, 5000));
           if (resolved) break;
@@ -393,24 +459,26 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
               if (!resolved) {
                 resolved = true;
                 const resultText = pd.result?.result || pd.result?.error || pd.error || JSON.stringify(pd);
-                const progressSummary = progressLines.length > 0
-                  ? progressLines.join("\n\n") + "\n\n---\n\n"
-                  : "";
-                finalContent = progressSummary + resultText;
-                finalizeResult(finalContent);
+                finalContent = wrapWithProcess(resultText);
+                finalizeResult(finalContent, collectAllFiles());
               }
             }
           } catch { /* retry */ }
-          if (!resolved && Date.now() - lastActivity > 60000) {
-            pushProgress("... 执行时间较长，组织仍在处理中...");
-            lastActivity = Date.now();
+          if (!resolved && Date.now() - activity.last > 60000) {
+            const elapsed = Math.round((Date.now() - cmdStartTime) / 1000);
+            const min = Math.floor(elapsed / 60);
+            const sec = elapsed % 60;
+            const timeStr = min > 0 ? `${min}分${sec}秒` : `${sec}秒`;
+            const seg = findOrCreateSeg("system");
+            seg.lines = [`... 执行时间较长，组织仍在处理中（已用时 ${timeStr}）...`];
+            updatePreview();
           }
         }
         unsubDone();
       }
     } catch (e: any) {
       finalContent = `发送失败: ${e.message || e}`;
-      finalizeResult(finalContent, "system");
+      finalizeResult(finalContent, undefined, "system");
     } finally {
       unsubProgress();
       setSending(false);
@@ -489,13 +557,20 @@ export function OrgChatPanel({ orgId, nodeId, apiBaseUrl, compact, showHeader, t
               {m.role === "user" ? (
                 m.content
               ) : md ? (
-                <md.ReactMarkdown remarkPlugins={[md.remarkGfm]} rehypePlugins={[md.rehypeHighlight]}>
+                <md.ReactMarkdown remarkPlugins={md.remarkPlugins} rehypePlugins={md.rehypePlugins}>
                   {m.content}
                 </md.ReactMarkdown>
               ) : (
                 m.content
               )}
               {m.streaming && <span className="ocp-typing">●</span>}
+              {!m.streaming && m.attachments && m.attachments.length > 0 && (
+                <div style={{ borderTop: "1px solid rgba(100,116,139,0.2)", marginTop: 10, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                  {m.attachments.map((f, i) => (
+                    <FileAttachmentCard key={f.file_path || i} file={f} apiBaseUrl={apiBaseUrl} />
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -627,11 +702,34 @@ const CHAT_CSS = `
 .ocp-msg-bubble.chatMdContent { font-size: 13px; line-height: 1.6; }
 .ocp-msg-bubble.chatMdContent > :first-child { margin-top: 0; }
 .ocp-msg-bubble.chatMdContent > :last-child { margin-bottom: 0; }
+.ocp-msg-bubble.chatMdContent details {
+  margin-bottom: 8px; border: 1px solid var(--line, rgba(100,116,139,0.25));
+  border-radius: 8px; overflow: hidden;
+}
+.ocp-msg-bubble.chatMdContent details summary {
+  cursor: pointer; padding: 6px 10px; font-size: 12px; font-weight: 500;
+  color: var(--muted-foreground, #94a3b8);
+  background: var(--bg-subtle, rgba(30,41,59,0.5));
+  user-select: none; list-style: none;
+}
+.ocp-msg-bubble.chatMdContent details summary::before {
+  content: "▸ "; transition: transform 0.2s;
+}
+.ocp-msg-bubble.chatMdContent details[open] summary::before { content: "▾ "; }
+.ocp-msg-bubble.chatMdContent details > :not(summary) {
+  padding: 8px 10px; font-size: 12px; line-height: 1.7;
+}
 .ocp-typing {
   display: inline-block; margin-left: 4px; color: #818cf8;
   animation: ocp-typing-blink 1.2s ease-in-out infinite;
 }
 @keyframes ocp-typing-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
+
+.ocp-done-banner {
+  margin-top: 12px; padding: 8px 12px; border-radius: 8px;
+  background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.25);
+  color: #22c55e; font-size: 13px; font-weight: 500; text-align: center;
+}
 
 /* ─── Input ─── */
 .ocp-input-area {
