@@ -235,9 +235,11 @@ export function OnboardingWhaleSkillsPanel(props: {
     setSavingEnabled(true);
     setError(null);
     try {
-      const skillIds = externalSkills
+      const picked = externalSkills
         .filter((s) => enabledDraft[s.skillId] ?? false)
         .map((s) => s.skillId);
+      const devToolIds = externalSkills.filter(isWhalecloudDevToolSkill).map((s) => s.skillId);
+      const skillIds = Array.from(new Set([...devToolIds, ...picked]));
       await syncDefaultAgentInclusiveSkills({
         skillIds,
         apiBaseUrl: String(apiBaseUrl || ""),
