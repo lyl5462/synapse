@@ -9,12 +9,62 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import shutil
+import tempfile
+import uuid
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger(__name__)
+
+# 前端与约定：研发流程类技能的工具名前缀（参见 WORKSPACE SKILL.md tool_name）
+DEV_TOOL_TOOL_PREFIX = "whalecloud_dev_tool_"
+
+_DEV_TOOL_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def sanitize_dev_tool_slug(raw: str) -> str | None:
+    """Validate user slug for whalecloud-dev-tool-{slug} folder names."""
+    s = (raw or "").strip().lower()
+    if len(s) < 2 or len(s) > 48:
+        return None
+    if _DEV_TOOL_SLUG_RE.fullmatch(s) is None:
+        return None
+    return s
+
+
+def _merge_external_allowlist_add(skill_id: str) -> None:
+    """If data/skills.json uses an explicit external_allowlist list, append skill_id."""
+    try:
+        from synapse.config import settings
+
+        base = settings.project_root
+    except Exception:
+        base = Path.cwd()
+    cfg_path = base / "data" / "skills.json"
+    if not cfg_path.exists():
+        return
+    try:
+        raw = cfg_path.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return
+    al = data.get("external_allowlist", None)
+    if not isinstance(al, list):
+        return
+    ids = {str(x).strip() for x in al if str(x).strip()}
+    if skill_id in ids:
+        return
+    data["external_allowlist"] = list(al) + [skill_id]
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def _notify_skills_changed(action: str = "reload") -> None:
@@ -229,6 +279,11 @@ async def list_skills(request: Request):
             except (ValueError, TypeError):
                 relative_path = sid
 
+        tool_nm = getattr(skill, "tool_name", None) or ""
+        out_category = skill.category
+        if tool_nm.startswith(DEV_TOOL_TOOL_PREFIX):
+            out_category = "研发工具"
+
         skills.append(
             {
                 "skill_id": sid,
@@ -243,7 +298,7 @@ async def list_skills(request: Request):
                 "description_i18n": skill.description_i18n or None,
                 "system": is_system,
                 "enabled": is_enabled,
-                "category": skill.category,
+                "category": out_category,
                 "tool_name": skill.tool_name,
                 "config": config,
                 "path": relative_path,
@@ -641,6 +696,286 @@ async def update_skill_content(skill_name: str, request: Request):
         "name": parsed.metadata.name,
         "description": parsed.metadata.description,
     }
+
+
+def _skill_registry_from_request(request: Request):
+    from synapse.core.agent import Agent
+
+    agent = getattr(request.app.state, "agent", None)
+    actual = agent if isinstance(agent, Agent) else getattr(agent, "_local_agent", None)
+    if actual is None:
+        return None
+    return getattr(actual, "skill_registry", None)
+
+
+def _resolve_profile_for_dev_tool_test(agent_profile_id: str | None):
+    """默认使用「小鲸」（preset id=default）；可由请求覆盖 agent_profile_id。"""
+    from synapse.agents.presets import SYSTEM_PRESETS
+    from synapse.agents.profile import get_profile_store
+
+    pid = (agent_profile_id or "").strip() or "default"
+    store = get_profile_store()
+    loaded = store.get(pid)
+    if loaded:
+        return loaded
+    for sp in SYSTEM_PRESETS:
+        if sp.id == pid:
+            return sp
+    for sp in SYSTEM_PRESETS:
+        if sp.id == "default":
+            return sp
+    return SYSTEM_PRESETS[0]
+
+
+@router.post("/api/skills/dev-tools/test")
+async def dev_tools_test_skill(request: Request):
+    """在临时目录中用指定 Agent（默认小鲸）对单个研发流程技能做一次快速验证。"""
+    pool = getattr(request.app.state, "agent_pool", None)
+    if pool is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "agent_pool_unavailable", "message": "Agent pool not initialized"},
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid_json"})
+
+    skill_id = (body.get("skill_id") or "").strip()
+    message = (body.get("message") or "").strip()
+    agent_profile_raw = body.get("agent_profile_id")
+    agent_profile_id = agent_profile_raw if isinstance(agent_profile_raw, str) else None
+
+    timeout_raw = body.get("timeout_seconds")
+    try:
+        timeout_s = float(timeout_raw) if timeout_raw is not None else 180.0
+    except (TypeError, ValueError):
+        timeout_s = 180.0
+    timeout_s = max(30.0, min(timeout_s, 600.0))
+
+    if not skill_id:
+        return JSONResponse(status_code=400, content={"error": "skill_id_required"})
+
+    reg = _skill_registry_from_request(request)
+    if reg is None:
+        return JSONResponse(status_code=503, content={"error": "skill_registry_unavailable"})
+
+    entry = reg.get(skill_id)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"error": "skill_not_found", "skill_id": skill_id})
+
+    tn = (entry.tool_name or "").strip()
+    if not tn.startswith(DEV_TOOL_TOOL_PREFIX):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "not_dev_tool_skill", "tool_name": tn},
+        )
+
+    base_prof = _resolve_profile_for_dev_tool_test(agent_profile_id)
+    prof_id = f"__dev_tool_test_{uuid.uuid4().hex[:16]}"
+    session_id = f"devtool_test_{uuid.uuid4().hex}"
+
+    from synapse.agents.profile import SkillsMode
+
+    test_profile = replace(
+        base_prof,
+        id=prof_id,
+        skills=[skill_id],
+        skills_mode=SkillsMode.INCLUSIVE,
+        ephemeral=True,
+    )
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="synapse_dev_tool_test_"))
+    try:
+        agent = await pool.get_or_create(session_id, test_profile)
+        agent.default_cwd = str(temp_dir)
+        if getattr(agent, "shell_tool", None):
+            agent.shell_tool.default_cwd = str(temp_dir)
+        agent._current_session_id = session_id
+
+        default_msg = (
+            "请在当前工作目录下完成一次最小验证：确认本研发流程技能可用，"
+            "可按需调用 list_skills / get_skill_info，并简要说明验证步骤与结果。"
+        )
+        user_msg = message or default_msg
+
+        result = await asyncio.wait_for(
+            agent.execute_task_from_message(user_msg),
+            timeout=timeout_s,
+        )
+        out_data = result.data
+        if isinstance(out_data, str):
+            output_text = out_data
+        else:
+            output_text = str(out_data) if out_data is not None else ""
+
+        return {
+            "success": result.success,
+            "output": output_text if result.success else None,
+            "error": result.error if not result.success else None,
+            "duration_seconds": result.duration_seconds,
+        }
+    except TimeoutError:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": "timeout",
+                "message": f"验证超时（{timeout_s:.0f}s）",
+            },
+        )
+    except Exception as e:
+        logger.exception("dev-tools test failed")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        try:
+            pool.invalidate_profile(prof_id)
+        except Exception:
+            logger.warning("invalidate_profile after dev-tools test failed", exc_info=True)
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+@router.post("/api/skills/dev-tools/create")
+async def create_dev_tool_skill(request: Request):
+    """在 ``skills/whalecloud-dev-tool-{slug}/`` 下创建 SKILL.md（及可选 .synapse-i18n.json）。"""
+    import yaml as pyyaml
+
+    from synapse.skills.parser import SkillParser
+
+    body = await request.json()
+    slug_in = body.get("slug") or body.get("skill_slug") or ""
+    slug = sanitize_dev_tool_slug(str(slug_in))
+    if not slug:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_slug",
+                "message": "slug 须为 2–48 字符，仅小写字母、数字与连字符（如 my-flow）",
+            },
+        )
+
+    name_zh = str(body.get("name_zh") or "").strip()
+    name_en = str(body.get("name_en") or "").strip()
+    desc_zh = str(body.get("description_zh") or "").strip()
+    desc_en = str(body.get("description_en") or "").strip()
+
+    try:
+        from synapse.config import settings
+
+        workspace_root = Path(settings.project_root)
+    except Exception:
+        workspace_root = Path.cwd()
+
+    dir_name = f"whalecloud-dev-tool-{slug}"
+    skill_id = dir_name
+    tool_name = f"{DEV_TOOL_TOOL_PREFIX}{slug.replace('-', '_')}"
+
+    skills_root = workspace_root / "skills"
+    skill_folder = skills_root / dir_name
+    skill_md = skill_folder / "SKILL.md"
+
+    if skill_folder.exists():
+        return JSONResponse(
+            status_code=409,
+            content={"error": "exists", "message": f"技能目录已存在: {dir_name}"},
+        )
+
+    primary_desc = (desc_en or desc_zh or "R&D workflow skill (Synapse).").strip()
+    primary_desc = primary_desc.replace("\n", " ").strip()[:1024]
+    display_title = (name_en or name_zh or dir_name).strip()
+    when_use = (
+        (desc_en or desc_zh or "When this R&D workflow applies.")
+        .strip()
+        .replace("\n", " ")[:800]
+    )
+
+    fm = {
+        "name": dir_name,
+        "description": primary_desc,
+        "tool-name": tool_name,
+        "license": "MIT",
+        "category": "Dev Tools",
+        "when-to-use": when_use,
+        "keywords": ["whalecloud-dev-tool"],
+    }
+    fm_txt = pyyaml.safe_dump(fm, allow_unicode=True, sort_keys=False, default_flow_style=False).rstrip()
+
+    intro_body = ""
+    if desc_zh:
+        intro_body += f"\n\n## 说明（中文）\n\n{desc_zh}\n"
+    if desc_en:
+        intro_body += f"\n\n## Overview (English)\n\n{desc_en}\n"
+
+    md = f"---\n{fm_txt}\n---\n\n# {display_title}\n\n在编辑区完善指令、脚本与 references；可使用「测试验证」检查。\n{intro_body}"
+
+    parser = SkillParser()
+    try:
+        parsed = parser.parse_content(md, skill_md)
+        errs = parser.validate(parsed)
+        hard = [e for e in (errs or []) if e.startswith("ERROR:")]
+        if hard:
+            return JSONResponse(status_code=400, content={"error": "validation", "details": hard})
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    i18n_sidecar: dict[str, dict[str, str]] = {}
+    if name_zh or desc_zh:
+        i18n_sidecar["zh"] = {
+            "name": name_zh or dir_name,
+            "description": desc_zh or primary_desc,
+        }
+    if name_en or desc_en:
+        i18n_sidecar["en"] = {
+            "name": name_en or dir_name,
+            "description": desc_en or primary_desc,
+        }
+
+    def _write_files() -> None:
+        from synapse.skills.i18n import LEGACY_I18N_FILENAME
+
+        skill_folder.mkdir(parents=True, exist_ok=True)
+        skill_md.write_text(md, encoding="utf-8")
+        if i18n_sidecar:
+            (skill_folder / LEGACY_I18N_FILENAME).write_text(
+                json.dumps(i18n_sidecar, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    try:
+        await asyncio.to_thread(_write_files)
+    except Exception as e:
+        logger.exception("dev-tools create write failed")
+        await asyncio.to_thread(shutil.rmtree, str(skill_folder), ignore_errors=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    _merge_external_allowlist_add(skill_id)
+
+    try:
+        from synapse.core.agent import Agent
+
+        agent = getattr(request.app.state, "agent", None)
+        actual_agent = agent
+        if not isinstance(agent, Agent):
+            actual_agent = getattr(agent, "_local_agent", None)
+        if actual_agent is not None:
+            loader = getattr(actual_agent, "skill_loader", None)
+            if loader:
+                base_path, _ = _read_external_allowlist()
+                loader.load_all(base_path)
+            _apply_allowlist_and_rebuild_catalog(request)
+    except Exception as e:
+        logger.warning("Post dev-tools create reload failed: %s", e)
+
+    _invalidate_skills_cache()
+    _notify_skills_changed("dev-tools-create")
+    try:
+        rel = skill_md.relative_to(workspace_root)
+    except ValueError:
+        rel = skill_md
+    return {"status": "ok", "skill_id": skill_id, "path": str(rel).replace("\\", "/")}
 
 
 @router.get("/api/skills/marketplace")

@@ -51,8 +51,6 @@ const HIDDEN_PERSONA_IDS = new Set(["user_custom"]);
 type Props = {
   envDraft: EnvMap;
   setEnvDraft: (updater: (prev: EnvMap) => EnvMap) => void;
-  disabledViews: string[];
-  toggleViewDisabled: (viewName: string) => void;
   serviceRunning: boolean;
   apiBaseUrl: string;
   skillsSection: ReactNode;
@@ -263,8 +261,6 @@ export function OnboardingCoreAgentPanel(props: Props) {
   const {
     envDraft,
     setEnvDraft,
-    disabledViews,
-    toggleViewDisabled,
     serviceRunning,
     apiBaseUrl,
     skillsSection,
@@ -503,7 +499,7 @@ export function OnboardingCoreAgentPanel(props: Props) {
       </div>
 
       <Dialog open={activeTask !== null} onOpenChange={(open) => !open && setActiveTask(null)}>
-        <DialogContent className="w-full max-w-[min(96vw,1200px)] sm:max-w-[min(96vw,1200px)] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="w-full min-w-0 max-w-[min(98vw,1320px)] sm:max-w-[min(98vw,1320px)] max-h-[90vh] overflow-y-auto overflow-x-hidden">
           {activeTask === "persona" && (
             <>
               <DialogHeader>
@@ -755,30 +751,7 @@ export function OnboardingCoreAgentPanel(props: Props) {
               <DialogHeader>
                 <DialogTitle>{t("onboarding.coreAgent.dialogSkillsTitle")}</DialogTitle>
               </DialogHeader>
-              <div className="py-2">
-                <div className="flex items-center justify-between mb-4 bg-muted/50 p-3 rounded-lg">
-                  <div>
-                    <h4 className="text-sm font-semibold">{t("onboarding.coreAgent.skillsMasterTitle")}</h4>
-                    <p className="text-xs text-muted-foreground mt-0.5">{t("onboarding.coreAgent.skillsMasterDesc")}</p>
-                  </div>
-                  <label className="flex items-center cursor-pointer">
-                    <div
-                      onClick={() => toggleViewDisabled("skills")}
-                      className="relative shrink-0 transition-colors duration-200 rounded-full"
-                      style={{
-                        width: 40, height: 22,
-                        background: !disabledViews.includes("skills") ? "var(--ok, #22c55e)" : "var(--line, #d1d5db)",
-                      }}
-                    >
-                      <div
-                        className="absolute top-0.5 rounded-full bg-white shadow-sm transition-[left] duration-200"
-                        style={{ width: 18, height: 18, left: !disabledViews.includes("skills") ? 20 : 2 }}
-                      />
-                    </div>
-                  </label>
-                </div>
-                {!disabledViews.includes("skills") && skillsSection}
-              </div>
+              <div className="py-2 min-w-0">{skillsSection}</div>
               <DialogFooter>
                 <Button onClick={() => markDone("skills")}>{t("onboarding.coreAgent.confirmTaskDone")}</Button>
               </DialogFooter>

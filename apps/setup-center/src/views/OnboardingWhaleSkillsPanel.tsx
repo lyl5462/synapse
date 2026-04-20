@@ -1,5 +1,5 @@
 /**
- * 引导「小鲸核心技能」专用：只读写 default 人设（skills + skills_mode），不写 data/skills.json。
+ * 引导「小鲸技能」专用：只读写 default 人设（skills + skills_mode），不写 data/skills.json。
  * 外观与能力页技能列表相近，逻辑独立，避免污染 SkillManager。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -10,6 +10,7 @@ import { invoke, IS_TAURI } from "@/platform";
 import { safeFetch } from "@/providers";
 import type { SkillInfo, SkillConfigField, EnvMap } from "@/types";
 import { envSet } from "@/utils";
+import { isWhalecloudDevToolSkill } from "@/utils/whalecloudDevToolSkill";
 import { SkillCard } from "./SkillManager";
 import {
   fetchDefaultProfileSkillIds,
@@ -60,7 +61,7 @@ export function OnboardingWhaleSkillsPanel(props: {
     serviceRunning,
     dataMode = "local",
   } = props;
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -134,8 +135,16 @@ export function OnboardingWhaleSkillsPanel(props: {
       );
       const draft: Record<string, boolean> = {};
       for (const s of list) {
-        if (s.system) draft[s.skillId] = s.enabled !== false;
-        else draft[s.skillId] = profileIds.has(s.skillId);
+        if (s.system) {
+          draft[s.skillId] = s.enabled !== false;
+        } else if (isWhalecloudDevToolSkill(s)) {
+          // 每次进入引导页：研发工具类始终默认勾选（与人设是否已配置无关）
+          draft[s.skillId] = true;
+        } else if (profileIds.size > 0) {
+          draft[s.skillId] = profileIds.has(s.skillId);
+        } else {
+          draft[s.skillId] = false;
+        }
       }
       setEnabledDraft(draft);
       setEnabledDirty(false);
@@ -166,14 +175,30 @@ export function OnboardingWhaleSkillsPanel(props: {
 
   const filteredSkills = useMemo(() => {
     const q = installedSearch.trim().toLowerCase();
-    if (!q) return skillsWithConfig;
-    return skillsWithConfig.filter((s) => {
-      if (s.name.toLowerCase().includes(q)) return true;
-      if (s.description?.toLowerCase().includes(q)) return true;
-      const i18nValues = [...Object.values(s.name_i18n || {}), ...Object.values(s.description_i18n || {})];
-      return i18nValues.some((v) => v.toLowerCase().includes(q));
+    const lang = i18n.language || "zh";
+    const locale = lang.startsWith("zh") ? "zh-Hans-CN" : "en";
+    const pickName = (s: SkillInfo) => {
+      const key = lang.startsWith("zh") ? "zh" : lang;
+      return (s.name_i18n?.[key] || s.name).trim();
+    };
+    let rows = skillsWithConfig;
+    if (q) {
+      rows = skillsWithConfig.filter((s) => {
+        if (s.name.toLowerCase().includes(q)) return true;
+        if (s.description?.toLowerCase().includes(q)) return true;
+        const i18nValues = [...Object.values(s.name_i18n || {}), ...Object.values(s.description_i18n || {})];
+        return i18nValues.some((v) => v.toLowerCase().includes(q));
+      });
+    }
+    const sorted = [...rows];
+    sorted.sort((a, b) => {
+      const da = isWhalecloudDevToolSkill(a) ? 0 : 1;
+      const db = isWhalecloudDevToolSkill(b) ? 0 : 1;
+      if (da !== db) return da - db;
+      return pickName(a).localeCompare(pickName(b), locale);
     });
-  }, [skillsWithConfig, installedSearch]);
+    return sorted;
+  }, [skillsWithConfig, installedSearch, i18n.language]);
 
   const handleToggleEnabled = useCallback((skill: SkillInfo) => {
     const cur = enabledDraft[skill.skillId] ?? false;
@@ -242,7 +267,7 @@ export function OnboardingWhaleSkillsPanel(props: {
   }
 
   return (
-    <div className="flex w-full flex-col gap-4">
+    <div className="flex w-full min-w-0 flex-col gap-4">
       <div className="rounded-md border border-border/80 bg-muted/30 px-3 py-2 text-xs text-muted-foreground leading-relaxed">
         {t("onboarding.coreAgent.whaleSkillsBanner")}
       </div>
@@ -319,11 +344,17 @@ export function OnboardingWhaleSkillsPanel(props: {
           <SkillCard
             key={skill.skillId}
             skill={skill}
+            leadVariant={isWhalecloudDevToolSkill(skill) ? "devTool" : "default"}
             expanded={expandedSkill === skill.skillId}
             onToggleExpand={() =>
               setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId)
             }
             onToggleEnabled={() => handleToggleEnabled(skill)}
+            onViewDetail={() => {
+              if (skill.config?.length) {
+                setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId);
+              }
+            }}
             envDraft={envDraft}
             onEnvChange={onEnvChange}
             onSaveConfig={() => void handleSaveConfig(skill)}

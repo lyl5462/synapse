@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { IconBot, IconRefresh, IconPlus, IconEdit, IconTrash, IconDownload, IconUpload } from "../icons";
 import { safeFetch } from "../providers";
@@ -531,6 +531,13 @@ export function AgentManagerView({
       return { ...prev, skills };
     });
   };
+
+  /** 人设里写了 skill id，但当前 /api/skills 未返回（常见于全局关闭后已卸载） */
+  const profileSkillIdsNotInGlobalList = useMemo(() => {
+    if (editingProfile.skills_mode === "all") return [];
+    const ids = new Set(availableSkills.map((s) => s.skillId));
+    return editingProfile.skills.filter((id) => !ids.has(id));
+  }, [editingProfile.skills_mode, editingProfile.skills, availableSkills]);
 
   const handleVisibility = async (profileId: string, hidden: boolean) => {
     try {
@@ -1211,10 +1218,11 @@ export function AgentManagerView({
               <div className="max-h-[220px] overflow-y-auto rounded-lg border p-1">
                 {availableSkills.map((skill) => {
                   const checked = editingProfile.skills.includes(skill.skillId);
+                  const showGlobalOff = checked && !skill.enabled;
                   return (
                     <label
                       key={skill.skillId}
-                      className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] transition-colors ${
+                      className={`flex flex-wrap items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] transition-colors ${
                         checked ? "bg-primary/8" : "hover:bg-accent/50"
                       }`}
                     >
@@ -1225,9 +1233,53 @@ export function AgentManagerView({
                       <span className="flex-1 min-w-0 truncate">
                         {skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name}
                       </span>
+                      {showGlobalOff && (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 text-xs font-normal text-muted-foreground border-border"
+                          title={t("agentManager.skillGloballyDisabledTag")}
+                        >
+                          {t("agentManager.skillGloballyDisabledTag")}
+                        </Badge>
+                      )}
                     </label>
                   );
                 })}
+              </div>
+            )}
+
+            {editingProfile.skills_mode !== "all" && profileSkillIdsNotInGlobalList.length > 0 && (
+              <div className="rounded-lg border border-amber-500/35 bg-amber-500/[0.06] p-3 space-y-2">
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  {t("agentManager.profileSkillsNotLoadedHint")}
+                </p>
+                <ul className="space-y-1.5">
+                  {profileSkillIdsNotInGlobalList.map((sid) => (
+                    <li
+                      key={sid}
+                      className="flex flex-wrap items-center gap-2 text-[13px] min-w-0"
+                    >
+                      <span className="font-mono truncate flex-1 min-w-0" title={sid}>
+                        {sid}
+                      </span>
+                      <Badge
+                        variant="outline"
+                        className="shrink-0 text-amber-800 dark:text-amber-300 border-amber-500/45"
+                      >
+                        {t("agentManager.profileSkillUnavailableTag")}
+                      </Badge>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 shrink-0"
+                        onClick={() => toggleSkill(sid)}
+                      >
+                        {t("agentManager.removeProfileSkill")}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
 

@@ -65,6 +65,7 @@ import {
 } from "./constants";
 import { safeFetch } from "./providers";
 import { whalecloudHeart } from "./api/rdUnifiedService";
+import { DevToolsSkillPanel } from "./components/product/DevToolsSkillPanel";
 import {
   slugify, joinPath, toFileUrl,
   envGet, envSet,
@@ -138,6 +139,7 @@ const _HASH_TO_VIEW: Record<string, ViewId> = {
   "workbench-meeting": "workbench_meeting",
   "workbench-sandbox": "workbench_sandbox",
   "workbench-team": "workbench_team",
+  "workbench-dev-tools": "workbench_dev_tools",
 };
 
 const _VIEW_TO_HASH: Record<string, string> = Object.fromEntries(
@@ -4945,8 +4947,6 @@ export function App() {
               <OnboardingCoreAgentPanel
                 envDraft={envDraft}
                 setEnvDraft={setEnvDraft}
-                disabledViews={disabledViews}
-                toggleViewDisabled={toggleViewDisabled}
                 serviceRunning={!!serviceStatus?.running}
                 apiBaseUrl={httpApiBase()}
                 onReady={setObCoreAgentReady}
@@ -5925,6 +5925,26 @@ export function App() {
     }
     if (view === "workbench_team") {
       return <WorkbenchPlaceholderView titleKey="sidebar.workbenchTeam" />;
+    }
+    if (view === "workbench_dev_tools") {
+      return disabledViews.includes("skills") ? (
+        <div className="card" style={{ opacity: 0.5, textAlign: "center", padding: 40 }}>
+          <p style={{ color: "#94a3b8", fontSize: 15 }}>{t("skills.disabledModuleHint")}</p>
+        </div>
+      ) : (
+        <DevToolsSkillPanel
+          venvDir={venvDir}
+          currentWorkspaceId={currentWorkspaceId}
+          envDraft={envDraft}
+          onEnvChange={setEnvDraft}
+          onSaveEnvKeys={async (keys) => {
+            await saveEnvKeys(keys);
+          }}
+          apiBaseUrl={apiBaseUrl}
+          serviceRunning={!!serviceStatus?.running}
+          dataMode={dataMode}
+        />
+      );
     }
     switch (stepId) {
       case "llm":

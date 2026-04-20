@@ -6,7 +6,7 @@ import { invoke, IS_TAURI } from "../platform";
 import { useTranslation } from "react-i18next";
 import type { SkillInfo, SkillConfigField, MarketplaceSkill, EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
-import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye } from "../icons";
+import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye, IconTerminal } from "../icons";
 import { Loader2 } from "lucide-react";
 import { safeFetch } from "../providers";
 import { toast } from "sonner";
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ModalOverlay } from "../components/ModalOverlay";
 import { cn } from "@/lib/utils";
+import { isWhalecloudDevToolSkill } from "../utils/whalecloudDevToolSkill";
 
 // ─── i18n 辅助：按当前语言优先显示中文名/描述 ───
 
@@ -179,7 +180,7 @@ function SkillConfigForm({
 
 // ─── 技能卡片 ───
 
-function SkillCard({
+export function SkillCard({
   skill,
   expanded,
   onToggleExpand,
@@ -191,6 +192,7 @@ function SkillCard({
   onEnvChange,
   onSaveConfig,
   saving,
+  leadVariant = "default",
 }: {
   skill: SkillInfo;
   expanded: boolean;
@@ -203,6 +205,8 @@ function SkillCard({
   onEnvChange: (fn: (prev: EnvMap) => EnvMap) => void;
   onSaveConfig: () => void;
   saving: boolean;
+  /** 引导「小鲸技能」与研发工具页：研发流程类技能使用独立图标与标签 */
+  leadVariant?: "default" | "devTool";
 }) {
   const hasConfig = skill.config && skill.config.length > 0;
   const configComplete = skill.configComplete ?? true;
@@ -224,10 +228,25 @@ function SkillCard({
   return (
     <Card className="gap-0 overflow-hidden border-border/80 py-0 shadow-sm transition-all hover:shadow-md">
       <CardContent className="p-4">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-          <div className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer" onClick={onViewDetail}>
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${skill.system ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : "bg-purple-500/10 text-purple-600 dark:text-purple-400"}`}>
-              {skill.system ? <IconGear size={20} /> : <IconZap size={20} />}
+        <div className="flex min-w-0 flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex min-w-0 flex-1 items-center gap-3 cursor-pointer" onClick={onViewDetail}>
+            <div
+              className={cn(
+                "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+                skill.system && "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+                !skill.system &&
+                  leadVariant === "devTool" &&
+                  "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400",
+                !skill.system && leadVariant !== "devTool" && "bg-purple-500/10 text-purple-600 dark:text-purple-400",
+              )}
+            >
+              {skill.system ? (
+                <IconGear size={20} />
+              ) : leadVariant === "devTool" ? (
+                <IconTerminal size={20} />
+              ) : (
+                <IconZap size={20} />
+              )}
             </div>
             <div className="flex flex-col min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -245,7 +264,9 @@ function SkillCard({
                 <Badge variant="outline" className={`text-[10px] px-1.5 py-0 h-5 font-medium ${statusColor}`}>
                   {statusText}
                 </Badge>
-                <span className="text-[11px] text-muted-foreground ml-1">{skill.system ? t("skills.system") : t("skills.external")}</span>
+                <span className="text-[11px] text-muted-foreground ml-1">
+                  {skill.system ? t("skills.system") : leadVariant === "devTool" ? t("skills.devToolShortLabel") : t("skills.external")}
+                </span>
               </div>
               <div className="text-xs text-muted-foreground truncate">
                 {displayDesc}
@@ -253,7 +274,7 @@ function SkillCard({
             </div>
           </div>
           
-          <div className="flex items-center gap-2 shrink-0 ml-12 sm:ml-0">
+          <div className="flex min-w-0 w-full shrink-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:justify-start">
             <Button
               variant="ghost"
               size="icon-sm"
@@ -739,11 +760,17 @@ export function SkillManager({
     [skills, envDraft, enabledDraft],
   );
 
+  /** 全局技能管理：排除 tool_name 以 whalecloud_dev_tool_ 开头的研发流程技能（改在「工作台 → 研发工具」维护） */
+  const catalogSkills = useMemo(
+    () => skillsWithConfig.filter((s) => !isWhalecloudDevToolSkill(s)),
+    [skillsWithConfig],
+  );
+
   // 已安装技能搜索过滤（同时匹配原始字段、i18n 字段、目录名和安装来源）
   const filteredSkills = useMemo(() => {
     const q = installedSearch.trim().toLowerCase();
-    if (!q) return skillsWithConfig;
-    return skillsWithConfig.filter((s) => {
+    if (!q) return catalogSkills;
+    return catalogSkills.filter((s) => {
       if (s.name.toLowerCase().includes(q)) return true;
       if (s.description && s.description.toLowerCase().includes(q)) return true;
       if (s.category && s.category.toLowerCase().includes(q)) return true;
@@ -759,7 +786,7 @@ export function SkillManager({
       ];
       return i18nValues.some((v) => v.toLowerCase().includes(q));
     });
-  }, [skillsWithConfig, installedSearch]);
+  }, [catalogSkills, installedSearch]);
 
   // ── 保存技能配置 ──
   const handleSaveConfig = useCallback(async (skill: SkillInfo) => {
@@ -854,7 +881,7 @@ export function SkillManager({
     setAiOrganizing(true);
     setError(null);
     try {
-      const skillSummary = skillsWithConfig
+      const skillSummary = catalogSkills
         .filter((s) => !s.system)
         .map((s) => `${s.name} [${s.enabled ? "启用" : "禁用"}]: ${s.description}`)
         .join("\n");
@@ -899,7 +926,7 @@ export function SkillManager({
     } finally {
       setAiOrganizing(false);
     }
-  }, [serviceRunning, apiBaseUrl, skillsWithConfig, loadSkills]);
+  }, [serviceRunning, apiBaseUrl, catalogSkills, loadSkills]);
 
   // ── 导入本地技能 ──
   const handleImportLocal = useCallback(async () => {
@@ -1366,7 +1393,7 @@ export function SkillManager({
                   : "ml-1.5 px-1.5 py-0 text-[11px] min-w-[1.25rem] justify-center rounded-full bg-foreground/10 text-foreground/60"
               }
             >
-              {skillsWithConfig.length}
+              {catalogSkills.length}
             </Badge>
           </ToggleGroupItem>
           <ToggleGroupItem
@@ -1417,7 +1444,7 @@ export function SkillManager({
       {tab === "installed" && (
         <div className="flex flex-col gap-4">
           {/* 搜索 + AI 整理 */}
-          {skillsWithConfig.length > 0 && (
+          {catalogSkills.length > 0 && (
             <Card className="gap-0 border-border/80 py-0 shadow-sm">
               <CardContent className="p-4">
                 <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
@@ -1463,7 +1490,7 @@ export function SkillManager({
             </Card>
           )}
 
-          {loading && skillsWithConfig.length === 0 && (
+          {loading && skills.length === 0 && (
             <Card className="border-dashed border-border/80 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Loader2 className="animate-spin mb-3" size={28} />
@@ -1472,7 +1499,7 @@ export function SkillManager({
             </Card>
           )}
           
-          {!loading && skillsWithConfig.length === 0 && (
+          {!loading && catalogSkills.length === 0 && (
             <Card className="border-dashed border-border/80 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-16">
                 <IconZap size={40} className="text-muted-foreground/30 mb-3" />
@@ -1493,7 +1520,7 @@ export function SkillManager({
             </Card>
           )}
           
-          {installedSearch && filteredSkills.length === 0 && skillsWithConfig.length > 0 && (
+          {installedSearch && filteredSkills.length === 0 && catalogSkills.length > 0 && (
             <Card className="border-dashed border-border/80 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-14">
                 <IconSearch size={32} className="text-muted-foreground/30 mb-3" />

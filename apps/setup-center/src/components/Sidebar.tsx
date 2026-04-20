@@ -114,6 +114,7 @@ export function Sidebar({
   const capViews: ViewId[] = ["skills", "mcp", "plugins", "memory", "scheduler"];
   const wbViews: ViewId[] = [
     "workbench_products",
+    "workbench_dev_tools",
     "workbench_tickets",
     "workbench_meeting",
     "workbench_sandbox",
@@ -185,6 +186,9 @@ export function Sidebar({
           <div className="navGroupItems">
             <div className={`navItem ${view === "workbench_products" ? "navItemActive" : ""}`} onClick={() => onViewChange("workbench_products")} role="button" tabIndex={0} title={t("sidebar.workbenchProducts")}>
               <IconPackage size={16} /> {!collapsed && <span>{t("sidebar.workbenchProducts")}</span>}
+            </div>
+            <div className={`navItem ${view === "workbench_dev_tools" ? "navItemActive" : ""}`} onClick={() => onViewChange("workbench_dev_tools")} role="button" tabIndex={0} title={t("sidebar.workbenchDevTools")}>
+              <IconSkills size={16} /> {!collapsed && <span>{t("sidebar.workbenchDevTools")}</span>}
             </div>
             <div className={`navItem ${view === "workbench_tickets" ? "navItemActive" : ""}`} onClick={() => onViewChange("workbench_tickets")} role="button" tabIndex={0} title={t("sidebar.workbenchTickets")}>
               <IconClipboard size={16} /> {!collapsed && <span>{t("sidebar.workbenchTickets")}</span>}

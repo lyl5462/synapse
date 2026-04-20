@@ -119,7 +119,8 @@ export type ViewId =
   | "workbench_tickets"
   | "workbench_meeting"
   | "workbench_sandbox"
-  | "workbench_team";
+  | "workbench_team"
+  | "workbench_dev_tools";
 
 // ─── Health check types ───
 
