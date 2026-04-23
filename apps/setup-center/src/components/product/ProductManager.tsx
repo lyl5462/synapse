@@ -7,14 +7,18 @@ import { RepoUpdateDialog } from "./RepoUpdateDialog";
 import { ProductDetail } from "./ProductDetail";
 import {
   Product,
+  type ProductKnowledgePatch,
   Repository,
   MOCK_PRODUCTS,
   DEFAULT_ICONS,
   prodInfoWireToProduct,
   applyProcessPayloadToProduct,
+  mergeProductKnowledge,
   mergeRepositoriesWithProcess,
   buildAnalysisFieldsFromProcessPayload,
   repositoriesToRdRepoInfo,
+  patchProductKnowledgeSlots,
+  emptyProductKnowledge,
 } from "./types";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -112,6 +116,17 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
     );
   }, []);
 
+  const patchProductKnowledge = useCallback((productId: string, patch: ProductKnowledgePatch) => {
+    setProducts((prev) =>
+      prev.map((p) =>
+        p.id === productId ? { ...p, knowledge: patchProductKnowledgeSlots(p.knowledge, patch) } : p,
+      ),
+    );
+    setSelectedProduct((sp) =>
+      sp?.id === productId ? { ...sp, knowledge: patchProductKnowledgeSlots(sp.knowledge, patch) } : sp,
+    );
+  }, []);
+
   const refreshListFromServer = useCallback(
     async (opts: { successToast: boolean }) => {
       if (!IS_TAURI) return;
@@ -128,7 +143,11 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
           if (!sp) return sp;
           const m = mapped.find((p) => p.id === sp.id || p.name.trim() === sp.name.trim());
           if (!m) return sp;
-          return { ...m, knowledge: sp.knowledge, latestTickets: sp.latestTickets };
+          return {
+            ...m,
+            knowledge: mergeProductKnowledge(m.knowledge, sp.knowledge),
+            latestTickets: sp.latestTickets,
+          };
         });
         if (opts.successToast) {
           toast.success(t("workbench.products.refreshListSuccess"));
@@ -202,7 +221,7 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
             ? {
                 ...updated,
                 id: p.id,
-                knowledge: p.knowledge,
+                knowledge: mergeProductKnowledge(updated.knowledge, p.knowledge),
                 latestTickets: p.latestTickets,
               }
             : p,
@@ -213,7 +232,7 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
           ? {
               ...updated,
               id: sp.id,
-              knowledge: sp.knowledge,
+              knowledge: mergeProductKnowledge(updated.knowledge, sp.knowledge),
               latestTickets: sp.latestTickets,
             }
           : sp,
@@ -430,13 +449,10 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
       id: Math.random().toString(36).slice(2, 11),
       icon: values.icon || DEFAULT_ICONS[Math.floor(Math.random() * DEFAULT_ICONS.length)].value,
       repositories: values.repositories || [],
-      knowledge: values.knowledge || {
-        architecture: false,
-        solution: false,
-        requirements: false,
-        manual: false,
-        delivery: false,
-      },
+      knowledge: patchProductKnowledgeSlots(
+        emptyProductKnowledge(),
+        (values.knowledge ?? {}) as ProductKnowledgePatch,
+      ),
       analysisStatus: {
         code: "pending",
         ticket: "pending",
@@ -583,6 +599,7 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
           onClose={() => setIsDetailOpen(false)}
           synapseApiBase={synapseApiBase}
           onProcessPayload={mergeProcessIntoProduct}
+          onPatchProductKnowledge={patchProductKnowledge}
         />
       </div>
     </div>

@@ -3767,3 +3767,10 @@ async def _ensure_valid_creds_async(force_refresh: bool = False) -> tuple[str, s
 
 class ProductInitializeRequest(BaseModel):
     product_id: int = Field(..., description="产品ID")
+
+
+def _register_product_knowledge_routes() -> None:
+    from synapse.api.routes import dev_iwhalecloud_knowledge
+    dev_iwhalecloud_knowledge.register_product_knowledge_routes(router)
+
+_register_product_knowledge_routes()

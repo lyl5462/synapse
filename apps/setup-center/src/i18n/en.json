@@ -202,7 +202,7 @@
         "analysisDoneLabel": "Analysis complete",
         "autoAnalysisCardHint": "This repository has not been analyzed yet. Start auto-analysis for this repo.",
         "autoAnalysisTicketCardHint": "Ticket analysis has not been generated yet. Start ticket auto-analysis.",
-        "autoAnalysisTicketArchRequired": "Please create the product architecture in the knowledge view before starting ticket auto-analysis.",
+        "autoAnalysisTicketArchRequired": "Please generate and submit the product architecture in the knowledge view before starting ticket auto-analysis.",
         "autoAnalysisCta": "Auto-analyze",
         "autoAnalysisRepoPending": "Auto-analysis requested for branch “{{branch}}” (backend pending)",
         "gitnexusInitDefaultSuccess": "Initialization started (async). Check status later.",
@@ -255,7 +255,23 @@
         "knowledgeSolution": "Solution",
         "knowledgeRequirements": "Requirements",
         "knowledgeManual": "Manual",
-        "knowledgeDelivery": "Delivery"
+        "knowledgeDelivery": "Delivery",
+        "autoGenerateArch": "Auto-generate Architecture",
+        "autoGenerateManual": "Auto-generate Manual",
+        "generating": "Generating...",
+        "manualGenerationPlanned": "Planned",
+        "generateStarted": "Document generation started, please wait...",
+        "generateSuccess": "Document generated successfully",
+        "generateFailed": "Document generation failed",
+        "generateTimeout": "Document generation timed out",
+        "noDocsToSubmit": "No documents to submit",
+        "docSubmitSuccess": "Document submitted successfully",
+        "docSubmitFailed": "Document submission failed",
+        "refineSuccess": "Document refined successfully",
+        "refineFailed": "Document refinement failed",
+        "refining": "AI is refining the document...",
+        "refinePlaceholder": "Enter your revision request, AI will adjust automatically...",
+        "submitToServer": "Submit to server"
       }
     }
   },

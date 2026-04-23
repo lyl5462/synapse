@@ -22,12 +22,19 @@ import {
   Loader2,
   AlertCircle,
 } from "lucide-react";
-import { Product, type UnifiedWireAnalysisState } from "./types";
+import {
+  Product,
+  type ProductKnowledgeCategory,
+  type ProductKnowledgePatch,
+  type UnifiedWireAnalysisState,
+  isProductKnowledgeSlotDone,
+} from "./types";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { IS_TAURI } from "@/platform";
+import { ProductDocumentEditor } from "./ProductDocumentEditor";
 import {
   buildCodeGraphEmbedUrl,
   buildTicketKnowledgeGraphEmbedUrl,
@@ -38,8 +45,14 @@ import {
   gitNexusAnalysis,
   gitNexusInitialize,
   orderInitialize,
+  docsInitialize,
+  docsSubmit,
+  generateProductKnowledge,
+  getProductKnowledgeStatus,
   probeUnifiedServicePortReachable,
   TICKET_KNOWLEDGE_GRAPH_PORT,
+  CODE_GRAPH_SERVER_PORT,
+  unifiedServiceHostAuthority,
 } from "@/api/rdUnifiedService";
 import type { ProdProcessDataPayload } from "@/api/rdUnifiedService";
 import { assertOwnerInfoMatchesProduct, toastOwnerInfoGuardError } from "@/utils/ownerInfoGuard";
@@ -54,6 +67,23 @@ interface ProductDetailProps {
   onClose: () => void;
   synapseApiBase: string;
   onProcessPayload: (productId: string, payload: ProdProcessDataPayload) => void;
+  /** 提交或本地补全后更新产品 knowledge 各类型 slot，避免直接修改 props */
+  onPatchProductKnowledge?: (productId: string, patch: ProductKnowledgePatch) => void;
+}
+
+type KnowledgeCategoryViewState = { expanded: boolean; generating: boolean };
+
+function initialKnowledgeCategoryViewState(): Record<
+  ProductKnowledgeCategory,
+  KnowledgeCategoryViewState
+> {
+  return {
+    architecture: { expanded: false, generating: false },
+    solution: { expanded: false, generating: false },
+    requirements: { expanded: false, generating: false },
+    manual: { expanded: false, generating: false },
+    delivery: { expanded: false, generating: false },
+  };
 }
 
 function detailWireBadgeClass(u: UnifiedWireAnalysisState): string {
@@ -88,11 +118,20 @@ function detailWireStateLabel(
   }
 }
 
-export function ProductDetail({ product, open, onClose, synapseApiBase, onProcessPayload }: ProductDetailProps) {
+export function ProductDetail({
+  product,
+  open,
+  onClose,
+  synapseApiBase,
+  onProcessPayload,
+  onPatchProductKnowledge,
+}: ProductDetailProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<string>("code-graph");
-  const [openDocs, setOpenDocs] = useState<{ id: string; title: string; category: string; content: string }[]>([]);
-  const [expandedKnowledge, setExpandedKnowledge] = useState<string[]>([]);
+  const [openDocs, setOpenDocs] = useState<{ id: string; title: string; category: string; content: string; readonly?: boolean }[]>([]);
+  const [knowledgeCategoryView, setKnowledgeCategoryView] = useState<
+    Record<ProductKnowledgeCategory, KnowledgeCategoryViewState>
+  >(() => initialKnowledgeCategoryViewState());
   const [activeRepoIdx, setActiveRepoIdx] = useState<number>(0);
   const [gitnexusBusyIdx, setGitnexusBusyIdx] = useState<number | null>(null);
   const [orderTicketBusy, setOrderTicketBusy] = useState(false);
@@ -137,7 +176,7 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
     if (open && product) {
       setActiveTab("code-graph");
       setOpenDocs([]);
-      setExpandedKnowledge([]);
+      setKnowledgeCategoryView(initialKnowledgeCategoryViewState());
       const mainIdx = product.repositories.findIndex((r) => r.isMain);
       setActiveRepoIdx(mainIdx >= 0 ? mainIdx : 0);
     }
@@ -273,9 +312,7 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
   /** 主仓库分析完成（done）时，自动生成按钮才可用 */
   const mainRepo = product.repositories.find((r) => r.isMain);
   const mainRepoAnalysisDone = (mainRepo?.wireAnalysisState ?? "new") === "done";
-  const knowledgeKeys = ["architecture", "solution", "requirements", "manual", "delivery"] as const;
-  const allKnowledgeNotCreated = knowledgeKeys.every((k) => !product.knowledge[k]);
-  const showAutoGenerateCta = mainRepoAnalysisDone && allKnowledgeNotCreated;
+  const architectureKnowledgeDone = isProductKnowledgeSlotDone(product.knowledge.architecture);
 
   const ticketReqMetric =
     product.demandOrderCount !== undefined
@@ -287,21 +324,25 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
       : product.latestTickets?.filter((tick) => !tick.title.includes("需求")).length ?? 0;
 
   const getMockDocsForCategory = (categoryKey: string, productName: string) => {
+    // 方案和需求为只读
+    const isReadonly = categoryKey === "solution" || categoryKey === "requirements";
     return [
       {
         id: `doc-${categoryKey}-1`,
         title: `${productName}-${categoryKey === "architecture" ? "总体设计" : "需求概要"} v1.0`,
         content: `# ${productName} \n\n这是一篇关于 **${categoryKey}** 的技术文档。包含 Markdown 与示意图占位，以便演示混合展示效果。\n\n- 核心特点：高性能、高可用、可扩展\n- 依赖服务：Redis, PostgreSQL`,
+        readonly: isReadonly,
       },
       {
         id: `doc-${categoryKey}-2`,
         title: `迭代日志与附录`,
         content: `# 迭代日志\n目前处于 v1.0.0 版本阶段，持续完善中。`,
+        readonly: isReadonly,
       },
     ];
   };
 
-  const handleOpenDoc = async (doc: { id: string; title: string; content: string }, category: string) => {
+  const handleOpenDoc = async (doc: { id: string; title: string; content: string; readonly?: boolean }, category: string) => {
     if (!(await guardOwnerMatch())) return;
     if (!openDocs.find((d) => d.id === doc.id)) {
       setOpenDocs([...openDocs, { ...doc, category }]);
@@ -309,10 +350,171 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
     setActiveTab(doc.id);
   };
 
-  const toggleKnowledge = (key: string) => {
-    setExpandedKnowledge((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
-    );
+  const toggleKnowledgeCategoryExpanded = (key: ProductKnowledgeCategory) => {
+    setKnowledgeCategoryView((prev) => ({
+      ...prev,
+      [key]: { ...prev[key], expanded: !prev[key].expanded },
+    }));
+  };
+
+  const handleGenerateKnowledge = async (categoryKey: string) => {
+    if (!product || !IS_TAURI) return;
+    if (!(await guardOwnerMatch())) return;
+
+    const mainRepo = product.repositories.find((r) => r.isMain) || product.repositories[0];
+    if (!mainRepo) {
+      toast.error(t("workbench.products.detail.noMainRepo", "未找到主仓库"));
+      return;
+    }
+
+    const cat = categoryKey as ProductKnowledgeCategory;
+    setKnowledgeCategoryView((prev) => ({
+      ...prev,
+      [cat]: { ...prev[cat], generating: true },
+    }));
+    try {
+      const docTypeParam =
+        categoryKey === "architecture" ? "architecture" : String(categoryKey);
+
+      // 1. 初始化通知
+      await docsInitialize(synapseApiBase, {
+        prod: product.name,
+        doc_type: docTypeParam,
+      });
+
+      let gitnexusUrl = `http://127.0.0.1:${CODE_GRAPH_SERVER_PORT}/`;
+      if (IS_TAURI) {
+        const h = await getDevserviceHost();
+        const auth = h ? unifiedServiceHostAuthority(h) : null;
+        if (auth) {
+          gitnexusUrl = `http://${auth}:${CODE_GRAPH_SERVER_PORT}/`;
+        }
+      }
+
+      // 2. 触发生成
+      const res = await generateProductKnowledge(synapseApiBase, {
+        repo_name: product.name,
+        gitnexus_url: gitnexusUrl,
+        product_desc: product.description || "",
+        code_path: mainRepo.codePath || "",
+        core_features: product.features || "",
+        local_data_path: "",
+      });
+
+      toast.success(t("workbench.products.detail.generateStarted", "文档生成任务已启动，请稍候..."));
+
+      // 3. 轮询状态
+      const pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await getProductKnowledgeStatus(synapseApiBase, res.task_id);
+          if (statusRes.status === "completed") {
+            clearInterval(pollInterval);
+            setKnowledgeCategoryView((prev) => ({
+              ...prev,
+              [cat]: { ...prev[cat], generating: false },
+            }));
+
+            // 生成成功后，自动打开生成的文档
+            const newDocs: {
+              id: string;
+              title: string;
+              content: string;
+              category: string;
+            }[] = [];
+            if (statusRes.data?.functional_arch) {
+              newDocs.push({
+                id: `doc-${categoryKey}-func-${Date.now()}`,
+                title: "FUNCTIONAL_ARCH.md",
+                content: statusRes.data.functional_arch,
+                category: categoryKey,
+              });
+            }
+            if (statusRes.data?.tech_arch) {
+              newDocs.push({
+                id: `doc-${categoryKey}-tech-${Date.now()}`,
+                title: "TECH_ARCH.md",
+                content: statusRes.data.tech_arch,
+                category: categoryKey,
+              });
+            }
+            
+            if (newDocs.length > 0) {
+              setOpenDocs((prev) => [...prev, ...newDocs]);
+              setActiveTab(newDocs[0].id);
+              
+              // 展开对应的知识分类
+              setKnowledgeCategoryView((prev) => ({
+                ...prev,
+                [cat]: { ...prev[cat], expanded: true },
+              }));
+
+              toast.success(t("workbench.products.detail.generateSuccess", "文档生成成功"));
+            }
+          } else if (statusRes.status === "error") {
+            clearInterval(pollInterval);
+            setKnowledgeCategoryView((prev) => ({
+              ...prev,
+              [cat]: { ...prev[cat], generating: false },
+            }));
+            toast.error(t("workbench.products.detail.generateFailed", "文档生成失败") + ": " + statusRes.error);
+          }
+        } catch (err) {
+          console.error("Poll status error:", err);
+        }
+      }, 5000);
+
+      // 设置 10 分钟总超时
+      setTimeout(() => {
+        clearInterval(pollInterval);
+        setKnowledgeCategoryView((prev) => {
+          if (!prev[cat].generating) return prev;
+          toast.error(t("workbench.products.detail.generateTimeout", "文档生成超时"));
+          return { ...prev, [cat]: { ...prev[cat], generating: false } };
+        });
+      }, 10 * 60 * 1000);
+
+    } catch (err) {
+      setKnowledgeCategoryView((prev) => ({
+        ...prev,
+        [cat]: { ...prev[cat], generating: false },
+      }));
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(t("workbench.products.detail.generateFailed", "文档生成失败") + ": " + msg);
+    }
+  };
+
+  const handleSubmitDocs = async (categoryKey: string) => {
+    if (!product || !IS_TAURI) return;
+    
+    // 收集当前分类下所有打开的文档
+    const categoryDocs = openDocs.filter(d => d.category === categoryKey);
+    if (categoryDocs.length === 0) {
+      toast.warning(t("workbench.products.detail.noDocsToSubmit", "没有可提交的文档"));
+      return;
+    }
+
+    try {
+      const submitDocType =
+        categoryKey === "architecture" ? "architecture" : String(categoryKey);
+
+      await docsSubmit(synapseApiBase, {
+        prod: product.name,
+        doc_type: submitDocType,
+        doc_content: categoryDocs.map((d) => ({
+          doc_name: d.title,
+          content: d.content,
+        })),
+      });
+
+      toast.success(t("workbench.products.detail.docSubmitSuccess", "文档提交成功"));
+      onPatchProductKnowledge?.(product.id, {
+        [categoryKey as ProductKnowledgeCategory]: { wireState: "done" },
+      });
+      void fetchProcessOnce();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error(t("workbench.products.detail.docSubmitFailed", "文档提交失败") + ": " + msg);
+    }
   };
 
   return (
@@ -515,80 +717,103 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
 
             {/* Knowledge View */}
             <div>
-              <div className="mb-4 flex items-start justify-between gap-2">
-                <h5 className="text-[13px] font-semibold text-primary uppercase tracking-wider">
-                  {t("workbench.products.detail.knowledgeViewTitle")}
-                </h5>
-                <div className="flex min-w-0 max-w-[58%] flex-col items-end gap-0.5">
-                  <Badge
-                    variant="secondary"
-                    className={`h-5 max-w-full shrink px-1.5 text-[10px] font-normal border-none ${detailWireBadgeClass(product.analysisUnified?.document ?? "new")}`}
-                  >
-                    <span className="truncate">
-                      {detailWireStateLabel(t, product.analysisUnified?.document ?? "new")}
-                    </span>
-                  </Badge>
-                  {(product.analysisUnified?.document ?? "new") === "done" && product.analysisTimes?.document && (
-                    <span className="text-[10px] text-muted-foreground tabular-nums">
-                      {product.analysisTimes.document}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {showAutoGenerateCta && (
-                <div className="mb-4" onClick={(e) => e.stopPropagation()}>
-                  <Button
-                    type="button"
-                    title={t("workbench.products.detail.autoGenerateHint")}
-                    className="w-full h-9 gap-1.5 text-sm font-semibold bg-gradient-to-r from-amber-500/10 to-orange-500/10 hover:from-amber-500/20 hover:to-orange-500/20 text-amber-600 dark:text-amber-500 border border-amber-500/20 shadow-sm transition-all rounded-md"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toast.message(t("workbench.products.detail.autoGeneratePending"));
-                    }}
-                  >
-                    <Sparkles className="size-4 shrink-0" strokeWidth={2.5} />
-                    {t("workbench.products.detail.autoGenerateCta")}
-                  </Button>
-                </div>
-              )}
+              <h5 className="mb-4 text-[13px] font-semibold uppercase tracking-wider text-primary">
+                {t("workbench.products.detail.knowledgeViewTitle")}
+              </h5>
 
               <div className="flex flex-col gap-1">
                 {knowledgeItems.map((item) => {
-                  const hasKnowledge = product.knowledge[item.key as keyof typeof product.knowledge];
+                  const cat = item.key as ProductKnowledgeCategory;
+                  const slot = product.knowledge[cat];
+                  const done = isProductKnowledgeSlotDone(slot);
                   const docs = getMockDocsForCategory(item.key, product.name);
-                  const isExpanded = expandedKnowledge.includes(item.key);
-                  
+                  const kv = knowledgeCategoryView[cat];
+                  const isExpanded = kv.expanded;
+                  const generating = kv.generating;
+                  const isArchitecture = item.key === "architecture";
+                  const isManual = item.key === "manual";
+                  const archDone = isProductKnowledgeSlotDone(product.knowledge.architecture);
+                  const canGenerateArchitecture = isArchitecture && !done && mainRepoAnalysisDone;
+                  const canGenerateManual = isManual && !done && archDone;
+                  const rowActive = done || slot.wireState === "init" || slot.wireState === "process";
+
                   return (
                     <div key={item.key} className="flex flex-col">
                       <div
                         onClick={() => {
-                          if (hasKnowledge) toggleKnowledge(item.key);
+                          if (done) toggleKnowledgeCategoryExpanded(cat);
                           setActiveTab("knowledge-graph");
                         }}
                         className="flex items-center justify-between w-full cursor-pointer py-2 px-1 hover:bg-muted/50 rounded-md transition-colors"
                       >
-                        <div className={`flex items-center gap-2.5 ${hasKnowledge ? "text-foreground" : "text-muted-foreground"}`}>
+                        <div
+                          className={`flex items-center gap-2.5 ${rowActive ? "text-foreground" : "text-muted-foreground"}`}
+                        >
                           {item.icon}
                           <span className="text-[13px]">{item.label}</span>
                         </div>
-                        <div className="flex items-center gap-1.5">
-                          {hasKnowledge ? (
-                            <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
-                              {t("workbench.products.detail.docsCount", { count: docs.length })}
+                        <div className="flex min-w-0 flex-col items-end gap-0.5">
+                          <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">
+                            {!done && (canGenerateArchitecture || canGenerateManual) && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-6 shrink-0 gap-1 rounded-md border-amber-500/25 bg-gradient-to-r from-amber-500/10 to-orange-500/10 px-2 text-[10px] font-semibold text-amber-700 hover:from-amber-500/15 hover:to-orange-500/15 dark:text-amber-400"
+                                disabled={generating}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (canGenerateManual) {
+                                    toast.message(t("workbench.products.detail.manualGenerationPlanned", "规划中"));
+                                    return;
+                                  }
+                                  handleGenerateKnowledge(item.key);
+                                }}
+                              >
+                                {generating ? (
+                                  <Loader2 className="size-3 shrink-0 animate-spin" />
+                                ) : (
+                                  <Sparkles className="size-3 shrink-0" strokeWidth={2.5} />
+                                )}
+                                {generating
+                                  ? t("workbench.products.detail.generating", "生成中...")
+                                  : isArchitecture
+                                    ? t("workbench.products.detail.autoGenerateArch", "自动生成架构")
+                                    : t("workbench.products.detail.autoGenerateManual", "自动生成手册")}
+                              </Button>
+                            )}
+                            {done ? (
+                              <>
+                                <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
+                                  {t("workbench.products.detail.docsCount", { count: docs.length })}
+                                </span>
+                                <ChevronDown
+                                  size={14}
+                                  className={`shrink-0 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                                />
+                              </>
+                            ) : slot.wireState !== "new" ? (
+                              <Badge
+                                variant="secondary"
+                                className={`h-5 max-w-[140px] shrink px-1.5 text-[10px] font-normal border-none ${detailWireBadgeClass(slot.wireState)}`}
+                              >
+                                <span className="truncate">{detailWireStateLabel(t, slot.wireState)}</span>
+                              </Badge>
+                            ) : (
+                              <span className="text-[11px] text-muted-foreground">
+                                {t("workbench.products.detail.notCreated")}
+                              </span>
+                            )}
+                          </div>
+                          {done && slot.completedAt && (
+                            <span className="text-[10px] text-muted-foreground tabular-nums">
+                              {slot.completedAt}
                             </span>
-                          ) : (
-                            <span className="text-[11px] text-muted-foreground">
-                              {t("workbench.products.detail.notCreated")}
-                            </span>
-                          )}
-                          {hasKnowledge && (
-                            <ChevronDown size={14} className={`text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`} />
                           )}
                         </div>
                       </div>
-                      
-                      {hasKnowledge && isExpanded && (
+
+                      {done && isExpanded && (
                         <div className="flex flex-col gap-1 pl-6 py-1">
                           {docs.map((doc) => {
                             const isDocActive = activeTab === doc.id;
@@ -657,9 +882,9 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
                   <div className="mb-3" onClick={(e) => e.stopPropagation()}>
                     <Button
                       type="button"
-                      disabled={orderTicketBusy || !IS_TAURI || !product.knowledge.architecture}
+                      disabled={orderTicketBusy || !IS_TAURI || !architectureKnowledgeDone}
                       title={
-                        !product.knowledge.architecture
+                        !architectureKnowledgeDone
                           ? t("workbench.products.detail.autoAnalysisTicketArchRequired")
                           : t("workbench.products.detail.autoAnalysisTicketCardHint")
                       }
@@ -955,30 +1180,17 @@ export function ProductDetail({ product, open, onClose, synapseApiBase, onProces
             {openDocs.map((doc) => {
               if (activeTab !== doc.id) return null;
               return (
-                <div key={doc.id} className="flex flex-col h-full bg-background">
-                  <div className="px-8 py-6 border-b border-border/60">
-                    <h4 className="text-lg font-semibold text-foreground m-0">{doc.title}</h4>
-                    <div className="flex items-center gap-4 mt-3">
-                      <Badge variant="secondary" className="bg-blue-500/10 text-blue-700 dark:text-blue-400 font-normal">
-                        {doc.category}
-                      </Badge>
-                      <span className="text-sm text-muted-foreground">{t("workbench.products.detail.docFooter")}</span>
-                    </div>
-                  </div>
-                  <div className="px-8 py-6 text-foreground/80 leading-relaxed text-sm">
-                    {doc.content.split("\n").map((lineStr, idx) => {
-                      if (lineStr.startsWith("# ")) {
-                        return <h1 key={idx} className="text-2xl font-semibold text-foreground mb-4 mt-2">{lineStr.replace(/#/g, "").trim()}</h1>;
-                      } else if (lineStr.startsWith("## ")) {
-                        return <h2 key={idx} className="text-xl font-semibold text-foreground mb-3 mt-2">{lineStr.replace(/#/g, "").trim()}</h2>;
-                      } else {
-                        return <p key={idx} className="mb-2 min-h-[1em]">{lineStr}</p>;
-                      }
-                    })}
-                  </div>
-                  <div className="min-h-[320px] relative border-t border-border/60 bg-muted/10 flex items-center justify-center text-sm text-muted-foreground p-6">
-                    {t("workbench.products.sketchPlaceholder")}
-                  </div>
+                <div key={doc.id} className="flex flex-col h-full bg-background overflow-hidden">
+                  <ProductDocumentEditor
+                    content={doc.content}
+                    title={doc.title}
+                    synapseApiBase={synapseApiBase}
+                    readonly={doc.readonly}
+                    onSave={(newContent) => {
+                      setOpenDocs(docs => docs.map(d => d.id === doc.id ? { ...d, content: newContent } : d));
+                    }}
+                    onSubmit={() => handleSubmitDocs(doc.category)}
+                  />
                 </div>
               );
             })}

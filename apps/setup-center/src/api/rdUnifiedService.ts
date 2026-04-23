@@ -21,6 +21,8 @@ export const RD_UNIFIED_PATHS = {
   gitNexusInitialize: "/dev/iwhalecloud/synapse/gitnexus_initialize",
   gitNexusAnalysis: "/dev/iwhalecloud/synapse/gitnexus_analysis",
   orderInitialize: "/dev/iwhalecloud/synapse/order_initialize",
+  docsInitialize: "/dev/iwhalecloud/synapse/docs_initialize",
+  docsSubmit: "/dev/iwhalecloud/synapse/docs_submit",
   changeRepoInfo: "/dev/iwhalecloud/synapse/change_repo_info",
   destroyProd: "/dev/iwhalecloud/synapse/destroy_prod",
 } as const;
@@ -161,6 +163,20 @@ export type GitNexusAnalysisBody = GitNexusInitializeBody;
 /** order_initialize：按产品启动工单分析初始化（异步任务） */
 export type OrderInitializeBody = {
   prod: string;
+};
+
+export type DocsInitializeBody = {
+  prod: string;
+  doc_type: string;
+};
+
+export type DocsSubmitBody = {
+  prod: string;
+  doc_type: string;
+  doc_content: {
+    doc_name: string;
+    content: string;
+  }[];
 };
 
 /** change_repo_info：服务端若需产品标识可一并传 prod */
@@ -558,6 +574,58 @@ export async function orderInitialize(
 }
 
 /**
+ * 文档初始化：研发统一服务 docs_initialize。
+ * 仅应在 Tauri 下调用。
+ */
+export async function docsInitialize(
+  _synapseApiBase: string,
+  body: DocsInitializeBody,
+): Promise<DevServiceResponse> {
+  if (!IS_TAURI) {
+    throw new Error("rd_unified_tauri_only");
+  }
+  const host = await getDevserviceHost();
+  if (!host) {
+    throw new Error("missing_devservice_ip");
+  }
+  const resp = await postRdUnifiedJson<DevServiceResponse>(
+    host,
+    RD_UNIFIED_PATHS.docsInitialize,
+    body,
+  );
+  if (resp.code !== 0) {
+    throw new Error(resp.message || "docs_initialize_failed");
+  }
+  return resp;
+}
+
+/**
+ * 文档提交：研发统一服务 docs_submit。
+ * 仅应在 Tauri 下调用。
+ */
+export async function docsSubmit(
+  _synapseApiBase: string,
+  body: DocsSubmitBody,
+): Promise<DevServiceResponse> {
+  if (!IS_TAURI) {
+    throw new Error("rd_unified_tauri_only");
+  }
+  const host = await getDevserviceHost();
+  if (!host) {
+    throw new Error("missing_devservice_ip");
+  }
+  const resp = await postRdUnifiedJson<DevServiceResponse>(
+    host,
+    RD_UNIFIED_PATHS.docsSubmit,
+    body,
+  );
+  if (resp.code !== 0) {
+    throw new Error(resp.message || "docs_submit_failed");
+  }
+  return resp;
+}
+
+/**
  * 更新产品仓库配置。
  *
  * **路径**：`POST {devservice}:10001/dev/iwhalecloud/synapse/change_repo_info`（见 {@link RD_UNIFIED_PATHS.changeRepoInfo}）
@@ -594,6 +662,94 @@ export async function changeRepoInfo(
  * 删除产品：研发统一服务 destroy_prod，body `{ prod }`。
  * 仅应在 Tauri 下调用。
  */
+export type ProductKnowledgeGenerateBody = {
+  repo_name: string;
+  gitnexus_url: string;
+  product_desc: string;
+  code_path: string;
+  core_features: string;
+  local_data_path?: string;
+};
+
+export type ProductKnowledgeRefineBody = {
+  content: string;
+  prompt: string;
+};
+
+function assertSynapseEnvelope(data: {
+  errorcode?: number;
+  message?: string;
+}): void {
+  if (data.errorcode !== 0) {
+    throw new Error(data.message || "synapse_api_error");
+  }
+}
+
+export async function generateProductKnowledge(
+  synapseApiBase: string,
+  body: ProductKnowledgeGenerateBody,
+): Promise<{ task_id: string }> {
+  const resp = await proxyFetch(`${synapseApiBase}/api/dev/iwhalecloud/product_knowledge/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data: { errorcode?: number; message?: string; data?: { task_id: string } };
+  try {
+    data = JSON.parse(resp.body) as typeof data;
+  } catch {
+    throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
+  }
+  assertSynapseEnvelope(data);
+  if (!data.data?.task_id) {
+    throw new Error("missing_task_id");
+  }
+  return data.data;
+}
+
+export async function getProductKnowledgeStatus(
+  synapseApiBase: string,
+  taskId: string,
+): Promise<{ status: string; data?: { functional_arch?: string; tech_arch?: string; output?: string }; error?: string }> {
+  const resp = await proxyFetch(`${synapseApiBase}/api/dev/iwhalecloud/product_knowledge/status/${taskId}`);
+  let data: {
+    errorcode?: number;
+    message?: string;
+    data?: { status: string; data?: { functional_arch?: string; tech_arch?: string }; error?: string };
+  };
+  try {
+    data = JSON.parse(resp.body) as typeof data;
+  } catch {
+    throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
+  }
+  assertSynapseEnvelope(data);
+  if (!data.data) {
+    throw new Error("missing_status_payload");
+  }
+  return data.data;
+}
+
+export async function refineProductKnowledge(
+  synapseApiBase: string,
+  body: ProductKnowledgeRefineBody,
+): Promise<{ content: string }> {
+  const resp = await proxyFetch(`${synapseApiBase}/api/dev/iwhalecloud/product_knowledge/refine`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data: { errorcode?: number; message?: string; data?: { content: string } };
+  try {
+    data = JSON.parse(resp.body) as typeof data;
+  } catch {
+    throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
+  }
+  assertSynapseEnvelope(data);
+  if (data.data?.content === undefined) {
+    throw new Error("missing_refined_content");
+  }
+  return data.data;
+}
 export async function destroyProd(
   _synapseApiBase: string,
   body: DestroyProdBody,

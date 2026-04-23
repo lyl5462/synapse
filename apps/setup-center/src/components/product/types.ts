@@ -40,12 +40,65 @@ export interface ProductDocument {
   excalidrawElements?: any[]; // Excalidraw mock data
 }
 
-export interface ProductKnowledge {
-  architecture: boolean;
-  solution: boolean;
-  requirements: boolean;
-  manual: boolean;
-  delivery: boolean;
+/**
+ * 单类文档进度，与研发统一服务 `doc_process` 单条语义对齐（归一化状态 + 可选完成时间）。
+ */
+export interface ProductKnowledgeSlot {
+  wireState: UnifiedWireAnalysisState;
+  /** 对应 doc_process_time，仅当 wireState 为 done 时一般有值 */
+  completedAt?: string;
+  /** 服务端 doc_type 原文（匹配到多行时取首条） */
+  docType?: string;
+}
+
+export type ProductKnowledge = {
+  architecture: ProductKnowledgeSlot;
+  solution: ProductKnowledgeSlot;
+  requirements: ProductKnowledgeSlot;
+  manual: ProductKnowledgeSlot;
+  delivery: ProductKnowledgeSlot;
+};
+
+export type ProductKnowledgeCategory = keyof ProductKnowledge;
+
+export const PRODUCT_KNOWLEDGE_KEYS = [
+  "architecture",
+  "solution",
+  "requirements",
+  "manual",
+  "delivery",
+] as const satisfies readonly ProductKnowledgeCategory[];
+
+export function emptyProductKnowledge(): ProductKnowledge {
+  const slot = (): ProductKnowledgeSlot => ({ wireState: "new" });
+  return {
+    architecture: slot(),
+    solution: slot(),
+    requirements: slot(),
+    manual: slot(),
+    delivery: slot(),
+  };
+}
+
+export function isProductKnowledgeSlotDone(slot: ProductKnowledgeSlot): boolean {
+  return slot.wireState === "done";
+}
+
+/** 本地补丁：按类型部分更新 slot，与 patchProductKnowledgeSlots 配合 */
+export type ProductKnowledgePatch = {
+  [K in ProductKnowledgeCategory]?: Partial<ProductKnowledgeSlot>;
+};
+
+export function patchProductKnowledgeSlots(
+  base: ProductKnowledge,
+  patch: ProductKnowledgePatch,
+): ProductKnowledge {
+  const out: ProductKnowledge = { ...base };
+  for (const key of PRODUCT_KNOWLEDGE_KEYS) {
+    const piece = patch[key];
+    if (piece != null) out[key] = { ...base[key], ...piece };
+  }
+  return out;
 }
 
 export interface Ticket {
@@ -257,6 +310,95 @@ export function normalizeWireProcessState(raw: string | undefined): UnifiedWireA
   return "new";
 }
 
+/** 研发统一服务 doc_process 条目中 doc_type 与本地 knowledge 五类的宽松匹配 */
+function docTypeMatchesKnowledge(docTypeRaw: string, key: ProductKnowledgeCategory): boolean {
+  const t = String(docTypeRaw ?? "").trim().toLowerCase();
+  const patterns: Record<keyof ProductKnowledge, string[]> = {
+    architecture: ["架构", "architecture", "arch", "总体", "技术架构", "产品架构"],
+    solution: ["方案", "solution", "产品方案"],
+    requirements: ["需求", "requirements", "产品需求", "需求概要"],
+    manual: ["手册", "manual", "产品手册"],
+    delivery: ["交付", "delivery", "产品交付"],
+  };
+  for (const p of patterns[key]) {
+    const pl = p.toLowerCase();
+    if (t === pl || t.includes(pl)) return true;
+  }
+  return false;
+}
+
+/**
+ * 将 get_prod_info / get_prod_process_info 的 `doc_process` 按类型拆成五类进度
+ *（与 DocProcessWireItem 一致：多行同类型时按 pickWorstUnifiedState 聚合）。
+ */
+export function knowledgeFromDocProcess(
+  doc_process?:
+    | {
+        doc_type?: string;
+        doc_process_state: string;
+        doc_process_time?: string | null;
+      }[]
+    | null,
+): ProductKnowledge {
+  if (!doc_process?.length) return emptyProductKnowledge();
+
+  const slotFor = (key: ProductKnowledgeCategory): ProductKnowledgeSlot => {
+    const rows = doc_process.filter((d) =>
+      docTypeMatchesKnowledge(String(d?.doc_type ?? ""), key),
+    );
+    if (!rows.length) return { wireState: "new" };
+    const wireState = pickWorstUnifiedState(
+      rows.map((d) => normalizeWireProcessState(d?.doc_process_state)),
+    );
+    const completedAt =
+      wireState === "done"
+        ? pickLatestTimeString(
+            rows
+              .filter((d) => normalizeWireProcessState(d.doc_process_state) === "done")
+              .map((d) => d.doc_process_time),
+          )
+        : undefined;
+    const dt0 = rows[0]?.doc_type;
+    const docType = typeof dt0 === "string" && dt0.trim() !== "" ? dt0.trim() : undefined;
+    return { wireState, completedAt, docType };
+  };
+
+  return {
+    architecture: slotFor("architecture"),
+    solution: slotFor("solution"),
+    requirements: slotFor("requirements"),
+    manual: slotFor("manual"),
+    delivery: slotFor("delivery"),
+  };
+}
+
+function mergeKnowledgeSlot(local: ProductKnowledgeSlot, wire: ProductKnowledgeSlot): ProductKnowledgeSlot {
+  if (local.wireState === "done" || wire.wireState === "done") {
+    return {
+      wireState: "done",
+      completedAt: pickLatestTimeString([local.completedAt, wire.completedAt]),
+      docType: wire.docType ?? local.docType,
+    };
+  }
+  const wireState = pickWorstUnifiedState([local.wireState, wire.wireState]);
+  const completedAt =
+    wireState === "done"
+      ? pickLatestTimeString([local.completedAt, wire.completedAt])
+      : undefined;
+  return { wireState, completedAt, docType: wire.docType ?? local.docType };
+}
+
+/** 合并本地会话 knowledge 与统一服务 doc_process 推导（任一侧 done 则视为该类型已完成） */
+export function mergeProductKnowledge(local: ProductKnowledge, fromWire: ProductKnowledge): ProductKnowledge {
+  return {
+    architecture: mergeKnowledgeSlot(local.architecture, fromWire.architecture),
+    solution: mergeKnowledgeSlot(local.solution, fromWire.solution),
+    requirements: mergeKnowledgeSlot(local.requirements, fromWire.requirements),
+    manual: mergeKnowledgeSlot(local.manual, fromWire.manual),
+    delivery: mergeKnowledgeSlot(local.delivery, fromWire.delivery),
+  };
+}
+
 export function pickWorstUnifiedState(states: UnifiedWireAnalysisState[]): UnifiedWireAnalysisState {
   if (states.length === 0) return "new";
   let bestIdx: number = UNIFIED_PRIORITY.length;
@@ -391,6 +533,10 @@ export function analysisStatusFromProcessPayload(
 export function applyProcessPayloadToProduct(p: Product, payload: ProdProcessDataPayload): Product {
   const fields = buildAnalysisFieldsFromProcessPayload(payload);
   const counts = orderCountsFromProcessWire(payload);
+  const fromWire = knowledgeFromDocProcess(payload.doc_process);
+  const nextKnowledge = payload.doc_process?.length
+    ? mergeProductKnowledge(p.knowledge, fromWire)
+    : p.knowledge;
   return {
     ...p,
     analysisStatus: fields.analysisStatus,
@@ -399,6 +545,7 @@ export function applyProcessPayloadToProduct(p: Product, payload: ProdProcessDat
     repositories: mergeRepositoriesWithProcess(p.repositories, payload.repo_process),
     demandOrderCount: counts.demandOrderCount ?? p.demandOrderCount,
     taskOrderCount: counts.taskOrderCount ?? p.taskOrderCount,
+    knowledge: nextKnowledge,
   };
 }
 
@@ -473,13 +620,7 @@ export function prodInfoWireToProduct(item: ProdInfoWireItem): Product {
     analysisUnified: fields.analysisUnified,
     analysisTimes: fields.analysisTimes,
     ...counts,
-    knowledge: {
-      architecture: false,
-      solution: false,
-      requirements: false,
-      manual: false,
-      delivery: false,
-    },
+    knowledge: knowledgeFromDocProcess(item.doc_process),
   };
 }
 
