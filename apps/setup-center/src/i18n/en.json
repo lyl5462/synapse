@@ -286,6 +286,8 @@
         "refineFailed": "Document refinement failed",
         "refining": "AI is refining the document...",
         "refinePlaceholder": "Enter your revision request, AI will adjust automatically...",
+        "excalidrawParseError": "Could not parse Excalidraw file: {{name}}",
+        "excalidrawMissing": "Diagram data not loaded: {{name}}",
         "submitToServer": "Submit to server"
       }
     }

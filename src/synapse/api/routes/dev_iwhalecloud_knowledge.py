@@ -152,9 +152,25 @@ def _read_arch_from_repo_dir(repo_name: str) -> dict[str, Any]:
             tech_arch = tech_path.read_text(encoding="utf-8")
         except OSError:
             pass
+    sys_arch_layers_excalidraw = ""
+    sal_path = output_dir / "sys-arch-layers.excalidraw"
+    if sal_path.is_file():
+        try:
+            sys_arch_layers_excalidraw = sal_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    tech_stack_excalidraw = ""
+    ts_ex_path = output_dir / "tech-stack.excalidraw"
+    if ts_ex_path.is_file():
+        try:
+            tech_stack_excalidraw = ts_ex_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
     return {
         "functional_arch": functional_arch,
         "tech_arch": tech_arch,
+        "sys_arch_layers_excalidraw": sys_arch_layers_excalidraw,
+        "tech_stack_excalidraw": tech_stack_excalidraw,
         "output": "",
     }
 
@@ -184,7 +200,16 @@ def _assemble_task_for_response(task_id: str) -> dict[str, Any] | None:
         mem_data = meta.get("data")
         if isinstance(mem_data, dict):
             return meta
-        empty = {**meta, "data": {"functional_arch": "", "tech_arch": "", "output": ""}}
+        empty = {
+            **meta,
+            "data": {
+                "functional_arch": "",
+                "tech_arch": "",
+                "sys_arch_layers_excalidraw": "",
+                "tech_stack_excalidraw": "",
+                "output": "",
+            },
+        }
         _knowledge_tasks[task_id] = empty
         return empty
     return meta
@@ -306,18 +331,34 @@ async def _run_knowledge_generation_task(
         if result.success:
             functional_arch = ""
             tech_arch = ""
+            sys_arch_layers_excalidraw = ""
+            tech_stack_excalidraw = ""
             func_path = output_dir / "FUNCTIONAL_ARCH.md"
             if func_path.is_file():
                 functional_arch = func_path.read_text(encoding="utf-8")
             tech_path = output_dir / "TECH_ARCH.md"
             if tech_path.is_file():
                 tech_arch = tech_path.read_text(encoding="utf-8")
+            sal_path = output_dir / "sys-arch-layers.excalidraw"
+            if sal_path.is_file():
+                try:
+                    sys_arch_layers_excalidraw = sal_path.read_text(encoding="utf-8")
+                except OSError:
+                    pass
+            ts_ex_path = output_dir / "tech-stack.excalidraw"
+            if ts_ex_path.is_file():
+                try:
+                    tech_stack_excalidraw = ts_ex_path.read_text(encoding="utf-8")
+                except OSError:
+                    pass
             _knowledge_tasks[task_id] = {
                 "status": "completed",
                 "repo_name": repo_name,
                 "data": {
                     "functional_arch": functional_arch,
                     "tech_arch": tech_arch,
+                    "sys_arch_layers_excalidraw": sys_arch_layers_excalidraw,
+                    "tech_stack_excalidraw": tech_stack_excalidraw,
                     "output": str(result.data) if result.data else "",
                 },
             }

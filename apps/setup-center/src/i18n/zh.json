@@ -287,6 +287,8 @@
         "refineFailed": "文档优化失败",
         "refining": "AI 正在优化文档...",
         "refinePlaceholder": "输入修改需求，AI 自动调整文档...",
+        "excalidrawParseError": "无法解析 Excalidraw 文件：{{name}}",
+        "excalidrawMissing": "未加载图形数据：{{name}}",
         "submitToServer": "提交到服务端"
       }
     }

@@ -816,15 +816,34 @@ export async function generateProductKnowledge(
   return data.data;
 }
 
+/** `product_knowledge/status` 任务在 completed 时 `data` 内架构正文与侧路 excalidraw 原始 JSON 文本 */
+export type ProductKnowledgeStatusArchData = {
+  functional_arch?: string;
+  tech_arch?: string;
+  /** 与仓库内 `sys-arch-layers.excalidraw` 同源 */
+  sys_arch_layers_excalidraw?: string;
+  /** 与仓库内 `tech-stack.excalidraw` 同源 */
+  tech_stack_excalidraw?: string;
+  output?: string;
+};
+
 export async function getProductKnowledgeStatus(
   synapseApiBase: string,
   taskId: string,
-): Promise<{ status: string; data?: { functional_arch?: string; tech_arch?: string; output?: string }; error?: string }> {
+): Promise<{
+  status: string;
+  data?: ProductKnowledgeStatusArchData;
+  error?: string;
+}> {
   const resp = await proxyFetch(`${synapseApiBase}/api/dev/iwhalecloud/product_knowledge/status/${taskId}`);
   let data: {
     errorcode?: number;
     message?: string;
-    data?: { status: string; data?: { functional_arch?: string; tech_arch?: string }; error?: string };
+    data?: {
+      status: string;
+      data?: ProductKnowledgeStatusArchData;
+      error?: string;
+    };
   };
   try {
     data = JSON.parse(resp.body) as typeof data;

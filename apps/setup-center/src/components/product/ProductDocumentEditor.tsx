@@ -1,17 +1,26 @@
-import React, { useState, useCallback, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import MDEditor from "@uiw/react-md-editor";
 import { Editor } from "@monaco-editor/react";
-import { Excalidraw } from "@excalidraw/excalidraw";
 import { Button } from "@/components/ui/button";
+import { ExcalidrawReadonlyEmbed } from "./ExcalidrawReadonlyEmbed";
+import {
+  applyAppThemeToExcalidrawInitialData,
+  excalidrawThemeFromApp,
+  getExcalidrawViewBackgroundForAppTheme,
+  getExcalidrawPayload,
+  parseExcalidrawFileToInitialData,
+} from "./excalidrawScene";
 import { Sparkles, Loader2, Send, Save, Eye, Edit2 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { refineProductKnowledge } from "@/api/rdUnifiedService";
 
+/** Markdown 中 `![...](foo.excalidraw)` 的 foo.excalidraw 原文 JSON（多文件时按文件名查） */
 interface ProductDocumentEditorProps {
   content: string;
   title: string;
   synapseApiBase: string;
+  excalidrawByFileName?: Record<string, string>;
   readonly?: boolean;
   onSave?: (content: string) => void;
   onSubmit?: () => void;
@@ -56,10 +65,18 @@ function fixMarkdownTableDelimiters(md: string): string {
   return lines.join('\n');
 }
 
+function fileNameFromMarkdownSrc(src: string | undefined): string {
+  if (!src) return "";
+  const noQuery = src.trim().split(/[?#]/)[0] || "";
+  const parts = noQuery.replace(/\\/g, "/").split("/");
+  return (parts[parts.length - 1] || noQuery).trim();
+}
+
 export function ProductDocumentEditor({
   content: initialContent,
   title,
   synapseApiBase,
+  excalidrawByFileName,
   readonly = false,
   onSave,
   onSubmit,
@@ -70,13 +87,16 @@ export function ProductDocumentEditor({
   const [isRefining, setIsRefining] = useState(false);
   const [mode, setMode] = useState<"edit" | "preview">("preview");
 
-  const [isDark, setIsDark] = useState(() => {
-    return document.documentElement.getAttribute("data-theme") === "dark";
-  });
+  const isAppThemeDark = (theme: string | null) =>
+    theme === "dark" || theme === "daltonized-dark" || theme === "high-contrast";
+
+  const [isDark, setIsDark] = useState(() =>
+    isAppThemeDark(document.documentElement.getAttribute("data-theme")),
+  );
 
   useEffect(() => {
     const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.getAttribute("data-theme") === "dark");
+      setIsDark(isAppThemeDark(document.documentElement.getAttribute("data-theme")));
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
@@ -116,8 +136,44 @@ export function ProductDocumentEditor({
 
   // react-markdown 的 code 组件类型与 Excalidraw 嵌入强校验冲突，用窄化实现即可
   const previewOptions = useMemo(() => {
+    const map = excalidrawByFileName ?? {};
     return {
       components: {
+        img: (props: { src?: string; alt?: string; className?: string }) => {
+          const { src, alt, className } = props;
+          const base = fileNameFromMarkdownSrc(src);
+          const lower = base.toLowerCase();
+          const raw = base ? getExcalidrawPayload(map, base) : undefined;
+          if (lower.endsWith(".excalidraw") && base && raw) {
+            try {
+              parseExcalidrawFileToInitialData(raw);
+              return (
+                <div
+                  className="my-4 w-full min-w-0 overflow-hidden rounded-md border bg-background"
+                  style={{ height: "400px" }}
+                >
+                  <ExcalidrawReadonlyEmbed sceneJson={raw} className="h-full" />
+                </div>
+              );
+            } catch {
+              return (
+                <div className="my-4 p-4 border border-amber-200 bg-amber-50 text-amber-800 rounded-md text-sm">
+                  {t("workbench.products.detail.excalidrawParseError", "无法解析 Excalidraw 文件：{{name}}", {
+                    name: base,
+                  })}
+                </div>
+              );
+            }
+          }
+          if (lower.endsWith(".excalidraw") && base) {
+            return (
+              <div className="my-4 p-3 border border-dashed rounded-md text-sm text-muted-foreground">
+                {t("workbench.products.detail.excalidrawMissing", "未加载图形数据：{{name}}", { name: base })}
+              </div>
+            );
+          }
+          return <img src={src} alt={alt ?? ""} className={className} />;
+        },
         code: (props: { inline?: boolean; className?: string; children?: React.ReactNode }) => {
           const { inline, className, children, ...rest } = props;
           const match = /language-(\w+)/.exec(className || "");
@@ -126,15 +182,23 @@ export function ProductDocumentEditor({
           if (!inline && lang === "excalidraw") {
             try {
               const data = JSON.parse(String(children).replace(/\n$/, "")) as { elements?: object[] };
+              const sceneJson = JSON.stringify(
+                applyAppThemeToExcalidrawInitialData(
+                  parseExcalidrawFileToInitialData(
+                    JSON.stringify({ elements: data.elements ?? [] }),
+                  ),
+                  {
+                    viewBackground: getExcalidrawViewBackgroundForAppTheme(),
+                    excalidrawTheme: excalidrawThemeFromApp(),
+                  },
+                ),
+              );
               return (
-                <div className="my-4 border rounded-md overflow-hidden" style={{ height: "400px" }}>
-                  <Excalidraw
-                    initialData={{
-                      elements: (data.elements ?? []) as never,
-                      appState: { viewBackgroundColor: "#ffffff" },
-                    }}
-                    viewModeEnabled={true}
-                  />
+                <div
+                  className="my-4 w-full min-w-0 overflow-hidden rounded-md border"
+                  style={{ height: "400px" }}
+                >
+                  <ExcalidrawReadonlyEmbed sceneJson={sceneJson} className="h-full" />
                 </div>
               );
             } catch {
@@ -154,7 +218,7 @@ export function ProductDocumentEditor({
         },
       },
     };
-  }, []);
+  }, [excalidrawByFileName, t, isDark]);
 
   return (
     <div className="flex flex-col h-full w-full relative">

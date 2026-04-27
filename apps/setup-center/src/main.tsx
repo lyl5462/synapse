@@ -19,6 +19,7 @@ import ReactDOM from "react-dom/client";
 import "./i18n";
 import "./globals.css";
 import "./styles.css";
+import "@excalidraw/excalidraw/index.css";
 import { App } from "./App";
 import { PetView } from "./views/PetView";
 import { WindowsTitleBar } from "./components/WindowsTitleBar";

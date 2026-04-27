@@ -82,11 +82,43 @@ import "./product-workbench.css";
  */
 const PRODUCT_DETAIL_POLL_MS = 30_000;
 
+type OpenProductDoc = {
+  id: string;
+  title: string;
+  content: string;
+  category: string;
+  readonly?: boolean;
+  excalidrawByFileName?: Record<string, string>;
+};
+
+function isExcalidrawOutputDocName(docName: string): boolean {
+  return docName.trim().toLowerCase().endsWith(".excalidraw");
+}
+
+/** 与 Synapse/仓库约定文件名一致，供 Markdown 中 `![](*.excalidraw)` 查表 */
+function excalidrawByFileNameFromArch(arch: {
+  sys_arch_layers_excalidraw?: string;
+  tech_stack_excalidraw?: string;
+}): Record<string, string> | undefined {
+  const m: Record<string, string> = {};
+  const a = (arch.sys_arch_layers_excalidraw ?? "").trim();
+  if (a) m["sys-arch-layers.excalidraw"] = arch.sys_arch_layers_excalidraw as string;
+  const b = (arch.tech_stack_excalidraw ?? "").trim();
+  if (b) m["tech-stack.excalidraw"] = arch.tech_stack_excalidraw as string;
+  return Object.keys(m).length > 0 ? m : undefined;
+}
+
 function archMarkdownDocsFromSynapseData(
   categoryKey: string,
-  arch: { functional_arch?: string; tech_arch?: string },
-): { id: string; title: string; content: string; category: string }[] {
-  const newDocs: { id: string; title: string; content: string; category: string }[] = [];
+  arch: {
+    functional_arch?: string;
+    tech_arch?: string;
+    sys_arch_layers_excalidraw?: string;
+    tech_stack_excalidraw?: string;
+  },
+): OpenProductDoc[] {
+  const exMap = excalidrawByFileNameFromArch(arch);
+  const newDocs: OpenProductDoc[] = [];
   const ts = Date.now();
   if (arch.functional_arch) {
     newDocs.push({
@@ -94,6 +126,7 @@ function archMarkdownDocsFromSynapseData(
       title: "FUNCTIONAL_ARCH.md",
       content: arch.functional_arch,
       category: categoryKey,
+      ...(exMap ? { excalidrawByFileName: { ...exMap } } : {}),
     });
   }
   if (arch.tech_arch) {
@@ -102,6 +135,7 @@ function archMarkdownDocsFromSynapseData(
       title: "TECH_ARCH.md",
       content: arch.tech_arch,
       category: categoryKey,
+      ...(exMap ? { excalidrawByFileName: { ...exMap } } : {}),
     });
   }
   return newDocs;
@@ -174,7 +208,7 @@ export function ProductDetail({
 }: ProductDetailProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<string>("code-graph");
-  const [openDocs, setOpenDocs] = useState<{ id: string; title: string; category: string; content: string; readonly?: boolean }[]>([]);
+  const [openDocs, setOpenDocs] = useState<OpenProductDoc[]>([]);
   const [knowledgeCategoryView, setKnowledgeCategoryView] = useState<
     Record<ProductKnowledgeCategory, KnowledgeCategoryViewState>
   >(() => initialKnowledgeCategoryViewState());
@@ -245,16 +279,29 @@ export function ProductDetail({
                 const dt = unifiedDocTypeForKnowledgeCategory(cat);
                 const items = await getProdDoc(synapseApiBase, { prod: prodKey, doc_type: dt });
                 if (items.length === 0) continue;
+                const exAssets: Record<string, string> = {};
+                const textItems: typeof items = [];
+                for (const it of items) {
+                  const name = (it.doc_name || "").trim() || "document.md";
+                  if (isExcalidrawOutputDocName(name)) {
+                    exAssets[name] = it.content;
+                  } else {
+                    textItems.push(it);
+                  }
+                }
+                const exForMd = Object.keys(exAssets).length > 0 ? exAssets : undefined;
                 setOpenDocs((prev) => {
                   const seen = new Set(prev.map((x) => `${x.category}:${x.title}`));
-                  const toAdd: { id: string; title: string; content: string; category: string }[] = [];
-                  items.forEach((it, i) => {
-                    const row = {
+                  const toAdd: OpenProductDoc[] = [];
+                  textItems.forEach((it, i) => {
+                    const title = (it.doc_name || "").trim() || "document.md";
+                    const row: OpenProductDoc = {
                       id: `doc-unified-${cat}-${Date.now()}-${i}`,
-                      title: it.doc_name.trim() || "document.md",
+                      title,
                       content: it.content,
                       category: cat,
                     };
+                    if (exForMd) row.excalidrawByFileName = { ...exForMd };
                     const key = `${row.category}:${row.title}`;
                     if (!seen.has(key)) {
                       seen.add(key);
@@ -522,7 +569,7 @@ export function ProductDetail({
       ? product.taskOrderCount
       : product.latestTickets?.filter((tick) => !tick.title.includes("需求")).length ?? 0;
 
-  const getMockDocsForCategory = (categoryKey: string, productName: string) => {
+  const getMockDocsForCategory = (categoryKey: string, productName: string): OpenProductDoc[] => {
     // 方案和需求为只读
     const isReadonly = categoryKey === "solution" || categoryKey === "requirements";
     return [
@@ -530,18 +577,20 @@ export function ProductDetail({
         id: `doc-${categoryKey}-1`,
         title: `${productName}-${categoryKey === "architecture" ? "总体设计" : "需求概要"} v1.0`,
         content: `# ${productName} \n\n这是一篇关于 **${categoryKey}** 的技术文档。包含 Markdown 与示意图占位，以便演示混合展示效果。\n\n- 核心特点：高性能、高可用、可扩展\n- 依赖服务：Redis, PostgreSQL`,
+        category: categoryKey,
         readonly: isReadonly,
       },
       {
         id: `doc-${categoryKey}-2`,
         title: `迭代日志与附录`,
         content: `# 迭代日志\n目前处于 v1.0.0 版本阶段，持续完善中。`,
+        category: categoryKey,
         readonly: isReadonly,
       },
     ];
   };
 
-  const handleOpenDoc = async (doc: { id: string; title: string; content: string; readonly?: boolean }, category: string) => {
+  const handleOpenDoc = async (doc: OpenProductDoc, category: string) => {
     if (!(await guardOwnerMatch())) return;
     if (!openDocs.find((d) => d.id === doc.id)) {
       setOpenDocs([...openDocs, { ...doc, category }]);
@@ -717,13 +766,26 @@ export function ProductDetail({
         categoryKey as ProductKnowledgeCategory,
       );
 
+      const used = new Set<string>();
+      const docContent: { doc_name: string; content: string }[] = [];
+      for (const d of categoryDocs) {
+        if (!used.has(d.title)) {
+          used.add(d.title);
+          docContent.push({ doc_name: d.title, content: d.content });
+        }
+        if (d.excalidrawByFileName) {
+          for (const [name, exBody] of Object.entries(d.excalidrawByFileName)) {
+            if (!exBody.trim() || used.has(name)) continue;
+            used.add(name);
+            docContent.push({ doc_name: name, content: exBody });
+          }
+        }
+      }
+
       await docsSubmit(synapseApiBase, {
         prod: product.name,
         doc_type: submitDocType,
-        doc_content: categoryDocs.map((d) => ({
-          doc_name: d.title,
-          content: d.content,
-        })),
+        doc_content: docContent,
       });
 
       toast.success(t("workbench.products.detail.docSubmitSuccess", "文档提交成功"));
@@ -1410,9 +1472,12 @@ export function ProductDetail({
                     content={doc.content}
                     title={doc.title}
                     synapseApiBase={synapseApiBase}
+                    excalidrawByFileName={doc.excalidrawByFileName}
                     readonly={doc.readonly}
                     onSave={(newContent) => {
-                      setOpenDocs(docs => docs.map(d => d.id === doc.id ? { ...d, content: newContent } : d));
+                      setOpenDocs((docs) =>
+                        docs.map((d) => (d.id === doc.id ? { ...d, content: newContent } : d)),
+                      );
                     }}
                     onSubmit={() => handleSubmitDocs(doc.category)}
                   />

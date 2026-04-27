@@ -138,3 +138,18 @@
   background: var(--pw-bg);
 }
 
+/* Excalidraw 嵌入（产品文档 MD 预览）：在 flex/Sheet 内占满高度，避免画布区域坍塌 */
+.excalidraw-embed-host {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+.excalidraw-embed-inner,
+.excalidraw-embed-inner .excalidraw {
+  min-height: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 100%;
+  width: 100%;
+}
+
