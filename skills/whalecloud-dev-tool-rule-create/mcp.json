@@ -1,0 +1,13 @@
+{
+  "_comment": "Remote code-index MCP (Streamable HTTP) for whalecloud-dev-tool-rule-create optional Phase 2 index cross-check.",
+  "_usage": "Replace the url with your serve origin + /api/mcp. fetch-arch-data.js accepts --with-snippets for symbol bodies in arch-data.json.",
+  "_placeholders": {
+    "GITNEXUS_URL": "http://127.0.0.1:11011 — 与 `gitnexus serve` 暴露的 HTTP API 同源（勿与仅用于浏览的 Web 端口混淆）",
+    "MCP_PATH": "/api/mcp — Streamable HTTP (legacy /mcp/sse is not used)"
+  },
+  "mcpServers": {
+    "gitnexus-remote": {
+      "url": "http://127.0.0.1:11011/api/mcp"
+    }
+  }
+}

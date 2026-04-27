@@ -23,6 +23,7 @@ export const RD_UNIFIED_PATHS = {
   orderInitialize: "/dev/iwhalecloud/synapse/order_initialize",
   docsInitialize: "/dev/iwhalecloud/synapse/docs_initialize",
   docsSubmit: "/dev/iwhalecloud/synapse/docs_submit",
+  getDoc: "/dev/iwhalecloud/synapse/get_doc",
   changeRepoInfo: "/dev/iwhalecloud/synapse/change_repo_info",
   destroyProd: "/dev/iwhalecloud/synapse/destroy_prod",
 } as const;
@@ -55,6 +56,12 @@ export type DocProcessWireItem = {
   doc_process_state: string;
   /** 该类型文档分析完成时间（状态为 D 时可选） */
   doc_process_time?: string | null;
+  /**
+   * 与「初始化」时前端写入的 `task_id` 同源（统一服务登记后在此回显）。
+   * **状态探测**：仅当 `doc_process_state` 为 I/P 时，前端才用此值请求 Synapse `product_knowledge/status`；
+   * 为 D 时正文走 `get_doc`，勿再用此字段轮询后台。
+   */
+  doc_process_info?: string | null;
 };
 
 export type InsertProdInfoBody = {
@@ -168,6 +175,24 @@ export type OrderInitializeBody = {
 export type DocsInitializeBody = {
   prod: string;
   doc_type: string;
+  /**
+   * 初始化时由前端生成（插入键）；与 Synapse `product_knowledge/generate` 同源。
+   * 统一服务登记后通过 `get_prod_process_info` → `doc_process_info` 在 I/P 探测阶段回传。
+   */
+  task_id: string;
+};
+
+/** 研发统一服务 get_doc：拉取已落库文档正文（doc_process_state 为 D 时） */
+export type GetDocBody = {
+  prod: string;
+  doc_type: string;
+};
+
+export type GetDocWireResponse = {
+  code: number;
+  data: { doc_content?: { doc_name: string; content: string }[] } | null;
+  message: string;
+  total: number;
 };
 
 export type DocsSubmitBody = {
@@ -574,7 +599,27 @@ export async function orderInitialize(
 }
 
 /**
- * 文档初始化：研发统一服务 docs_initialize。
+ * 组装 `POST .../docs_initialize` 请求体（与统一服务约定一致，且避免 undefined 被 JSON 省略）。
+ * 同时带 snake_case 与 camelCase：部分 Java 实现只绑定 `taskId`/`docType`，只发下划线时服务端会读到空。
+ */
+export function buildDocsInitializeWireBody(body: DocsInitializeBody): Record<string, string> {
+  const prod = String(body.prod ?? "").trim();
+  const doc_type = String(body.doc_type ?? "").trim();
+  const task_id = String(body.task_id ?? "").trim();
+  if (!prod) throw new Error("docs_initialize_prod_required");
+  if (!doc_type) throw new Error("docs_initialize_doc_type_required");
+  if (!task_id) throw new Error("docs_initialize_task_id_required");
+  return {
+    prod,
+    doc_type,
+    task_id,
+    docType: doc_type,
+    taskId: task_id,
+  };
+}
+
+/**
+ * 文档初始化：研发统一服务 docs_initialize（body 含前端生成的 `task_id`）。
  * 仅应在 Tauri 下调用。
  */
 export async function docsInitialize(
@@ -588,10 +633,11 @@ export async function docsInitialize(
   if (!host) {
     throw new Error("missing_devservice_ip");
   }
+  const wireBody = buildDocsInitializeWireBody(body);
   const resp = await postRdUnifiedJson<DevServiceResponse>(
     host,
     RD_UNIFIED_PATHS.docsInitialize,
-    body,
+    wireBody,
   );
   if (resp.code !== 0) {
     throw new Error(resp.message || "docs_initialize_failed");
@@ -603,6 +649,35 @@ export async function docsInitialize(
  * 文档提交：研发统一服务 docs_submit。
  * 仅应在 Tauri 下调用。
  */
+/**
+ * 已提交文档正文：研发统一服务 get_doc（prod + doc_type）。
+ * 仅应在 Tauri 下调用；与 docs_submit 的 doc_content 结构一致。
+ */
+export async function getProdDoc(
+  _synapseApiBase: string,
+  body: GetDocBody,
+): Promise<{ doc_name: string; content: string }[]> {
+  if (!IS_TAURI) {
+    throw new Error("rd_unified_tauri_only");
+  }
+  const host = await getDevserviceHost();
+  if (!host) {
+    throw new Error("missing_devservice_ip");
+  }
+  const resp = await postRdUnifiedJson<GetDocWireResponse>(host, RD_UNIFIED_PATHS.getDoc, body);
+  if (resp.code !== 0) {
+    throw new Error(resp.message || "get_doc_failed");
+  }
+  const raw = resp.data?.doc_content;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((row) => ({
+      doc_name: String((row as { doc_name?: unknown }).doc_name ?? "").trim() || "document.md",
+      content: String((row as { content?: unknown }).content ?? ""),
+    }))
+    .filter((row) => row.doc_name.length > 0 || row.content.length > 0);
+}
+
 export async function docsSubmit(
   _synapseApiBase: string,
   body: DocsSubmitBody,
@@ -663,13 +738,47 @@ export async function changeRepoInfo(
  * 仅应在 Tauri 下调用。
  */
 export type ProductKnowledgeGenerateBody = {
+  /** 与 docs_initialize 传入的 task_id 一致（前端生成） */
+  task_id: string;
   repo_name: string;
+  repo_url?: string;
   gitnexus_url: string;
   product_desc: string;
   code_path: string;
   core_features: string;
-  local_data_path?: string;
+  /** 研发工具技能 id 列表（多选，动态白名单，服务端过滤） */
+  rd_skill_ids?: string[];
+  /** LLM 端点 name，与 data/llm_endpoints.json 中一致；省略则自动路由 */
+  preferred_endpoint?: string | null;
 };
+
+/** Synapse GET /api/config/endpoints（非 errorcode 封装） */
+export type LlmEndpointCatalogItem = { name: string; model?: string };
+
+export async function fetchLlmEndpointsCatalog(
+  synapseApiBase: string,
+): Promise<LlmEndpointCatalogItem[]> {
+  const base = synapseApiBase.replace(/\/$/, "");
+  const resp = await proxyFetch(`${base}/api/config/endpoints`);
+  let raw: { endpoints?: unknown[]; error?: string };
+  try {
+    raw = JSON.parse(resp.body) as typeof raw;
+  } catch {
+    throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
+  }
+  if (raw.error) {
+    throw new Error(raw.error);
+  }
+  const eps = Array.isArray(raw.endpoints) ? raw.endpoints : [];
+  return eps
+    .map((e: unknown) => {
+      const o = e as Record<string, unknown>;
+      const name = String(o?.name ?? "").trim();
+      const model = o?.model != null ? String(o.model) : undefined;
+      return { name, model };
+    })
+    .filter((row) => row.name.length > 0);
+}
 
 export type ProductKnowledgeRefineBody = {
   content: string;

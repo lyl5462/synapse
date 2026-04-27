@@ -6153,6 +6153,25 @@ class Agent:
         current_model = self.brain.model
         conversation_id = task.session_id or f"task:{task.id}"
 
+        # preferred_endpoint 通过 brain.switch_model() 持久化到 LLMClient._endpoint_override，
+        # 后续所有 chat 调用自动走指定端点，无需在每次调用时传参。
+        if self._preferred_endpoint:
+            ok, msg = self.brain.switch_model(
+                endpoint_name=self._preferred_endpoint,
+                hours=0.05,
+                reason=f"task preferred_endpoint: {self._preferred_endpoint}",
+                conversation_id=conversation_id,
+            )
+            if ok:
+                logger.info(
+                    f"[EndpointOverride] Task {task.id}: switched to {self._preferred_endpoint}"
+                )
+            else:
+                logger.warning(
+                    f"[EndpointOverride] Task {task.id}: failed to switch to "
+                    f"{self._preferred_endpoint}: {msg}, using default"
+                )
+
         def _resolve_endpoint_name(model_or_endpoint: str) -> str | None:
             """将 'endpoint_name' 或 'model' 解析为 endpoint_name（任务循环专用，最小兼容）。"""
             try:

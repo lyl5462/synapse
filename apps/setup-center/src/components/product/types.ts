@@ -69,6 +69,19 @@ export const PRODUCT_KNOWLEDGE_KEYS = [
   "delivery",
 ] as const satisfies readonly ProductKnowledgeCategory[];
 
+/** 研发统一服务 `docs_initialize` / `docs_submit` 的 doc_type，与界面五类标签一致 */
+export const UNIFIED_SERVICE_DOC_TYPE: Record<ProductKnowledgeCategory, string> = {
+  architecture: "产品架构",
+  solution: "产品方案",
+  requirements: "产品需求",
+  manual: "产品手册",
+  delivery: "交付材料",
+};
+
+export function unifiedDocTypeForKnowledgeCategory(key: ProductKnowledgeCategory): string {
+  return UNIFIED_SERVICE_DOC_TYPE[key];
+}
+
 export function emptyProductKnowledge(): ProductKnowledge {
   const slot = (): ProductKnowledgeSlot => ({ wireState: "new" });
   return {
@@ -311,20 +324,32 @@ export function normalizeWireProcessState(raw: string | undefined): UnifiedWireA
 }
 
 /** 研发统一服务 doc_process 条目中 doc_type 与本地 knowledge 五类的宽松匹配 */
-function docTypeMatchesKnowledge(docTypeRaw: string, key: ProductKnowledgeCategory): boolean {
+export function docTypeMatchesKnowledge(docTypeRaw: string, key: ProductKnowledgeCategory): boolean {
   const t = String(docTypeRaw ?? "").trim().toLowerCase();
   const patterns: Record<keyof ProductKnowledge, string[]> = {
     architecture: ["架构", "architecture", "arch", "总体", "技术架构", "产品架构"],
     solution: ["方案", "solution", "产品方案"],
     requirements: ["需求", "requirements", "产品需求", "需求概要"],
     manual: ["手册", "manual", "产品手册"],
-    delivery: ["交付", "delivery", "产品交付"],
+    delivery: ["交付材料", "交付", "delivery", "产品交付"],
   };
   for (const p of patterns[key]) {
     const pl = p.toLowerCase();
     if (t === pl || t.includes(pl)) return true;
   }
   return false;
+}
+
+/** 根据统一服务 doc_type 文案解析本地知识分类（用于 get_doc / 进度行匹配） */
+export function productKnowledgeCategoryFromDocTypeWire(
+  docTypeRaw: string | undefined | null,
+): ProductKnowledgeCategory | null {
+  const s = String(docTypeRaw ?? "").trim();
+  if (!s) return null;
+  for (const key of PRODUCT_KNOWLEDGE_KEYS) {
+    if (docTypeMatchesKnowledge(s, key)) return key;
+  }
+  return null;
 }
 
 /**

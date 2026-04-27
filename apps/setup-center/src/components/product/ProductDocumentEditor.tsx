@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useMemo, useEffect } from "react";
 import MDEditor from "@uiw/react-md-editor";
+import { Editor } from "@monaco-editor/react";
 import { Excalidraw } from "@excalidraw/excalidraw";
 import { Button } from "@/components/ui/button";
-import { Sparkles, Loader2, Send, Save } from "lucide-react";
+import { Sparkles, Loader2, Send, Save, Eye, Edit2 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { refineProductKnowledge } from "@/api/rdUnifiedService";
@@ -16,6 +17,45 @@ interface ProductDocumentEditorProps {
   onSubmit?: () => void;
 }
 
+function fixMarkdownTableDelimiters(md: string): string {
+  if (!md) return md;
+  const lines = md.split('\n');
+  let inCodeBlock = false;
+  
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    if (line.startsWith('```') || line.startsWith('~~~')) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    
+    if (inCodeBlock) continue;
+    
+    if (/^[|\-:\s]+$/.test(line) && line.includes('-')) {
+      const prevLine = lines[i - 1].trim();
+      
+      if (prevLine.includes('|')) {
+        const getCellCount = (str: string) => {
+          let s = str.trim();
+          if (s.startsWith('|')) s = s.slice(1);
+          if (s.endsWith('|')) s = s.slice(0, -1);
+          return s.split(/(?<!\\)\|/).length;
+        };
+        
+        const headerCount = getCellCount(prevLine);
+        const delimCount = getCellCount(line);
+        
+        if (headerCount > 0 && delimCount > 0 && headerCount !== delimCount) {
+          const newDelim = Array(headerCount).fill('---').join(' | ');
+          lines[i] = prevLine.startsWith('|') ? `| ${newDelim} |` : newDelim;
+        }
+      }
+    }
+  }
+  return lines.join('\n');
+}
+
 export function ProductDocumentEditor({
   content: initialContent,
   title,
@@ -25,12 +65,25 @@ export function ProductDocumentEditor({
   onSubmit,
 }: ProductDocumentEditorProps) {
   const { t } = useTranslation();
-  const [content, setContent] = useState(initialContent);
+  const [content, setContent] = useState(() => fixMarkdownTableDelimiters(initialContent));
   const [prompt, setPrompt] = useState("");
   const [isRefining, setIsRefining] = useState(false);
+  const [mode, setMode] = useState<"edit" | "preview">("preview");
+
+  const [isDark, setIsDark] = useState(() => {
+    return document.documentElement.getAttribute("data-theme") === "dark";
+  });
 
   useEffect(() => {
-    setContent(initialContent);
+    const observer = new MutationObserver(() => {
+      setIsDark(document.documentElement.getAttribute("data-theme") === "dark");
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    setContent(fixMarkdownTableDelimiters(initialContent));
   }, [initialContent]);
 
   const handleRefine = async () => {
@@ -109,12 +162,33 @@ export function ProductDocumentEditor({
       <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/10 shrink-0">
         <h3 className="text-sm font-semibold text-foreground">{title}</h3>
         <div className="flex items-center gap-2">
+          {!readonly && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => setMode(m => m === "preview" ? "edit" : "preview")}
+              disabled={isRefining}
+            >
+              {mode === "preview" ? (
+                <>
+                  <Edit2 size={14} className="mr-1.5" />
+                  {t("workbench.products.detail.modeEdit", "编辑模式")}
+                </>
+              ) : (
+                <>
+                  <Eye size={14} className="mr-1.5" />
+                  {t("workbench.products.detail.modePreview", "预览模式")}
+                </>
+              )}
+            </Button>
+          )}
           {onSave && (
             <Button
               variant="outline"
               size="sm"
               className="h-8 text-xs"
-              onClick={() => onSave(content)}
+              onClick={() => onSave(fixMarkdownTableDelimiters(content))}
               disabled={isRefining || readonly}
             >
               <Save size={14} className="mr-1.5" />
@@ -138,16 +212,36 @@ export function ProductDocumentEditor({
 
       {/* Editor Area */}
       <div className="flex-1 min-h-0 relative">
-        <MDEditor
-          value={content}
-          onChange={(val) => setContent(val || "")}
-          preview={readonly ? "preview" : "live"}
-          height="100%"
-          visibleDragbar={false}
-          hideToolbar={readonly}
-          previewOptions={previewOptions as never}
-          className="h-full border-none rounded-none"
-        />
+        {mode === "edit" && !readonly ? (
+          <div className="h-full w-full py-4 bg-background">
+            <Editor
+              defaultLanguage="markdown"
+              value={content}
+              onChange={(val) => setContent(val || "")}
+              theme={isDark ? "vs-dark" : "light"}
+              options={{
+                wordWrap: "on",
+                minimap: { enabled: false },
+                fontSize: 14,
+                lineNumbers: "on",
+                scrollBeyondLastLine: false,
+                padding: { top: 16, bottom: 16 },
+                renderLineHighlight: "none",
+                lineDecorationsWidth: 16,
+              }}
+            />
+          </div>
+        ) : (
+          <MDEditor
+            value={fixMarkdownTableDelimiters(content)}
+            preview="preview"
+            height="100%"
+            visibleDragbar={false}
+            hideToolbar={true}
+            previewOptions={previewOptions as never}
+            className="h-full border-none rounded-none"
+          />
+        )}
         
         {/* Overlay when refining */}
         {isRefining && (

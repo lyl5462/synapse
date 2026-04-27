@@ -28,12 +28,28 @@ import {
   type ProductKnowledgePatch,
   type UnifiedWireAnalysisState,
   isProductKnowledgeSlotDone,
+  unifiedDocTypeForKnowledgeCategory,
+  UNIFIED_SERVICE_DOC_TYPE,
+  PRODUCT_KNOWLEDGE_KEYS,
+  knowledgeFromDocProcess,
+  productKnowledgeCategoryFromDocTypeWire,
 } from "./types";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { IS_TAURI } from "@/platform";
+import { IS_TAURI, proxyFetch } from "@/platform";
+import { isWhalecloudDevToolSkill } from "@/utils/whalecloudDevToolSkill";
+import type { SkillInfo } from "@/types";
 import { ProductDocumentEditor } from "./ProductDocumentEditor";
 import {
   buildCodeGraphEmbedUrl,
@@ -47,8 +63,10 @@ import {
   orderInitialize,
   docsInitialize,
   docsSubmit,
+  getProdDoc,
   generateProductKnowledge,
   getProductKnowledgeStatus,
+  fetchLlmEndpointsCatalog,
   probeUnifiedServicePortReachable,
   TICKET_KNOWLEDGE_GRAPH_PORT,
   CODE_GRAPH_SERVER_PORT,
@@ -58,8 +76,36 @@ import type { ProdProcessDataPayload } from "@/api/rdUnifiedService";
 import { assertOwnerInfoMatchesProduct, toastOwnerInfoGuardError } from "@/utils/ownerInfoGuard";
 import "./product-workbench.css";
 
-/** 详情页轮询 get_prod_process_info（与列表页仅用 get_prod_info 区分） */
-const PRODUCT_DETAIL_PROCESS_POLL_MS = 15_000;
+/**
+ * 详情页单一节拍：先 get_prod_process_info，再仅对 I/P 且未在「已终态 task」集合中的行调用
+ * product_knowledge/status。与列表页仅用 get_prod_info 区分。
+ */
+const PRODUCT_DETAIL_POLL_MS = 30_000;
+
+function archMarkdownDocsFromSynapseData(
+  categoryKey: string,
+  arch: { functional_arch?: string; tech_arch?: string },
+): { id: string; title: string; content: string; category: string }[] {
+  const newDocs: { id: string; title: string; content: string; category: string }[] = [];
+  const ts = Date.now();
+  if (arch.functional_arch) {
+    newDocs.push({
+      id: `doc-${categoryKey}-func-${ts}`,
+      title: "FUNCTIONAL_ARCH.md",
+      content: arch.functional_arch,
+      category: categoryKey,
+    });
+  }
+  if (arch.tech_arch) {
+    newDocs.push({
+      id: `doc-${categoryKey}-tech-${ts + 1}`,
+      title: "TECH_ARCH.md",
+      content: arch.tech_arch,
+      category: categoryKey,
+    });
+  }
+  return newDocs;
+}
 
 interface ProductDetailProps {
   product: Product | null;
@@ -142,8 +188,25 @@ export function ProductDetail({
   const [codeGraphReachable, setCodeGraphReachable] = useState<boolean | null>(null);
   const [codeGraphProbeNonce, setCodeGraphProbeNonce] = useState(0);
 
+  const [genOptsOpen, setGenOptsOpen] = useState(false);
+  const [genCategoryKey, setGenCategoryKey] = useState<ProductKnowledgeCategory | null>(null);
+  const [genRdSkills, setGenRdSkills] = useState<string[]>([]);
+  const [genEndpoint, setGenEndpoint] = useState("");
+  const [llmEpCatalog, setLlmEpCatalog] = useState<{ name: string; model?: string }[]>([]);
+  const [llmEpCatalogErr, setLlmEpCatalogErr] = useState<string | null>(null);
+  const [rdSkillCatalog, setRdSkillCatalog] = useState<{ skillId: string; name: string }[]>([]);
+  const [rdSkillCatalogLoading, setRdSkillCatalogLoading] = useState(false);
+
   const productRef = useRef(product);
   productRef.current = product;
+
+  /** 本页已用 get_doc 拉取过「统一服务 done」文档的产品 id（每开一次详情至多串行拉一轮） */
+  const hydratedUnifiedDoneForOpenRef = useRef<string | null>(null);
+  /**
+   * 本页会话内已对 product_knowledge/status 得到终态的 task_id（completed / error，来自 doc_process_info）。
+   * 命中后不再请求 status，避免与 get_prod_process_info 同节拍下的重复探测。
+   */
+  const synapseGenCompletedHydratedRef = useRef<Set<string>>(new Set());
 
   const guardOwnerMatch = useCallback(async (): Promise<boolean> => {
     const p = productRef.current;
@@ -166,17 +229,153 @@ export function ProductDetail({
       const resp = await getProdProcessInfo(synapseApiBase, { prod: prodKey });
       if (resp.data != null) {
         onProcessPayload(p.id, resp.data);
+
+        // 统一服务侧已落库完成（D）：正文只走 get_doc，不用 task_id 问 Synapse
+        if (
+          hydratedUnifiedDoneForOpenRef.current !== p.id &&
+          Array.isArray(resp.data.doc_process) &&
+          resp.data.doc_process.length > 0
+        ) {
+          const kslots = knowledgeFromDocProcess(resp.data.doc_process);
+          const doneCats = PRODUCT_KNOWLEDGE_KEYS.filter((k) => kslots[k].wireState === "done");
+          if (doneCats.length > 0) {
+            hydratedUnifiedDoneForOpenRef.current = p.id;
+            for (const cat of doneCats) {
+              try {
+                const dt = unifiedDocTypeForKnowledgeCategory(cat);
+                const items = await getProdDoc(synapseApiBase, { prod: prodKey, doc_type: dt });
+                if (items.length === 0) continue;
+                setOpenDocs((prev) => {
+                  const seen = new Set(prev.map((x) => `${x.category}:${x.title}`));
+                  const toAdd: { id: string; title: string; content: string; category: string }[] = [];
+                  items.forEach((it, i) => {
+                    const row = {
+                      id: `doc-unified-${cat}-${Date.now()}-${i}`,
+                      title: it.doc_name.trim() || "document.md",
+                      content: it.content,
+                      category: cat,
+                    };
+                    const key = `${row.category}:${row.title}`;
+                    if (!seen.has(key)) {
+                      seen.add(key);
+                      toAdd.push(row);
+                    }
+                  });
+                  return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+                });
+              } catch {
+                /* 单类失败不阻塞 */
+              }
+            }
+          }
+        }
+
+        // 状态探测：仅 I/P 且统一服务回了 doc_process_info 时，才用该 task_id 查 Synapse（与初始化时前端写入的是同一个 id）
+        const docProcess = resp.data.doc_process ?? [];
+        for (const cat of PRODUCT_KNOWLEDGE_KEYS) {
+          const docTypeName = UNIFIED_SERVICE_DOC_TYPE[cat];
+          const rows = docProcess.filter((d) => {
+            const t = String(d?.doc_type ?? "").toLowerCase();
+            return t.includes(docTypeName.toLowerCase()) || docTypeName.toLowerCase().includes(t);
+          });
+          for (const row of rows) {
+            const state = String(row?.doc_process_state ?? "").charAt(0).toUpperCase();
+            if (state !== "I" && state !== "P") continue;
+            const taskIdFromUnified = String(
+              (row as { doc_process_info?: string | null }).doc_process_info ?? "",
+            ).trim();
+            if (!taskIdFromUnified) continue;
+            if (synapseGenCompletedHydratedRef.current.has(taskIdFromUnified)) continue;
+
+            // 计算耗时：doc_process_time 为开始时间，若无则暂不显示
+            let elapsed = "";
+            const startTimeStr = row.doc_process_time;
+            if (startTimeStr) {
+              const startMs = new Date(startTimeStr).getTime();
+              if (!isNaN(startMs)) {
+                const diffSec = Math.floor((Date.now() - startMs) / 1000);
+                if (diffSec < 60) {
+                  elapsed = `${diffSec}秒`;
+                } else {
+                  const m = Math.floor(diffSec / 60);
+                  const s = diffSec % 60;
+                  elapsed = `${m}分${s > 0 ? s + "秒" : ""}`;
+                }
+              }
+            }
+
+            try {
+              const statusRes = await getProductKnowledgeStatus(
+                synapseApiBase,
+                taskIdFromUnified,
+              );
+              if (statusRes.status === "running" || statusRes.status === "pending") {
+                toast.info(
+                  t("workbench.products.detail.generateProgress", {
+                    product: p.name,
+                    docType: docTypeName,
+                    elapsed: elapsed || "计算中",
+                  }),
+                  { id: `gen-progress-${taskIdFromUnified}`, duration: 5000 },
+                );
+              } else if (statusRes.status === "completed") {
+                synapseGenCompletedHydratedRef.current.add(taskIdFromUnified);
+                const categoryKey =
+                  productKnowledgeCategoryFromDocTypeWire(String(row?.doc_type ?? "")) ?? cat;
+                if (statusRes.data) {
+                  const newDocs = archMarkdownDocsFromSynapseData(categoryKey, statusRes.data);
+                  if (newDocs.length > 0) {
+                    setOpenDocs((prev) => [...prev, ...newDocs]);
+                    setActiveTab(newDocs[0].id);
+                    setKnowledgeCategoryView((prev) => ({
+                      ...prev,
+                      [categoryKey]: { ...prev[categoryKey], expanded: true, generating: false },
+                    }));
+                    toast.success(t("workbench.products.detail.generateSuccess", "文档生成成功"));
+                  } else {
+                    setKnowledgeCategoryView((prev) => ({
+                      ...prev,
+                      [categoryKey]: { ...prev[categoryKey], generating: false },
+                    }));
+                  }
+                } else {
+                  setKnowledgeCategoryView((prev) => ({
+                    ...prev,
+                    [categoryKey]: { ...prev[categoryKey], generating: false },
+                  }));
+                }
+              } else if (statusRes.status === "error") {
+                synapseGenCompletedHydratedRef.current.add(taskIdFromUnified);
+                const categoryKey =
+                  productKnowledgeCategoryFromDocTypeWire(String(row?.doc_type ?? "")) ?? cat;
+                setKnowledgeCategoryView((prev) => ({
+                  ...prev,
+                  [categoryKey]: { ...prev[categoryKey], generating: false },
+                }));
+                toast.error(
+                  t("workbench.products.detail.generateFailed", "文档生成失败") +
+                    (statusRes.error ? `: ${statusRes.error}` : ""),
+                  { id: `gen-err-${taskIdFromUnified}` },
+                );
+              }
+            } catch {
+              // 查询后台进度失败不影响主流程
+            }
+          }
+        }
       }
     } catch {
       /* 轮询失败静默，避免打扰 */
     }
-  }, [synapseApiBase, onProcessPayload]);
+  }, [synapseApiBase, onProcessPayload, t]);
 
   useEffect(() => {
     if (open && product) {
       setActiveTab("code-graph");
       setOpenDocs([]);
       setKnowledgeCategoryView(initialKnowledgeCategoryViewState());
+      hydratedUnifiedDoneForOpenRef.current = null;
+      synapseGenCompletedHydratedRef.current.clear();
       const mainIdx = product.repositories.findIndex((r) => r.isMain);
       setActiveRepoIdx(mainIdx >= 0 ? mainIdx : 0);
     }
@@ -186,7 +385,7 @@ export function ProductDetail({
   useEffect(() => {
     if (!open || !product || !IS_TAURI) return;
     void fetchProcessOnce();
-    const id = window.setInterval(() => void fetchProcessOnce(), PRODUCT_DETAIL_PROCESS_POLL_MS);
+    const id = window.setInterval(() => void fetchProcessOnce(), PRODUCT_DETAIL_POLL_MS);
     return () => window.clearInterval(id);
   }, [open, product?.id, fetchProcessOnce]);
 
@@ -357,7 +556,57 @@ export function ProductDetail({
     }));
   };
 
-  const handleGenerateKnowledge = async (categoryKey: string) => {
+  const openGenerateOptionsDialog = (cat: ProductKnowledgeCategory) => {
+    setGenCategoryKey(cat);
+    setGenRdSkills([]);
+    setGenEndpoint("");
+    setLlmEpCatalog([]);
+    setLlmEpCatalogErr(null);
+    setRdSkillCatalog([]);
+    setRdSkillCatalogLoading(true);
+    setGenOptsOpen(true);
+    void (async () => {
+      try {
+        const rows = await fetchLlmEndpointsCatalog(synapseApiBase);
+        setLlmEpCatalog(rows);
+      } catch (e) {
+        setLlmEpCatalogErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    void (async () => {
+      try {
+        const base = synapseApiBase.replace(/\/$/, "");
+        const resp = await proxyFetch(`${base}/api/skills`, { timeoutSecs: 15 });
+        const raw = JSON.parse(resp.body) as { skills?: Record<string, unknown>[] };
+        const skills: SkillInfo[] = (raw.skills ?? []).map((s) => ({
+          skillId: (s.skill_id as string) || (s.name as string) || "",
+          name: (s.name as string) || "",
+          description: (s.description as string) || "",
+          name_i18n: (s.name_i18n as Record<string, string> | null) || null,
+          description_i18n: (s.description_i18n as Record<string, string> | null) || null,
+          system: !!(s.system as boolean),
+          enabled: typeof s.enabled === "boolean" ? s.enabled : undefined,
+          toolName: (s.tool_name as string | null) || null,
+          category: (s.category as string | null) || null,
+          path: (s.path as string | null) || null,
+          sourceUrl: (s.source_url as string | null) || null,
+        }));
+        const devTools = skills
+          .filter((s) => isWhalecloudDevToolSkill(s) && s.enabled !== false)
+          .map((s) => ({ skillId: s.skillId, name: s.name_i18n?.["zh"] || s.name_i18n?.["en"] || s.name }));
+        setRdSkillCatalog(devTools);
+      } catch {
+        // 加载失败时 catalog 保持空，UI 会提示用户去启用
+      } finally {
+        setRdSkillCatalogLoading(false);
+      }
+    })();
+  };
+
+  const handleGenerateKnowledge = async (
+    categoryKey: string,
+    opts?: { rd_skill_ids?: string[]; preferred_endpoint?: string | null },
+  ) => {
     if (!product || !IS_TAURI) return;
     if (!(await guardOwnerMatch())) return;
 
@@ -367,111 +616,81 @@ export function ProductDetail({
       return;
     }
 
+    if (!(PRODUCT_KNOWLEDGE_KEYS as readonly string[]).includes(categoryKey)) {
+      toast.error(t("workbench.products.detail.generateInvalidCategory", "无效的文档分类"));
+      return;
+    }
     const cat = categoryKey as ProductKnowledgeCategory;
     setKnowledgeCategoryView((prev) => ({
       ...prev,
       [cat]: { ...prev[cat], generating: true },
     }));
     try {
-      const docTypeParam =
-        categoryKey === "architecture" ? "architecture" : String(categoryKey);
+      const docTypeParam = unifiedDocTypeForKnowledgeCategory(cat);
 
-      // 1. 初始化通知
+      const hostRaw = await getDevserviceHost();
+      const devserviceAuth = hostRaw ? unifiedServiceHostAuthority(hostRaw) : null;
+      if (!devserviceAuth) {
+        setKnowledgeCategoryView((prev) => ({
+          ...prev,
+          [cat]: { ...prev[cat], generating: false },
+        }));
+        toast.error(
+          t(
+            "workbench.products.detail.generateMissingDevserviceHost",
+            "未获取到产品公共服务主机，无法生成文档。请在引导中完成「产品公共服务」或检查 ~/.synapse/devservice.ip。",
+          ),
+        );
+        return;
+      }
+      const gitnexusUrl = `http://${devserviceAuth}:${CODE_GRAPH_SERVER_PORT}/`;
+
+      // 初始化：前端生成 task_id（插入键），写入统一服务 + Synapse；后续统一服务在 doc_process_info 回显同一 id
+      const taskId = crypto.randomUUID().replace(/-/g, "");
       await docsInitialize(synapseApiBase, {
         prod: product.name,
         doc_type: docTypeParam,
+        task_id: taskId,
       });
 
-      let gitnexusUrl = `http://127.0.0.1:${CODE_GRAPH_SERVER_PORT}/`;
-      if (IS_TAURI) {
-        const h = await getDevserviceHost();
-        const auth = h ? unifiedServiceHostAuthority(h) : null;
-        if (auth) {
-          gitnexusUrl = `http://${auth}:${CODE_GRAPH_SERVER_PORT}/`;
-        }
-      }
-
       // 2. 触发生成
-      const res = await generateProductKnowledge(synapseApiBase, {
-        repo_name: product.name,
+      const rdSkillIds =
+        opts?.rd_skill_ids && opts.rd_skill_ids.length > 0
+          ? opts.rd_skill_ids.filter((s) => s.trim())
+          : ["whalecloud-dev-tool-arch-create"];
+      // 从仓库 URL 解析真实仓库名（去掉 .git 后缀的最后一段路径）
+      const repoNameFromUrl = mainRepo.url
+        ? mainRepo.url.replace(/\/$/, "").split("/").pop()?.replace(/\.git$/i, "") || product.name
+        : product.name;
+
+      await generateProductKnowledge(synapseApiBase, {
+        task_id: taskId,
+        repo_name: repoNameFromUrl,
+        repo_url: mainRepo.url || undefined,
         gitnexus_url: gitnexusUrl,
         product_desc: product.description || "",
         code_path: mainRepo.codePath || "",
         core_features: product.features || "",
-        local_data_path: "",
+        rd_skill_ids: rdSkillIds,
+        preferred_endpoint:
+          opts?.preferred_endpoint != null && String(opts.preferred_endpoint).trim() !== ""
+            ? String(opts.preferred_endpoint).trim()
+            : undefined,
       });
 
       toast.success(t("workbench.products.detail.generateStarted", "文档生成任务已启动，请稍候..."));
 
-      // 3. 轮询状态
-      const pollInterval = setInterval(async () => {
-        try {
-          const statusRes = await getProductKnowledgeStatus(synapseApiBase, res.task_id);
-          if (statusRes.status === "completed") {
-            clearInterval(pollInterval);
-            setKnowledgeCategoryView((prev) => ({
-              ...prev,
-              [cat]: { ...prev[cat], generating: false },
-            }));
+      // 进度与终态由统一节拍 fetchProcessOnce（get_prod_process_info → 按需 status）处理；此处立即拉一次统一服务
+      void fetchProcessOnce();
 
-            // 生成成功后，自动打开生成的文档
-            const newDocs: {
-              id: string;
-              title: string;
-              content: string;
-              category: string;
-            }[] = [];
-            if (statusRes.data?.functional_arch) {
-              newDocs.push({
-                id: `doc-${categoryKey}-func-${Date.now()}`,
-                title: "FUNCTIONAL_ARCH.md",
-                content: statusRes.data.functional_arch,
-                category: categoryKey,
-              });
-            }
-            if (statusRes.data?.tech_arch) {
-              newDocs.push({
-                id: `doc-${categoryKey}-tech-${Date.now()}`,
-                title: "TECH_ARCH.md",
-                content: statusRes.data.tech_arch,
-                category: categoryKey,
-              });
-            }
-            
-            if (newDocs.length > 0) {
-              setOpenDocs((prev) => [...prev, ...newDocs]);
-              setActiveTab(newDocs[0].id);
-              
-              // 展开对应的知识分类
-              setKnowledgeCategoryView((prev) => ({
-                ...prev,
-                [cat]: { ...prev[cat], expanded: true },
-              }));
-
-              toast.success(t("workbench.products.detail.generateSuccess", "文档生成成功"));
-            }
-          } else if (statusRes.status === "error") {
-            clearInterval(pollInterval);
-            setKnowledgeCategoryView((prev) => ({
-              ...prev,
-              [cat]: { ...prev[cat], generating: false },
-            }));
-            toast.error(t("workbench.products.detail.generateFailed", "文档生成失败") + ": " + statusRes.error);
-          }
-        } catch (err) {
-          console.error("Poll status error:", err);
-        }
-      }, 5000);
-
-      // 设置 10 分钟总超时
+      // 总超时对齐后端 3600 秒（仅结束本分类 generating，不再单独轮询 status）
       setTimeout(() => {
-        clearInterval(pollInterval);
         setKnowledgeCategoryView((prev) => {
           if (!prev[cat].generating) return prev;
           toast.error(t("workbench.products.detail.generateTimeout", "文档生成超时"));
           return { ...prev, [cat]: { ...prev[cat], generating: false } };
         });
-      }, 10 * 60 * 1000);
+      }, 3600 * 1000);
 
     } catch (err) {
       setKnowledgeCategoryView((prev) => ({
@@ -494,8 +713,9 @@ export function ProductDetail({
     }
 
     try {
-      const submitDocType =
-        categoryKey === "architecture" ? "architecture" : String(categoryKey);
+      const submitDocType = unifiedDocTypeForKnowledgeCategory(
+        categoryKey as ProductKnowledgeCategory,
+      );
 
       await docsSubmit(synapseApiBase, {
         prod: product.name,
@@ -518,6 +738,7 @@ export function ProductDetail({
   };
 
   return (
+    <>
     <Sheet open={open} onOpenChange={(val) => { if (!val) onClose(); }}>
       <SheetContent side="right" className="w-[85vw] sm:max-w-[85vw] p-0 flex flex-col gap-0 border-l border-border/80 bg-background">
         <SheetHeader className="px-6 py-4 border-b border-border/80 bg-muted/10 flex flex-row items-center justify-between space-y-0">
@@ -726,7 +947,9 @@ export function ProductDetail({
                   const cat = item.key as ProductKnowledgeCategory;
                   const slot = product.knowledge[cat];
                   const done = isProductKnowledgeSlotDone(slot);
-                  const docs = getMockDocsForCategory(item.key, product.name);
+                  const categoryDocs = openDocs.filter((d) => d.category === cat);
+                  const hasGeneratedDocs = categoryDocs.length > 0;
+                  const docs = hasGeneratedDocs ? categoryDocs : (done ? getMockDocsForCategory(item.key, product.name) : []);
                   const kv = knowledgeCategoryView[cat];
                   const isExpanded = kv.expanded;
                   const generating = kv.generating;
@@ -735,13 +958,15 @@ export function ProductDetail({
                   const archDone = isProductKnowledgeSlotDone(product.knowledge.architecture);
                   const canGenerateArchitecture = isArchitecture && !done && mainRepoAnalysisDone;
                   const canGenerateManual = isManual && !done && archDone;
-                  const rowActive = done || slot.wireState === "init" || slot.wireState === "process";
+                  const rowActive = done || hasGeneratedDocs || slot.wireState === "init" || slot.wireState === "process";
+                  const showGenerateBtn = !done && !hasGeneratedDocs && (canGenerateArchitecture || canGenerateManual);
+                  const showDocs = (done || hasGeneratedDocs) && isExpanded;
 
                   return (
                     <div key={item.key} className="flex flex-col">
                       <div
                         onClick={() => {
-                          if (done) toggleKnowledgeCategoryExpanded(cat);
+                          if (done || hasGeneratedDocs) toggleKnowledgeCategoryExpanded(cat);
                           setActiveTab("knowledge-graph");
                         }}
                         className="flex items-center justify-between w-full cursor-pointer py-2 px-1 hover:bg-muted/50 rounded-md transition-colors"
@@ -754,7 +979,7 @@ export function ProductDetail({
                         </div>
                         <div className="flex min-w-0 flex-col items-end gap-0.5">
                           <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5">
-                            {!done && (canGenerateArchitecture || canGenerateManual) && (
+                            {showGenerateBtn && (
                               <Button
                                 type="button"
                                 size="sm"
@@ -767,7 +992,9 @@ export function ProductDetail({
                                     toast.message(t("workbench.products.detail.manualGenerationPlanned", "规划中"));
                                     return;
                                   }
-                                  handleGenerateKnowledge(item.key);
+                                  if (canGenerateArchitecture) {
+                                    openGenerateOptionsDialog(cat);
+                                  }
                                 }}
                               >
                                 {generating ? (
@@ -777,12 +1004,10 @@ export function ProductDetail({
                                 )}
                                 {generating
                                   ? t("workbench.products.detail.generating", "生成中...")
-                                  : isArchitecture
-                                    ? t("workbench.products.detail.autoGenerateArch", "自动生成架构")
-                                    : t("workbench.products.detail.autoGenerateManual", "自动生成手册")}
+                                  : t("workbench.products.detail.generate", "生成")}
                               </Button>
                             )}
-                            {done ? (
+                            {done || hasGeneratedDocs ? (
                               <>
                                 <span className="text-[11px] text-emerald-600 dark:text-emerald-400">
                                   {t("workbench.products.detail.docsCount", { count: docs.length })}
@@ -813,7 +1038,7 @@ export function ProductDetail({
                         </div>
                       </div>
 
-                      {done && isExpanded && (
+                      {showDocs && (
                         <div className="flex flex-col gap-1 pl-6 py-1">
                           {docs.map((doc) => {
                             const isDocActive = activeTab === doc.id;
@@ -1198,5 +1423,105 @@ export function ProductDetail({
         </div>
       </SheetContent>
     </Sheet>
+
+    <Dialog open={genOptsOpen} onOpenChange={setGenOptsOpen}>
+      <DialogContent className="sm:max-w-md" showCloseButton>
+        <DialogHeader>
+          <DialogTitle>{t("workbench.products.detail.generateOptionsTitle", "生成文档")}</DialogTitle>
+          <DialogDescription>
+            {t(
+              "workbench.products.detail.generateOptionsDesc",
+              "请选择要挂载的研发工具技能，以及用于本次生成的 LLM 端点。",
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 py-2">
+          <div className="grid gap-2">
+            <Label className="text-xs font-medium">
+              {t("workbench.products.detail.generateOptionsRdSkill", "研发工具")}
+            </Label>
+            {rdSkillCatalogLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t("workbench.products.detail.generateOptionsRdSkillLoading", "加载研发工具列表...")}
+              </div>
+            ) : rdSkillCatalog.length === 0 ? (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {t(
+                  "workbench.products.detail.generateOptionsRdSkillEmpty",
+                  "未找到已启用的研发工具技能，请先在「研发工具」页面启用。",
+                )}
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1 max-h-36 overflow-y-auto rounded-md border border-input bg-background px-2 py-1">
+                {rdSkillCatalog.map((skill) => (
+                  <label key={skill.skillId} className="flex items-center gap-2 text-sm cursor-pointer py-0.5">
+                    <input
+                      type="checkbox"
+                      className="accent-primary"
+                      checked={genRdSkills.includes(skill.skillId)}
+                      onChange={(e) => {
+                        setGenRdSkills((prev) =>
+                          e.target.checked
+                            ? [...prev, skill.skillId]
+                            : prev.filter((id) => id !== skill.skillId),
+                        );
+                      }}
+                    />
+                    <span>{skill.name}</span>
+                    <span className="text-xs text-muted-foreground ml-1">({skill.skillId})</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="llm-ep-select" className="text-xs font-medium">
+              {t("workbench.products.detail.generateOptionsLlmEndpoint", "LLM 端点")}
+            </Label>
+            <select
+              id="llm-ep-select"
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              value={genEndpoint}
+              onChange={(e) => setGenEndpoint(e.target.value)}
+            >
+              <option value="">
+                {t("workbench.products.detail.generateOptionsEndpointAuto", "系统默认（自动选择端点）")}
+              </option>
+              {llmEpCatalog.map((ep) => (
+                <option key={ep.name} value={ep.name}>
+                  {ep.model ? `${ep.name} — ${ep.model}` : ep.name}
+                </option>
+              ))}
+            </select>
+            {llmEpCatalogErr && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {t("workbench.products.detail.generateOptionsEndpointsFailed", "加载端点列表失败")}: {llmEpCatalogErr}
+              </p>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setGenOptsOpen(false)}>
+            {t("workbench.products.detail.generateOptionsCancel", "取消")}
+          </Button>
+          <Button
+            type="button"
+            disabled={rdSkillCatalogLoading || rdSkillCatalog.length === 0}
+            onClick={() => {
+              if (!genCategoryKey) return;
+              setGenOptsOpen(false);
+              void handleGenerateKnowledge(genCategoryKey, {
+                rd_skill_ids: genRdSkills.length > 0 ? genRdSkills : rdSkillCatalog.map((s) => s.skillId),
+                preferred_endpoint: genEndpoint.trim() || null,
+              });
+            }}
+          >
+            {t("workbench.products.detail.generateOptionsConfirm", "开始生成")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

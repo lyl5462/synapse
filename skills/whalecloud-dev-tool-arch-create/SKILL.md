@@ -10,7 +10,7 @@ description: "通用产品架构/技术架构文档生成技能（源码优先 +
 **语言与工程类型**：默认**不**假设仓库为 C++。必须先执行 **Phase 0.1 工程类型判定**，得到 `PROJECT_KIND` 后再选用对应的 Phase 1b 阅读策略；若判定为 **C++ 原生或 C++ 混合主体**，必须叠加 **附录 A** 中的 C++ 专项要点。
 
 > **核心约束（违反则文档不完整）**
-> 1. **图示必须用 excalidraw-diagram-skill 生成**：技术架构文档 §3.3 技术栈、§4.1 架构总览两张图必须通过调用 `excalidraw-diagram-skill` 生成，不可用纯 Mermaid 文字块替代，不可省略。
+> 1. **图示必须用 whalecloud-dev-tool-excalidraw 生成**：技术架构文档 §3.3 技术栈、§4.1 架构总览两张图必须通过调用 `whalecloud-dev-tool-excalidraw` 生成，不可用纯 Mermaid 文字块替代，不可省略。
 > 2. **源码必须直接读取**：不能仅依赖索引快照；Phase 1b 必须读取与 `PROJECT_KIND` 匹配的**代表性源文件**（入口、构建清单、典型模块），文档中有源码路径论据。
 > 3. **索引仅作定位辅助**：聚类在 embeddings=0 时不可靠，必须以源码与构建事实为准，**不得将索引分层结果不经源码验证写入文档**。
 > 4. **双文档输出，内容不交叉**：功能架构文档（FUNCTIONAL_ARCH.md）不包含技术栈/分层图/运行态；技术架构文档（TECH_ARCH.md）不重复产品定位/场景/业务能力描述。
@@ -245,21 +245,21 @@ Phase 2 — 产品与架构综合
       未追踪到代码的项须标记「[待源码确认]」
 
 Phase 3 — 图示（必须执行，不可省略）
-  ⚠ 本 Phase 是强制步骤：必须调用 excalidraw-diagram-skill 生成以下两张图，图分别用于两份文档。
-  ⚠ 不得用 Mermaid 代码块替代 excalidraw-diagram-skill 的调用——Mermaid 是备注用途，图示产物必须来自该技能。
+  ⚠ 本 Phase 是强制步骤：必须调用 whalecloud-dev-tool-excalidraw 生成以下两张图，图分别用于两份文档。
+  ⚠ 不得用 Mermaid 代码块替代 whalecloud-dev-tool-excalidraw 的调用——Mermaid 是备注用途，图示产物必须来自该技能。
 
   图 A：技术栈依赖图（技术架构文档 §3.3）
-    - 调用 excalidraw-diagram-skill，主题：技术栈依赖关系
+    - 调用 whalecloud-dev-tool-excalidraw，主题：技术栈依赖关系
     - 展示：语言/运行时 → 核心框架/库 → 外部依赖（数据库/消息队列等）
     - 内容来自 Phase 1b 步骤 A 读到的构建文件和依赖声明
 
   图 B：系统分层架构概览图（技术架构文档 §4.1）
-    - 调用 excalidraw-diagram-skill，主题：系统分层架构
+    - 调用 whalecloud-dev-tool-excalidraw，主题：系统分层架构
     - 展示：各架构层（从用户侧到数据侧）、层间依赖方向、每层承载的核心功能标注
     - 内容来自 Phase 1b 步骤 B/C 读到的目录结构和入口文件
 
   生成规则：
-    - 提供给 excalidraw-diagram-skill 的描述中，节点名称必须来自源码中真实的类名/函数名/目录名，不得编造
+    - 提供给 whalecloud-dev-tool-excalidraw 的描述中，节点名称必须来自源码中真实的类名/函数名/目录名，不得编造
     - 每张图下方写 1 句「图示来源说明」，注明对应的源码路径证据
     - 若某图暂无充分源码依据，先生成占位图，再在图下标注「[待源码补充：<缺失内容>]」
 
@@ -426,11 +426,11 @@ node "D:\git\ai_dev\GitNexus\.cursor\skills\whalecloud-dev-tool-arch-create\scri
 
 ### 实际操作流程
 
-"调用 excalidraw-diagram-skill" 的完整含义是：
+"调用 whalecloud-dev-tool-excalidraw" 的完整含义是：
 
-1. 用 Read 工具读取技能文件 `../excalidraw-diagram-skill/SKILL.md`（若在工作区 skills 目录中找不到，尝试系统 skills 目录 `C:\Users\<用户>\.cursor\skills\EXCALIDRAW-DIAGRAM-SKILL\SKILL.md`）
-2. 读取 `../excalidraw-diagram-skill/references/color-palette.md` 获取颜色规范
-3. 读取 `../excalidraw-diagram-skill/references/element-templates.md` 获取 JSON 元素模板
+1. 用 Read 工具读取技能文件 `../whalecloud-dev-tool-excalidraw/SKILL.md`（若在工作区 skills 目录中找不到，尝试系统 skills 目录 `C:\Users\<用户>\.cursor\skills\EXCALIDRAW-DIAGRAM-SKILL\SKILL.md`）
+2. 读取 `../whalecloud-dev-tool-excalidraw/references/color-palette.md` 获取颜色规范
+3. 读取 `../whalecloud-dev-tool-excalidraw/references/element-templates.md` 获取 JSON 元素模板
 4. **按该技能的规则，直接用 Write 工具写出 `.excalidraw` JSON 文件**到目标目录
 
 > ⚠ 这不是「调用另一个 Agent」或「子进程调用」，而是读取 excalidraw 技能规范后，自己生成符合规范的 JSON 文件。不要等待外部工具响应。
@@ -446,7 +446,7 @@ node "D:\git\ai_dev\GitNexus\.cursor\skills\whalecloud-dev-tool-arch-create\scri
 
 ### 图示与文档的合并
 
-- 将 excalidraw-diagram-skill 生成的图（嵌入链接或内嵌内容）放入对应章节的 `{{DIAGRAM_*}}` 占位符处
+- 将 whalecloud-dev-tool-excalidraw 生成的图（嵌入链接或内嵌内容）放入对应章节的 `{{DIAGRAM_*}}` 占位符处
 - 图下方补一句「图示来源」，说明对应源码路径
 - 两张图都完成后再进入 Phase 4 组装文档
 
@@ -520,8 +520,8 @@ node "D:\git\ai_dev\GitNexus\.cursor\skills\whalecloud-dev-tool-arch-create\scri
 - [ ] 动态分层已提出并与用户确认（含源码路径证据 + 覆盖的核心功能项）
 
 图示生成：
-- [ ] 已调用 excalidraw-diagram-skill 生成图 A（技术栈）并内嵌到技术架构 §3.3
-- [ ] 已调用 excalidraw-diagram-skill 生成图 B（架构总览）并内嵌到技术架构 §4.1
+- [ ] 已调用 whalecloud-dev-tool-excalidraw 生成图 A（技术栈）并内嵌到技术架构 §3.3
+- [ ] 已调用 whalecloud-dev-tool-excalidraw 生成图 B（架构总览）并内嵌到技术架构 §4.1
 
 文档输出：
 - [ ] func-arch-template 已填满（CORE_FEATURES 逐项含代码影响范围）
@@ -577,5 +577,5 @@ node "D:\git\ai_dev\GitNexus\.cursor\skills\whalecloud-dev-tool-arch-create\scri
 
 - [func-arch-template.md](func-arch-template.md) — 功能架构文档模板（主文档）
 - [tech-arch-template.md](tech-arch-template.md) — 技术架构文档模板（补充文档）
-- **图示技能（必须调用）**：`../excalidraw-diagram-skill/SKILL.md` — 安装在系统 skills 目录，当前工作区不可见不代表不可用，Phase 3 必须读取并执行该技能
+- **图示技能（必须调用）**：`../whalecloud-dev-tool-excalidraw/SKILL.md` — 安装在系统 skills 目录，当前工作区不可见不代表不可用，Phase 3 必须读取并执行该技能
 - 代码探索：[gitnexus-exploring](../gitnexus-exploring/SKILL.md)（在需要 MCP 深入某符号时）

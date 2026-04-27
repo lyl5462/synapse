@@ -1,10 +1,10 @@
 {
   "zh": {
     "name": "研发工具演示",
-    "description": "演示用研发流程技能：验证 whalecloud_dev_tool_ 前缀与研发工具工作台。"
+    "description": "演示用研发流程技能：验证 whalecloud-dev-tool- 前缀与研发工具工作台。"
   },
   "en": {
     "name": "R&D Tool Demo",
-    "description": "Demo skill for whalecloud_dev_tool_ prefix and the R&D tools panel."
+    "description": "Demo skill for whalecloud-dev-tool- prefix and the R&D tools panel."
   }
 }

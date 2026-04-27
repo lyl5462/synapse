@@ -72,7 +72,7 @@
 
 ### 3.3 技术栈依赖图
 
-<!-- ⚠ 必须调用 excalidraw-diagram-skill 生成此图，不可用 Mermaid 文字块或描述性文字替代。
+<!-- ⚠ 必须调用 whalecloud-dev-tool-excalidraw 生成此图，不可用 Mermaid 文字块或描述性文字替代。
      调用时提供的描述内容：
        - 图类型：技术栈依赖关系（flowchart / layered）
        - 节点来源：Phase 1b 步骤 A 读到的构建文件（Makefile/CMakeLists 等）
@@ -88,7 +88,7 @@
 
 ### 4.1 分层架构概览图
 
-<!-- ⚠ 必须调用 excalidraw-diagram-skill 生成此图，不可用 Mermaid 文字块或描述性文字替代。
+<!-- ⚠ 必须调用 whalecloud-dev-tool-excalidraw 生成此图，不可用 Mermaid 文字块或描述性文字替代。
      调用时提供的描述内容：
        - 图类型：系统分层架构（layered architecture）
        - 层名称来自源码目录实际结构（非索引聚类分类）

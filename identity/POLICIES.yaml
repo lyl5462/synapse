@@ -4,6 +4,7 @@ security:
     enabled: true
     workspace:
     - ${CWD}
+    - ~/.synapse/**
     controlled: []
     protected:
     - C:/Program Files/**
