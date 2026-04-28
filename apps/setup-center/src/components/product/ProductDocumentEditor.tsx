@@ -160,6 +160,7 @@ export function ProductDocumentEditor({
 
   // Diff 状态（接受/拒绝面板）
   const [diffResult, setDiffResult] = useState<ProductKnowledgeRefineResult | null>(null);
+  const diffEditorRef = useRef<any>(null);
 
   /** 是否对当前 target 做 30s 一次的 refine/status 轮询 */
   const [refinePollActive, setRefinePollActive] = useState(false);
@@ -424,7 +425,7 @@ export function ProductDocumentEditor({
 
   const handleAcceptDiff = async () => {
     if (!diffResult || !refineContext) return;
-    const proposed = diffResult.proposed;
+    const proposed = diffEditorRef.current?.getModifiedEditor().getValue() || diffResult.proposed;
     const fixed = fixMarkdownTableDelimiters(proposed);
     setContent(fixed);
 
@@ -610,18 +611,21 @@ export function ProductDocumentEditor({
             modified={diffResult.proposed}
             language="markdown"
             theme={isDark ? "vs-dark" : "light"}
+            onMount={(editor) => {
+              diffEditorRef.current = editor;
+            }}
             options={{
               renderSideBySide: true,
               wordWrap: "on",
               minimap: { enabled: false },
               fontSize: 13,
-              readOnly: true,
+              readOnly: false,
               scrollBeyondLastLine: false,
             }}
           />
         </div>
         <div className="shrink-0 px-4 py-1.5 text-xs border-t bg-muted/10 text-muted-foreground">
-          {t("workbench.products.detail.refineDiffHint", "左侧为原文，右侧为 AI 修改建议。接受后将更新编辑器内容。")}
+          {t("workbench.products.detail.refineDiffHint", "左侧为原文，右侧为 AI 修改建议。你可以在右侧直接编辑，或点击撤销箭头恢复局部。确认无误后点击接受。")}
         </div>
       </div>
     );
