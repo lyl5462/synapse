@@ -8,7 +8,7 @@ import { Loader2, Play, Plus } from "lucide-react";
 import { invoke, IS_TAURI } from "../../platform";
 import type { SkillInfo, SkillConfigField, EnvMap } from "../../types";
 import { envSet } from "../../utils";
-import { isWhalecloudDevToolSkill } from "../../utils/whalecloudDevToolSkill";
+import { isWhalecloudDevToolSkill, rdToolDisplayLabel } from "../../utils/whalecloudDevToolSkill";
 import { safeFetch } from "../../providers";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -53,8 +53,7 @@ function friendlyErr(e: unknown, t: (k: string) => string, ctx: ErrorCtx = "gene
 }
 
 function dispName(skill: SkillInfo, lang: string): string {
-  const k = lang.startsWith("zh") ? "zh" : lang;
-  return skill.name_i18n?.[k] || skill.name;
+  return rdToolDisplayLabel(skill, lang);
 }
 
 function dispDesc(skill: SkillInfo, lang: string): string {
@@ -324,6 +323,7 @@ export function DevToolsSkillPanel({
       const list: SkillInfo[] = (data.skills || []).map((s: Record<string, unknown>) => ({
         skillId: (s.skill_id as string) || (s.name as string),
         name: s.name as string,
+        label: (s.label as string | null | undefined) ?? null,
         description: (s.description as string) || "",
         name_i18n: (s.name_i18n as Record<string, string> | null) || null,
         description_i18n: (s.description_i18n as Record<string, string> | null) || null,
@@ -536,7 +536,7 @@ export function DevToolsSkillPanel({
   }, []);
 
   const executeUninstall = useCallback(async (skill: SkillInfo) => {
-    const displayName = skill.name_i18n?.zh || skill.name_i18n?.en || skill.name;
+    const displayName = rdToolDisplayLabel(skill);
     const key = skill.skillId;
     setUninstallingSet((prev) => new Set(prev).add(key));
     setError(null);

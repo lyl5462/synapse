@@ -110,6 +110,7 @@ export function OnboardingWhaleSkillsPanel(props: {
       const list: SkillInfo[] = (data.skills || []).map((s: Record<string, unknown>) => ({
         skillId: (s.skill_id as string) || (s.name as string),
         name: s.name as string,
+        label: (s.label as string | null | undefined) ?? null,
         description: (s.description as string) || "",
         name_i18n: (s.name_i18n as Record<string, string> | null) || null,
         description_i18n: (s.description_i18n as Record<string, string> | null) || null,

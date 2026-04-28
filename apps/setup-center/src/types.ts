@@ -362,6 +362,8 @@ export type SkillConfigField = {
 export type SkillInfo = {
   skillId: string;
   name: string;
+  /** SKILL.md frontmatter：面向用户的短标题；研发工具等在界面优先于 name 展示 */
+  label?: string | null;
   description: string;
   name_i18n?: Record<string, string> | null;
   description_i18n?: Record<string, string> | null;

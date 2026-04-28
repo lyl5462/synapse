@@ -40,6 +40,8 @@ class SkillMetadata:
 
     name: str
     description: str
+    # 可选：面向用户的短标题（研发工具等在 UI 中优先于 name 展示）
+    label: str | None = None
     version: str | None = None
     license: str | None = None
     compatibility: str | None = None
@@ -286,6 +288,11 @@ class SkillParser:
         if not description:
             raise ValueError(f"Missing required 'description' field in {path}")
 
+        label_raw = data.get("label")
+        label: str | None = None
+        if label_raw is not None and str(label_raw).strip():
+            label = str(label_raw).strip()
+
         # 处理 allowed-tools (连字符转下划线)
         allowed_tools = data.get("allowed-tools", "")
         if isinstance(allowed_tools, str):
@@ -380,6 +387,7 @@ class SkillParser:
         return SkillMetadata(
             name=name,
             description=description.strip(),
+            label=label,
             version=data.get("version"),
             license=data.get("license"),
             compatibility=data.get("compatibility"),

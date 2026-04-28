@@ -237,7 +237,7 @@ export function ProductCard({
                 {product.version ? (
                   <Badge
                     variant="outline"
-                    className="max-w-[6rem] shrink-0 truncate whitespace-nowrap border-teal-500/35 bg-teal-500/10 font-normal text-[10px] text-teal-800 dark:text-teal-300 sm:max-w-[8rem]"
+                    className="max-w-[10rem] shrink-0 truncate whitespace-nowrap border-teal-500/35 bg-teal-500/10 font-normal text-[10px] text-teal-800 dark:text-teal-300 sm:max-w-[14rem]"
                     title={displayIdPipeName(product.version)}
                   >
                     {displayIdPipeName(product.version)}

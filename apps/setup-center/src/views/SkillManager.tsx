@@ -24,11 +24,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ModalOverlay } from "../components/ModalOverlay";
 import { cn } from "@/lib/utils";
-import { isWhalecloudDevToolSkill } from "../utils/whalecloudDevToolSkill";
+import { isWhalecloudDevToolSkill, rdToolDisplayLabel } from "../utils/whalecloudDevToolSkill";
 
 // ─── i18n 辅助：按当前语言优先显示中文名/描述 ───
 
 function getSkillDisplayName(skill: SkillInfo, lang: string): string {
+  if (isWhalecloudDevToolSkill(skill)) {
+    return rdToolDisplayLabel(skill, lang);
+  }
   const key = lang.startsWith("zh") ? "zh" : lang;
   return skill.name_i18n?.[key] || skill.name;
 }
@@ -719,6 +722,7 @@ export function SkillManager({
       const list: SkillInfo[] = (data.skills || []).map((s: Record<string, unknown>) => ({
         skillId: (s.skill_id as string) || (s.name as string),
         name: s.name as string,
+        label: (s.label as string | null | undefined) ?? null,
         description: s.description as string || "",
         name_i18n: (s.name_i18n as Record<string, string> | null) || null,
         description_i18n: (s.description_i18n as Record<string, string> | null) || null,
@@ -1085,7 +1089,9 @@ export function SkillManager({
 
   // ── 卸载技能（第二步：确认后执行） ──
   const executeUninstall = useCallback(async (skill: SkillInfo) => {
-    const displayName = skill.name_i18n?.zh || skill.name_i18n?.en || skill.name;
+    const displayName = isWhalecloudDevToolSkill(skill)
+      ? rdToolDisplayLabel(skill)
+      : skill.name_i18n?.zh || skill.name_i18n?.en || skill.name;
     const key = skill.skillId;
     setUninstallingSet(prev => new Set(prev).add(key));
     setError(null);

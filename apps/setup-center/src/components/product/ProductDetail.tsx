@@ -49,7 +49,13 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { IS_TAURI, proxyFetch } from "@/platform";
-import { isWhalecloudDevToolSkill } from "@/utils/whalecloudDevToolSkill";
+import {
+  buildRdSkillIdsForGenerate,
+  isWhalecloudDevToolSkill,
+  RD_TOOL_GENERATE_REQUIRED,
+  rdToolDisplayLabel,
+  uniqueRdSkillIds,
+} from "@/utils/whalecloudDevToolSkill";
 import type { SkillInfo } from "@/types";
 import { ProductDocumentEditor } from "./ProductDocumentEditor";
 import type { RefineContext, RefineCatalog } from "./ProductDocumentEditor";
@@ -237,7 +243,7 @@ export function ProductDetail({
   onProcessPayload,
   onPatchProductKnowledge,
 }: ProductDetailProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<string>(PRODUCT_DETAIL_MAIN_NONE);
   const [openDocs, setOpenDocs] = useState<OpenProductDoc[]>([]);
   const [knowledgeCategoryView, setKnowledgeCategoryView] = useState<
@@ -255,11 +261,12 @@ export function ProductDetail({
 
   const [genOptsOpen, setGenOptsOpen] = useState(false);
   const [genCategoryKey, setGenCategoryKey] = useState<ProductKnowledgeCategory | null>(null);
-  const [genRdSkills, setGenRdSkills] = useState<string[]>([]);
+  /** 生成弹窗中用户勾选的研发工具（含推荐默认，可全部取消后改选其他） */
+  const [genSelectedRdSkillIds, setGenSelectedRdSkillIds] = useState<string[]>([]);
   const [genEndpoint, setGenEndpoint] = useState("");
   const [llmEpCatalog, setLlmEpCatalog] = useState<{ name: string; model?: string }[]>([]);
   const [llmEpCatalogErr, setLlmEpCatalogErr] = useState<string | null>(null);
-  const [rdSkillCatalog, setRdSkillCatalog] = useState<{ skillId: string; name: string }[]>([]);
+  const [rdSkillCatalog, setRdSkillCatalog] = useState<{ skillId: string; displayLabel: string }[]>([]);
   const [rdSkillCatalogLoading, setRdSkillCatalogLoading] = useState(false);
 
   /** refine 专用 catalog（与生成弹窗同源，懒加载） */
@@ -781,14 +788,26 @@ export function ProductDetail({
         const base = synapseApiBase.replace(/\/$/, "");
         const resp = await proxyFetch(`${base}/api/skills`, { timeoutSecs: 15 });
         const raw = JSON.parse(resp.body) as { skills?: Record<string, unknown>[] };
-        const skills = (raw.skills ?? []).map((s) => ({
+        const skills: SkillInfo[] = (raw.skills ?? []).map((s) => ({
           skillId: (s.skill_id as string) || (s.name as string) || "",
           name: (s.name as string) || "",
+          label: (s.label as string | null | undefined) ?? null,
+          description: (s.description as string) || "",
+          name_i18n: (s.name_i18n as Record<string, string> | null) || null,
+          description_i18n: (s.description_i18n as Record<string, string> | null) || null,
+          system: !!(s.system as boolean),
           enabled: typeof s.enabled === "boolean" ? s.enabled : undefined,
+          toolName: (s.tool_name as string | null) || null,
+          category: (s.category as string | null) || null,
+          path: (s.path as string | null) || null,
+          sourceUrl: (s.source_url as string | null) || null,
         }));
         const devTools = skills
-          .filter((s) => isWhalecloudDevToolSkill(s as import("@/types").SkillInfo) && s.enabled !== false)
-          .map((s) => ({ skillId: s.skillId, name: s.name }));
+          .filter((s) => isWhalecloudDevToolSkill(s) && s.enabled !== false)
+          .map((s) => ({
+            skillId: s.skillId,
+            displayLabel: rdToolDisplayLabel(s, i18n.language),
+          }));
         setRefineCatalog((prev) => ({ ...prev, rdSkills: devTools, rdSkillsLoading: false }));
       } catch {
         setRefineCatalog((prev) => ({ ...prev, rdSkillsLoading: false }));
@@ -798,11 +817,11 @@ export function ProductDetail({
 
   const openGenerateOptionsDialog = (cat: ProductKnowledgeCategory) => {
     setGenCategoryKey(cat);
-    setGenRdSkills([]);
     setGenEndpoint("");
     setLlmEpCatalog([]);
     setLlmEpCatalogErr(null);
     setRdSkillCatalog([]);
+    setGenSelectedRdSkillIds([]);
     setRdSkillCatalogLoading(true);
     setGenOptsOpen(true);
     void (async () => {
@@ -821,6 +840,7 @@ export function ProductDetail({
         const skills: SkillInfo[] = (raw.skills ?? []).map((s) => ({
           skillId: (s.skill_id as string) || (s.name as string) || "",
           name: (s.name as string) || "",
+          label: (s.label as string | null | undefined) ?? null,
           description: (s.description as string) || "",
           name_i18n: (s.name_i18n as Record<string, string> | null) || null,
           description_i18n: (s.description_i18n as Record<string, string> | null) || null,
@@ -833,8 +853,15 @@ export function ProductDetail({
         }));
         const devTools = skills
           .filter((s) => isWhalecloudDevToolSkill(s) && s.enabled !== false)
-          .map((s) => ({ skillId: s.skillId, name: s.name_i18n?.["zh"] || s.name_i18n?.["en"] || s.name }));
+          .map((s) => ({
+            skillId: s.skillId,
+            displayLabel: rdToolDisplayLabel(s, i18n.language),
+          }));
         setRdSkillCatalog(devTools);
+        const defaultSel = RD_TOOL_GENERATE_REQUIRED.filter((id) =>
+          devTools.some((s) => s.skillId === id),
+        );
+        setGenSelectedRdSkillIds(defaultSel);
       } catch {
         // 加载失败时 catalog 保持空，UI 会提示用户去启用
       } finally {
@@ -893,11 +920,11 @@ export function ProductDetail({
         task_id: taskId,
       });
 
-      // 2. 触发生成
+      // 2. 触发生成：显式传入由用户勾选；未传时与弹窗推荐默认一致
       const rdSkillIds =
-        opts?.rd_skill_ids && opts.rd_skill_ids.length > 0
-          ? opts.rd_skill_ids.filter((s) => s.trim())
-          : ["whalecloud-dev-tool-arch-create"];
+        opts?.rd_skill_ids !== undefined
+          ? uniqueRdSkillIds(opts.rd_skill_ids)
+          : buildRdSkillIdsForGenerate([]);
       // 从仓库 URL 解析真实仓库名（去掉 .git 后缀的最后一段路径）
       const repoNameFromUrl = mainRepo.url
         ? mainRepo.url.replace(/\/$/, "").split("/").pop()?.replace(/\.git$/i, "") || product.name
@@ -1228,7 +1255,11 @@ export function ProductDetail({
                   const canGenerateArchitecture = isArchitecture && !done && mainRepoAnalysisDone;
                   const canGenerateManual = isManual && !done && archDone;
                   const rowActive = done || hasGeneratedDocs || slot.wireState === "init" || slot.wireState === "process";
-                  const showGenerateBtn = !done && !hasGeneratedDocs && (canGenerateArchitecture || canGenerateManual);
+                  /** 仅「未创建」(wireState new) 时展示自动生成；init/process/done/error 均不展示 */
+                  const showGenerateBtn =
+                    slot.wireState === "new" &&
+                    !hasGeneratedDocs &&
+                    (canGenerateArchitecture || canGenerateManual);
                   const showDocs = (done || hasGeneratedDocs) && isExpanded;
 
                   return (
@@ -1837,22 +1868,31 @@ export function ProductDetail({
                 )}
               </p>
             ) : (
-              <div className="flex flex-col gap-1 max-h-36 overflow-y-auto rounded-md border border-input bg-background px-2 py-1">
+              <div className="flex flex-col gap-1 max-h-56 overflow-y-auto rounded-md border border-input bg-background px-2 py-2">
+                <p className="text-[11px] text-muted-foreground m-0">
+                  {t(
+                    "workbench.products.detail.rdToolsDefaultsHint",
+                    "推荐组合默认已勾选，可自行取消或勾选其他研发工具；提交时将以当前勾选为准。",
+                  )}
+                </p>
                 {rdSkillCatalog.map((skill) => (
-                  <label key={skill.skillId} className="flex items-center gap-2 text-sm cursor-pointer py-0.5">
+                  <label
+                    key={skill.skillId}
+                    className="flex items-center gap-2 text-sm cursor-pointer py-0.5"
+                  >
                     <input
                       type="checkbox"
                       className="accent-primary"
-                      checked={genRdSkills.includes(skill.skillId)}
+                      checked={genSelectedRdSkillIds.includes(skill.skillId)}
                       onChange={(e) => {
-                        setGenRdSkills((prev) =>
+                        setGenSelectedRdSkillIds((prev) =>
                           e.target.checked
                             ? [...prev, skill.skillId]
                             : prev.filter((id) => id !== skill.skillId),
                         );
                       }}
                     />
-                    <span>{skill.name}</span>
+                    <span>{skill.displayLabel}</span>
                     <span className="text-xs text-muted-foreground ml-1">({skill.skillId})</span>
                   </label>
                 ))}
@@ -1894,9 +1934,18 @@ export function ProductDetail({
             disabled={rdSkillCatalogLoading || rdSkillCatalog.length === 0}
             onClick={() => {
               if (!genCategoryKey) return;
+              if (genSelectedRdSkillIds.length === 0) {
+                toast.warning(
+                  t(
+                    "workbench.products.detail.rdToolsSelectAtLeastOne",
+                    "请至少选择一个研发工具",
+                  ),
+                );
+                return;
+              }
               setGenOptsOpen(false);
               void handleGenerateKnowledge(genCategoryKey, {
-                rd_skill_ids: genRdSkills.length > 0 ? genRdSkills : rdSkillCatalog.map((s) => s.skillId),
+                rd_skill_ids: uniqueRdSkillIds(genSelectedRdSkillIds),
                 preferred_endpoint: genEndpoint.trim() || null,
               });
             }}

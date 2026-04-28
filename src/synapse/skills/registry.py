@@ -99,6 +99,7 @@ class SkillEntry:
     skill_id: str  # 唯一标识（= 目录名），用作注册 key、allowlist key、tool name key
     name: str  # SKILL.md 声明的显示名（可重复），仅用于展示和搜索
     description: str
+    label: str | None = None  # 可选 UI 标题（优先于 name 展示）
     version: str | None = None
     license: str | None = None
     compatibility: str | None = None
@@ -243,6 +244,7 @@ class SkillEntry:
             skill_id=effective_skill_id,
             name=meta.name,
             description=meta.description,
+            label=getattr(meta, "label", None),
             version=meta.version,
             license=meta.license,
             compatibility=meta.compatibility,

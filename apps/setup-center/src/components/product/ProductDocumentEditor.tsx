@@ -31,6 +31,10 @@ import type {
   ProductKnowledgeRefineResult,
   ProductKnowledgeRefineStatusResult,
 } from "@/api/rdUnifiedService";
+import {
+  RD_TOOL_REFINE_REQUIRED,
+  uniqueRdSkillIds,
+} from "@/utils/whalecloudDevToolSkill";
 
 /** 文档预览中 Excalidraw 外框：占视口高度为主，大屏最高约 800px，避免原 400px 过小 */
 const EXCALIDRAW_PREVIEW_FRAME_STYLE: React.CSSProperties = {
@@ -56,7 +60,7 @@ export type RefineContext = {
 /** 已加载的 LLM 端点 / 研发技能 catalog（由 ProductDetail 注入，与生成弹窗同源） */
 export type RefineCatalog = {
   llmEndpoints: { name: string; model?: string }[];
-  rdSkills: { skillId: string; name: string }[];
+  rdSkills: { skillId: string; displayLabel: string }[];
   rdSkillsLoading?: boolean;
 };
 
@@ -156,7 +160,8 @@ export function ProductDocumentEditor({
   // AI 配置面板
   const [configPanelOpen, setConfigPanelOpen] = useState(false);
   const [refineEndpoint, setRefineEndpoint] = useState("");
-  const [refineSkills, setRefineSkills] = useState<string[]>([]);
+  /** 用户在配置中勾选的研发工具（推荐项默认勾选，均可取消或增选其它） */
+  const [refineSelectedRdSkillIds, setRefineSelectedRdSkillIds] = useState<string[]>([]);
 
   // Diff 状态（接受/拒绝面板）
   const [diffResult, setDiffResult] = useState<ProductKnowledgeRefineResult | null>(null);
@@ -166,6 +171,26 @@ export function ProductDocumentEditor({
   const [refinePollActive, setRefinePollActive] = useState(false);
   const [refineStatusText, setRefineStatusText] = useState<string>("");
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const rdSkillsIdSignature = useMemo(() => {
+    const ids = (refineCatalog?.rdSkills ?? []).map((s) => s.skillId);
+    ids.sort();
+    return ids.join("\u0001");
+  }, [refineCatalog?.rdSkills]);
+
+  useEffect(() => {
+    const skills = refineCatalog?.rdSkills ?? [];
+    const defaults =
+      skills.length === 0
+        ? []
+        : RD_TOOL_REFINE_REQUIRED.filter((rid) => skills.some((s) => s.skillId === rid));
+    setRefineSelectedRdSkillIds(defaults);
+  }, [
+    refineContext?.prod_name,
+    refineContext?.doc_type,
+    refineContext?.target,
+    rdSkillsIdSignature,
+  ]);
 
   const isAppThemeDark = (theme: string | null) =>
     theme === "dark" || theme === "daltonized-dark" || theme === "high-contrast";
@@ -367,9 +392,13 @@ export function ProductDocumentEditor({
       setHasOpenedEdit(false);
     }
 
-    const catalog = refineCatalog ?? { llmEndpoints: [], rdSkills: [] };
-    const rdSkillIds =
-      refineSkills.length > 0 ? refineSkills : catalog.rdSkills.map((s) => s.skillId);
+    const rdSkillIds = uniqueRdSkillIds(refineSelectedRdSkillIds);
+    if (rdSkillIds.length === 0) {
+      toast.warning(
+        t("workbench.products.detail.rdToolsSelectAtLeastOne", "请至少选择一个研发工具"),
+      );
+      return;
+    }
 
     try {
       await refineProductKnowledge(synapseApiBase, {
@@ -378,7 +407,7 @@ export function ProductDocumentEditor({
         targets: [refineContext.target],
         user_prompt: prompt.trim(),
         preferred_endpoint: refineEndpoint.trim() || undefined,
-        rd_skill_ids: rdSkillIds.length > 0 ? rdSkillIds : undefined,
+        rd_skill_ids: rdSkillIds,
         product_desc: refineContext.product_desc,
         code_path: refineContext.code_path,
         core_features: refineContext.core_features,
@@ -870,31 +899,32 @@ export function ProductDocumentEditor({
                   {t("workbench.products.detail.generateOptionsRdSkillEmpty", "未找到已启用的研发工具技能，请先在「研发工具」页面启用。")}
                 </p>
               ) : (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-1 max-h-56 overflow-y-auto rounded-md border border-input bg-background px-2 py-2">
+                  <p className="text-[11px] text-muted-foreground m-0">
+                    {t(
+                      "workbench.products.detail.rdToolsDefaultsHint",
+                      "推荐组合默认已勾选，可自行取消或勾选其他研发工具；提交时将以当前勾选为准。",
+                    )}
+                  </p>
                   {(refineCatalog?.rdSkills ?? []).map((skill) => (
-                    <label key={skill.skillId} className="flex items-center gap-2 text-sm cursor-pointer py-0.5">
+                    <label
+                      key={skill.skillId}
+                      className="flex items-center gap-2 text-sm cursor-pointer py-0.5"
+                    >
                       <input
                         type="checkbox"
-                        checked={refineSkills.length === 0 || refineSkills.includes(skill.skillId)}
-                        onChange={(e) => {
-                          const allIds = (refineCatalog?.rdSkills ?? []).map((s) => s.skillId);
-                          if (e.target.checked) {
-                            setRefineSkills((prev) =>
-                              prev.length === 0
-                                ? allIds.filter((id) => id !== skill.skillId).concat(skill.skillId)
-                                : [...prev, skill.skillId],
-                            );
-                          } else {
-                            setRefineSkills((prev) =>
-                              prev.length === 0
-                                ? allIds.filter((id) => id !== skill.skillId)
-                                : prev.filter((id) => id !== skill.skillId),
-                            );
-                          }
-                        }}
                         className="rounded"
+                        checked={refineSelectedRdSkillIds.includes(skill.skillId)}
+                        onChange={(e) => {
+                          setRefineSelectedRdSkillIds((prev) =>
+                            e.target.checked
+                              ? [...prev, skill.skillId]
+                              : prev.filter((id) => id !== skill.skillId),
+                          );
+                        }}
                       />
-                      <span>{skill.name || skill.skillId}</span>
+                      <span>{skill.displayLabel}</span>
+                      <span className="text-xs text-muted-foreground ml-1">({skill.skillId})</span>
                     </label>
                   ))}
                 </div>

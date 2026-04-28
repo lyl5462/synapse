@@ -280,6 +280,8 @@
         "generateOptionsRdSkill": "R&D tool",
         "generateOptionsRdSkillLoading": "Loading R&D tool list...",
         "generateOptionsRdSkillEmpty": "No enabled R&D tool skills found. Please enable them in the \"R&D Tools\" page first.",
+        "rdToolsDefaultsHint": "Recommended tools are pre-selected; you can change the selection. Only checked tools are sent when you submit.",
+        "rdToolsSelectAtLeastOne": "Select at least one R&D tool",
         "generateOptionsLlmEndpoint": "LLM endpoint",
         "generateOptionsEndpointAuto": "System default (auto route)",
         "generateOptionsEndpointsFailed": "Failed to load endpoint list",

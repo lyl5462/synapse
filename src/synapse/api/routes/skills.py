@@ -293,6 +293,7 @@ async def list_skills(request: Request):
                 "visibility": getattr(skill, "visibility", "public"),
                 "permission_profile": getattr(skill, "permission_profile", ""),
                 "name": skill.name,
+                "label": getattr(skill, "label", None),
                 "description": skill.description,
                 "name_i18n": skill.name_i18n or None,
                 "description_i18n": skill.description_i18n or None,

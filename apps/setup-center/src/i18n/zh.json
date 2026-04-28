@@ -281,6 +281,8 @@
         "generateOptionsRdSkill": "研发工具",
         "generateOptionsRdSkillLoading": "加载研发工具列表...",
         "generateOptionsRdSkillEmpty": "未找到已启用的研发工具技能，请先在「研发工具」页面启用。",
+        "rdToolsDefaultsHint": "推荐组合默认已勾选，可自行取消或勾选其他研发工具；提交时将以当前勾选为准。",
+        "rdToolsSelectAtLeastOne": "请至少选择一个研发工具",
         "generateOptionsLlmEndpoint": "LLM 端点",
         "generateOptionsEndpointAuto": "系统默认（自动选择端点）",
         "generateOptionsEndpointsFailed": "加载端点列表失败",

@@ -22,8 +22,8 @@ from synapse.config import settings
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_RD_SKILL_ID = "whalecloud-dev-tool-arch-create"
-_REFINE_SKILL_ID = "whalecloud-dev-tool-arch-modify"
+# gnx-tools.js 由「产品架构文档生成」技能包提供；refine 仅用于解析脚本路径，与请求缺省无关
+_GNX_TOOLS_HOST_SKILL_ID = "whalecloud-dev-tool-arch-create"
 
 
 def _get_enabled_rd_skill_ids(agent: Any) -> set[str]:
@@ -42,13 +42,18 @@ def _get_enabled_rd_skill_ids(agent: Any) -> set[str]:
 
 
 def _normalize_rd_skill_ids(raw_ids: list[str], enabled_ids: set[str]) -> list[str]:
-    """过滤出已启用研发工具中存在的技能 id；若全部无效则 fallback 到默认。"""
-    result = []
+    """规范化 skill id，并按启用集合过滤；不传或全部无效则返回空列表（服务端不再注入默认技能）。"""
+    result: list[str] = []
+    seen: set[str] = set()
     for raw in raw_ids:
         s = (raw or "").strip().lower().replace("_", "-")
-        if s and (not enabled_ids or s in enabled_ids):
-            result.append(s)
-    return result if result else [_FALLBACK_RD_SKILL_ID]
+        if not s or s in seen:
+            continue
+        if enabled_ids and s not in enabled_ids:
+            continue
+        seen.add(s)
+        result.append(s)
+    return result
 
 
 def _repo_name_from_git_url(url: str | None) -> str | None:
@@ -77,8 +82,8 @@ class ProductKnowledgeGenerateRequest(BaseModel):
     code_path: str = Field(..., description="代码路径")
     core_features: str = Field(..., description="主要功能")
     rd_skill_ids: list[str] = Field(
-        default=[_FALLBACK_RD_SKILL_ID],
-        description="研发工具技能 id 列表（多选，动态白名单）",
+        default_factory=list,
+        description="研发工具技能 id 列表（由前端必选默认；不传或空则不挂载技能）",
     )
     preferred_endpoint: str | None = Field(
         None,
@@ -106,8 +111,8 @@ class ProductKnowledgeRefineRequest(BaseModel):
     user_prompt: str = Field(..., description="用户修改要求（不含产品信息块）")
     preferred_endpoint: str | None = Field(None, description="首选 LLM 端点 name", max_length=200)
     rd_skill_ids: list[str] = Field(
-        default=[_FALLBACK_RD_SKILL_ID],
-        description="研发工具技能 id 列表（多选，动态白名单）",
+        default_factory=list,
+        description="研发工具技能 id 列表（由前端必选默认；不传或空则不挂载技能）",
     )
     product_desc: str = Field(default="", description="产品描述（服务端注入 user 消息）")
     code_path: str = Field(default="", description="代码路径（服务端注入 user 消息）")
@@ -556,7 +561,7 @@ async def _run_knowledge_generation_task(
 产品描述：[{req.product_desc}]
 代码路径：[{req.code_path}]
 主要功能：[{req.core_features}]
-GitNexus 本地数据根目录：[{local_data_path}]（materialize/缓存等请使用此路径，作为只读的图谱与源码缓存根）
+GitNexus 本地数据根目录(GNX_CACHE_DIR)：[{local_data_path}]（materialize/缓存等请使用此路径，作为只读的图谱与源码缓存根）
 架构文档产出目录：[{output_dir}]（FUNCTIONAL_ARCH.md、TECH_ARCH.md、*.excalidraw 等所有交付物必须写入此目录，不要使用 GitNexus 数据目录作为产出路径）"""
 
         agent.default_cwd = str(output_dir)
@@ -866,8 +871,6 @@ def register_product_knowledge_routes(router: APIRouter) -> None:
                 rd_skills = _normalize_rd_skill_ids(body.rd_skill_ids, enabled_ids)
 
                 refine_skills = list(rd_skills)
-                if _REFINE_SKILL_ID in enabled_ids and _REFINE_SKILL_ID not in refine_skills:
-                    refine_skills.append(_REFINE_SKILL_ID)
 
                 final_profile = replace(
                     base_profile,
@@ -883,7 +886,7 @@ def register_product_knowledge_routes(router: APIRouter) -> None:
                 skill_bodies: list[str] = []
                 loader = getattr(agent, "skill_loader", None)
                 if loader:
-                    _skill_order = [_REFINE_SKILL_ID] + [s for s in refine_skills if s != _REFINE_SKILL_ID]
+                    _skill_order = list(refine_skills)
                     for sid in _skill_order:
                         skill = loader.get_skill(sid)
                         if skill and skill.body:
@@ -920,7 +923,7 @@ def register_product_knowledge_routes(router: APIRouter) -> None:
                 # 获取 arch-create 技能的脚本目录路径，供 LLM 调用 gnx-tools.js
                 _gnx_tools_script = ""
                 if loader:
-                    _arch_skill = loader.get_skill(_FALLBACK_RD_SKILL_ID)
+                    _arch_skill = loader.get_skill(_GNX_TOOLS_HOST_SKILL_ID)
                     if _arch_skill and _arch_skill.skill_dir:
                         _gnx_tools_script = str(
                             Path(_arch_skill.skill_dir) / "scripts" / "gnx-tools.js"
@@ -932,8 +935,8 @@ def register_product_knowledge_routes(router: APIRouter) -> None:
 主要功能：[{body.core_features}]
 产品标识：[{body.prod_name}]
 文档类型：[{body.doc_type}]
-GitNexus 服务地址：[{body.gitnexus_url}]
-源码缓存根目录：[{_gnx_cache_dir}]
+GitNexus 服务地址(GITNEXUS_URL)：[{body.gitnexus_url}]
+GitNexus 本地数据根目录(GNX_CACHE_DIR)：[{_gnx_cache_dir}]
 gnx-tools.js 脚本路径：[{_gnx_tools_script}]"""
 
                 user_message = f"""\

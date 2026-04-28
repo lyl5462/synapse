@@ -1158,6 +1158,7 @@ def list_skills(workspace_dir: str) -> None:
             {
                 "skill_id": sid,
                 "name": s.name,
+                "label": getattr(s, "label", None),
                 "description": s.description,
                 "system": bool(getattr(s, "system", False)),
                 "enabled": bool(getattr(s, "system", False))
