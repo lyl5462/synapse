@@ -785,8 +785,53 @@ export async function fetchLlmEndpointsCatalog(
 }
 
 export type ProductKnowledgeRefineBody = {
-  content: string;
-  prompt: string;
+  prod_name: string;
+  doc_type: string;
+  /** 稳定文件名数组，必须恰好 1 个元素（当前 Tab 对应的文件名） */
+  targets: [string];
+  user_prompt: string;
+  preferred_endpoint?: string;
+  rd_skill_ids?: string[];
+  product_desc?: string;
+  code_path?: string;
+  core_features?: string;
+  /** GitNexus 服务地址（源码缓存缺失时用于拉取，与 generate 接口同源） */
+  gitnexus_url?: string;
+};
+
+/** refine 接口立即返回（按 target 分目录，无 session_id） */
+export type ProductKnowledgeRefineSubmitResult = {
+  target: string;
+};
+
+/** refine session/status 查询结果（按 prod + doc_type + target） */
+export type ProductKnowledgeRefineStatusResult = {
+  status: "none" | "pending" | "running" | "completed" | "error" | "timeout";
+  target?: string;
+  targets?: string[];
+  user_prompt?: string;
+  started_at?: number;
+  run_id?: string;
+  /** timeout 时由服务端计算 */
+  elapsed_minutes?: number;
+  original?: string;
+  proposed?: string;
+  error?: string;
+};
+
+/** 后端返回 409 时，data 字段携带的冲突信息 */
+export type ProductKnowledgeRefinePendingInfo = {
+  target: string;
+  user_prompt: string;
+  elapsed_minutes?: number;
+};
+
+/** 最终前端消费的 refine 结果（从 status=completed 中摘取） */
+export type ProductKnowledgeRefineResult = {
+  target: string;
+  targets: string[];
+  original: string;
+  proposed: string;
 };
 
 function assertSynapseEnvelope(data: {
@@ -861,26 +906,93 @@ export async function getProductKnowledgeStatus(
   return data.data;
 }
 
+/**
+ * 后端返回 409（已有未完成 session）时抛出，携带冲突信息供前端提示。
+ */
+export class RefinePendingError extends Error {
+  constructor(
+    public readonly pendingInfo: ProductKnowledgeRefinePendingInfo,
+    message: string,
+  ) {
+    super(message);
+    this.name = "RefinePendingError";
+  }
+}
+
+/**
+ * 异步提交 refine 任务（立即返回 session_id，Agent 在后台运行）。
+ * 若已有未完成 session 且未超时，抛出 RefinePendingError。
+ */
 export async function refineProductKnowledge(
   synapseApiBase: string,
   body: ProductKnowledgeRefineBody,
-): Promise<{ content: string }> {
+): Promise<ProductKnowledgeRefineSubmitResult> {
   const resp = await proxyFetch(`${synapseApiBase}/api/dev/iwhalecloud/product_knowledge/refine`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  let data: { errorcode?: number; message?: string; data?: { content: string } };
+  let data: { errorcode?: number; message?: string; data?: unknown };
+  try {
+    data = JSON.parse(resp.body) as typeof data;
+  } catch {
+    throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
+  }
+  if (data.errorcode === 409) {
+    const pendingInfo = data.data as ProductKnowledgeRefinePendingInfo;
+    throw new RefinePendingError(pendingInfo, data.message || "refine_session_pending");
+  }
+  assertSynapseEnvelope(data);
+  const result = data.data as ProductKnowledgeRefineSubmitResult | undefined;
+  if (!result?.target) throw new Error("missing_target");
+  return result;
+}
+
+/** 按 prod + doc_type + target 查询 refine 状态（与 refine_sessions/<target>/ 对应） */
+export async function getProductKnowledgeRefineStatus(
+  synapseApiBase: string,
+  body: { prod_name: string; doc_type: string; target: string },
+): Promise<ProductKnowledgeRefineStatusResult> {
+  const base = synapseApiBase.replace(/\/$/, "");
+  const resp = await proxyFetch(
+    `${base}/api/dev/iwhalecloud/product_knowledge/refine/session/status`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  let data: { errorcode?: number; message?: string; data?: ProductKnowledgeRefineStatusResult };
   try {
     data = JSON.parse(resp.body) as typeof data;
   } catch {
     throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
   }
   assertSynapseEnvelope(data);
-  if (data.data?.content === undefined) {
-    throw new Error("missing_refined_content");
-  }
+  if (!data.data) throw new Error("missing_status_payload");
   return data.data;
+}
+
+export async function productKnowledgeRefineSessionClose(
+  synapseApiBase: string,
+  body: { prod_name: string; doc_type: string; target: string },
+): Promise<void> {
+  const base = synapseApiBase.replace(/\/$/, "");
+  const resp = await proxyFetch(
+    `${base}/api/dev/iwhalecloud/product_knowledge/refine/session/close`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  let data: { errorcode?: number; message?: string };
+  try {
+    data = JSON.parse(resp.body) as typeof data;
+  } catch {
+    throw new Error(resp.status >= 400 ? resp.body || `HTTP ${resp.status}` : "invalid_json");
+  }
+  assertSynapseEnvelope(data);
 }
 
 /** Synapse `tmp/docs/<prod_name>/<doc_type>/` 本地编辑层：与 {@link getProdDoc} 正文结构一致 */

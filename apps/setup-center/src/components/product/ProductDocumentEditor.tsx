@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import MDEditor from "@uiw/react-md-editor";
-import { Editor } from "@monaco-editor/react";
+import { Editor, DiffEditor } from "@monaco-editor/react";
 import { Button } from "@/components/ui/button";
 import { ExcalidrawReadonlyEmbed } from "./ExcalidrawReadonlyEmbed";
 import {
@@ -10,10 +10,27 @@ import {
   getExcalidrawPayload,
   parseExcalidrawFileToInitialData,
 } from "./excalidrawScene";
-import { Sparkles, Loader2, Send, Save, Eye, Edit2 } from "lucide-react";
+import { Wrench, Loader2, Send, Save, Eye, Edit2, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import { refineProductKnowledge } from "@/api/rdUnifiedService";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  refineProductKnowledge,
+  getProductKnowledgeRefineStatus,
+  productKnowledgeRefineSessionClose,
+  RefinePendingError,
+} from "@/api/rdUnifiedService";
+import type {
+  ProductKnowledgeRefineResult,
+  ProductKnowledgeRefineStatusResult,
+} from "@/api/rdUnifiedService";
 
 /** 文档预览中 Excalidraw 外框：占视口高度为主，大屏最高约 800px，避免原 400px 过小 */
 const EXCALIDRAW_PREVIEW_FRAME_STYLE: React.CSSProperties = {
@@ -22,6 +39,26 @@ const EXCALIDRAW_PREVIEW_FRAME_STYLE: React.CSSProperties = {
 
 /** Markdown 中 `![...](foo.excalidraw)` 的 foo.excalidraw 原文 JSON（多文件时按文件名查） */
 type OnSaveMeta = { showSaveSuccessToast?: boolean };
+
+/** refine 所需的产品上下文与文件定位信息（由 ProductDetail 注入） */
+export type RefineContext = {
+  prod_name: string;
+  doc_type: string;
+  /** 当前 Tab 对应的稳定文件名（如 FUNCTIONAL_ARCH.md） */
+  target: string;
+  product_desc?: string;
+  code_path?: string;
+  core_features?: string;
+  /** GitNexus 服务地址（源码缓存缺失时用于拉取，与 generate 接口同源） */
+  gitnexus_url?: string;
+};
+
+/** 已加载的 LLM 端点 / 研发技能 catalog（由 ProductDetail 注入，与生成弹窗同源） */
+export type RefineCatalog = {
+  llmEndpoints: { name: string; model?: string }[];
+  rdSkills: { skillId: string; name: string }[];
+  rdSkillsLoading?: boolean;
+};
 
 interface ProductDocumentEditorProps {
   content: string;
@@ -35,6 +72,12 @@ interface ProductDocumentEditorProps {
   submitEnabled?: boolean;
   /** 当前文档是否有未保存的编辑（曾进入编辑模式且内容与上次保存不一致） */
   onDirtyChange?: (dirty: boolean) => void;
+  /** refine 所需定位信息；缺少时不渲染 AI 区 */
+  refineContext?: RefineContext;
+  /** catalog 数据（由父组件懒加载后传入） */
+  refineCatalog?: RefineCatalog;
+  /** 父组件触发 catalog 加载（打开配置面板时） */
+  onLoadRefineCatalog?: () => void;
 }
 
 function fixMarkdownTableDelimiters(md: string): string {
@@ -83,6 +126,8 @@ function fileNameFromMarkdownSrc(src: string | undefined): string {
   return (parts[parts.length - 1] || noQuery).trim();
 }
 
+const REFINE_POLL_INTERVAL_MS = 30_000;
+
 export function ProductDocumentEditor({
   content: initialContent,
   title,
@@ -93,6 +138,9 @@ export function ProductDocumentEditor({
   onSubmit,
   submitEnabled = true,
   onDirtyChange,
+  refineContext,
+  refineCatalog,
+  onLoadRefineCatalog,
 }: ProductDocumentEditorProps) {
   const { t } = useTranslation();
   const [content, setContent] = useState(() => fixMarkdownTableDelimiters(initialContent));
@@ -104,6 +152,19 @@ export function ProductDocumentEditor({
   const [mode, setMode] = useState<"edit" | "preview">("preview");
   const onDirtyChangeRef = useRef(onDirtyChange);
   onDirtyChangeRef.current = onDirtyChange;
+
+  // AI 配置面板
+  const [configPanelOpen, setConfigPanelOpen] = useState(false);
+  const [refineEndpoint, setRefineEndpoint] = useState("");
+  const [refineSkills, setRefineSkills] = useState<string[]>([]);
+
+  // Diff 状态（接受/拒绝面板）
+  const [diffResult, setDiffResult] = useState<ProductKnowledgeRefineResult | null>(null);
+
+  /** 是否对当前 target 做 30s 一次的 refine/status 轮询 */
+  const [refinePollActive, setRefinePollActive] = useState(false);
+  const [refineStatusText, setRefineStatusText] = useState<string>("");
+  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isAppThemeDark = (theme: string | null) =>
     theme === "dark" || theme === "daltonized-dark" || theme === "high-contrast";
@@ -125,6 +186,8 @@ export function ProductDocumentEditor({
     setContent(fixed);
     savedContentRef.current = fixed;
     setHasOpenedEdit(false);
+    // 切换 tab 时清除未完成的 diff 面板（不自动关闭会话，让服务端自然过期）
+    setDiffResult(null);
   }, [initialContent]);
 
   const isDirty =
@@ -136,30 +199,269 @@ export function ProductDocumentEditor({
     onDirtyChangeRef.current?.(isDirty);
   }, [isDirty]);
 
-  const handleRefine = async () => {
-    if (!prompt.trim() || isRefining) return;
-    
-    setIsRefining(true);
-    try {
-      const res = await refineProductKnowledge(synapseApiBase, {
-        content,
-        prompt: prompt.trim(),
-      });
-      setContent(res.content);
-      setPrompt("");
-      toast.success(t("workbench.products.detail.refineSuccess", "文档优化成功"));
-      if (onSave) {
-        const out = fixMarkdownTableDelimiters(res.content);
-        await Promise.resolve(onSave(out, { showSaveSuccessToast: false }));
-        savedContentRef.current = out;
-        setHasOpenedEdit(false);
+  // 是否有挂起的未审核 refine 会话（diff 已就绪待用户决策）
+  const hasPendingSession = diffResult !== null;
+  const isPolling = refinePollActive && diffResult === null;
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current !== null) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    setRefinePollActive(false);
+    setRefineStatusText("");
+    setIsRefining(false);
+  }, []);
+
+  const refineContextRef = useRef(refineContext);
+  refineContextRef.current = refineContext;
+
+  /** 处理一次 status 响应；返回是否应继续轮询（pending/running） */
+  const applyRefineStatus = useCallback(
+    (status: ProductKnowledgeRefineStatusResult, ctx: RefineContext): boolean => {
+      if (status.status === "none") {
+        setIsRefining(false);
+        return false;
       }
+      if (status.status === "pending" || status.status === "running") {
+        setIsRefining(true);
+        setRefineStatusText(
+          status.status === "running"
+            ? t("workbench.products.detail.refinePollingRunning", "AI 正在修改文档...")
+            : t("workbench.products.detail.refinePollingPending", "AI 正在处理中，请稍候..."),
+        );
+        return true;
+      }
+      if (status.status === "completed") {
+        const tgt = (status.target ?? ctx.target).trim();
+        setIsRefining(false);
+        if (status.proposed !== undefined && status.original !== undefined) {
+          setDiffResult({
+            target: tgt,
+            targets: status.targets ?? [tgt],
+            original: status.original,
+            proposed: status.proposed,
+          });
+          toast.success(t("workbench.products.detail.refineCompleted", "AI 修改完成，请查看修改建议"));
+        }
+        return false;
+      }
+      if (status.status === "timeout") {
+        setIsRefining(false);
+        const up = (status.user_prompt ?? "").trim();
+        const min = status.elapsed_minutes ?? "?";
+        toast.error(
+          t(
+            "workbench.products.detail.refineTimeoutToast",
+            "AI处理超时(超过{{min}}分钟)，文档需求：{{req}}",
+            { min: String(min), req: up || "—" },
+          ),
+        );
+        return false;
+      }
+      if (status.status === "error") {
+        setIsRefining(false);
+        const up = (status.user_prompt ?? "").trim();
+        toast.error(
+          t(
+            "workbench.products.detail.refineFailedWithPrompt",
+            "AI处理失败，文档需求：{{req}}",
+            { req: up || (status.error ?? "unknown") },
+          ),
+        );
+        return false;
+      }
+      return false;
+    },
+    [t],
+  );
+
+  const pollRefineOnce = useCallback(async (): Promise<boolean> => {
+    const latestCtx = refineContextRef.current;
+    if (!latestCtx) return false;
+    try {
+      const status = await getProductKnowledgeRefineStatus(synapseApiBase, {
+        prod_name: latestCtx.prod_name,
+        doc_type: latestCtx.doc_type,
+        target: latestCtx.target,
+      });
+      return applyRefineStatus(status, latestCtx);
+    } catch {
+      return true;
+    }
+  }, [synapseApiBase, applyRefineStatus]);
+
+  const beginRefinePollingLoop = useCallback(() => {
+    if (pollingRef.current !== null) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    setRefinePollActive(true);
+    void pollRefineOnce().then((cont) => {
+      if (!cont) stopPolling();
+    });
+    pollingRef.current = setInterval(() => {
+      void pollRefineOnce().then((cont) => {
+        if (!cont) stopPolling();
+      });
+    }, REFINE_POLL_INTERVAL_MS);
+  }, [pollRefineOnce, stopPolling]);
+
+  // 点击/切换到文档 Tab：仅此处与 refine 提交后触发 status（见 handleRefine）
+  const refineProd = refineContext?.prod_name?.trim() ?? "";
+  const refineDocType = refineContext?.doc_type?.trim() ?? "";
+  const refineTarget = refineContext?.target?.trim() ?? "";
+  useEffect(() => {
+    if (!refineProd || !refineDocType || !refineTarget) return;
+    stopPolling();
+    setDiffResult(null);
+    let cancelled = false;
+    void (async () => {
+      const ctx = refineContextRef.current;
+      if (!ctx) return;
+      try {
+        const status = await getProductKnowledgeRefineStatus(synapseApiBase, {
+          prod_name: ctx.prod_name,
+          doc_type: ctx.doc_type,
+          target: ctx.target,
+        });
+        if (cancelled) return;
+        const cont = applyRefineStatus(status, ctx);
+        if (cancelled) return;
+        if (cont) beginRefinePollingLoop();
+      } catch {
+        /* 静默 */
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+  }, [synapseApiBase, refineProd, refineDocType, refineTarget, applyRefineStatus, stopPolling, beginRefinePollingLoop]);
+
+  // 组件卸载时清理轮询
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current !== null) clearInterval(pollingRef.current);
+    };
+  }, []);
+
+  const handleRefine = async () => {
+    if (!prompt.trim() || isRefining || isPolling) return;
+    if (!refineContext) return;
+
+    if (isDirty) {
+      toast.warning(t("workbench.products.detail.refineDirtyBlocked", "请先保存文档后再使用 AI 编辑"));
+      return;
+    }
+    if (hasPendingSession) {
+      toast.warning(t("workbench.products.detail.refinePendingBlocked", "请先处理上一次 AI 编辑结果（接受或拒绝）后再使用"));
+      return;
+    }
+
+    // 直接触发保存文档, 避免后台服务没有临时文档的target, 不需要任何前置条件判断
+    if (onSave) {
+      await Promise.resolve(onSave(content, { showSaveSuccessToast: false }));
+      savedContentRef.current = content;
+      setHasOpenedEdit(false);
+    }
+
+    const catalog = refineCatalog ?? { llmEndpoints: [], rdSkills: [] };
+    const rdSkillIds =
+      refineSkills.length > 0 ? refineSkills : catalog.rdSkills.map((s) => s.skillId);
+
+    try {
+      await refineProductKnowledge(synapseApiBase, {
+        prod_name: refineContext.prod_name,
+        doc_type: refineContext.doc_type,
+        targets: [refineContext.target],
+        user_prompt: prompt.trim(),
+        preferred_endpoint: refineEndpoint.trim() || undefined,
+        rd_skill_ids: rdSkillIds.length > 0 ? rdSkillIds : undefined,
+        product_desc: refineContext.product_desc,
+        code_path: refineContext.code_path,
+        core_features: refineContext.core_features,
+        gitnexus_url: refineContext.gitnexus_url,
+      });
+      setPrompt("");
+      setIsRefining(true);
+      setRefineStatusText(t("workbench.products.detail.refinePollingPending", "AI 正在处理中，请稍候..."));
+      beginRefinePollingLoop();
+      toast.info(t("workbench.products.detail.refineSubmitted", "AI 修改任务已提交，正在处理中..."));
     } catch (err) {
+      if (err instanceof RefinePendingError) {
+        const { pendingInfo } = err;
+        const min = pendingInfo?.elapsed_minutes ?? "?";
+        const preview = pendingInfo?.user_prompt
+          ? `「${String(pendingInfo.user_prompt).slice(0, 40)}」`
+          : "";
+        const rawMsg = err.message || "";
+        if (rawMsg.includes("pending_review") || rawMsg.includes("refine_session_pending_review")) {
+          toast.warning(
+            t(
+              "workbench.products.detail.refinePendingReviewBlocked",
+              "请先完成上一次对比合入或拒绝后再发起新的 AI 编辑",
+            ),
+          );
+        } else {
+          toast.warning(
+            t(
+              "workbench.products.detail.refineAlreadyRunning",
+              "上次修改请求 {{preview}} 正在处理中（已 {{min}} 分钟），请稍候",
+              { preview, min },
+            ),
+          );
+        }
+        setIsRefining(true);
+        setRefineStatusText(t("workbench.products.detail.refinePollingPending", "AI 正在处理中，请稍候..."));
+        beginRefinePollingLoop();
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       toast.error(t("workbench.products.detail.refineFailed", "文档优化失败") + ": " + msg);
-    } finally {
-      setIsRefining(false);
     }
+  };
+
+  const handleAcceptDiff = async () => {
+    if (!diffResult || !refineContext) return;
+    const proposed = diffResult.proposed;
+    const fixed = fixMarkdownTableDelimiters(proposed);
+    setContent(fixed);
+
+    if (onSave) {
+      await Promise.resolve(onSave(fixed, { showSaveSuccessToast: false }));
+      savedContentRef.current = fixed;
+      setHasOpenedEdit(false);
+    }
+
+    const tgt = diffResult.target;
+    setDiffResult(null);
+    try {
+      await productKnowledgeRefineSessionClose(synapseApiBase, {
+        prod_name: refineContext.prod_name,
+        doc_type: refineContext.doc_type,
+        target: tgt,
+      });
+    } catch {
+      // 关闭失败静默
+    }
+    toast.success(t("workbench.products.detail.refineAccepted", "已接受 AI 修改"));
+  };
+
+  const handleRejectDiff = async () => {
+    if (!diffResult || !refineContext) return;
+    const tgt = diffResult.target;
+    setDiffResult(null);
+    try {
+      await productKnowledgeRefineSessionClose(synapseApiBase, {
+        prod_name: refineContext.prod_name,
+        doc_type: refineContext.doc_type,
+        target: tgt,
+      });
+    } catch {
+      // 关闭失败静默
+    }
+    toast.info(t("workbench.products.detail.refineRejected", "已放弃 AI 修改"));
   };
 
   const handleSaveClick = async () => {
@@ -270,6 +572,62 @@ export function ProductDocumentEditor({
     };
   }, [excalidrawByFileName, t, isDark]);
 
+  // ---- diff 面板 ----
+  if (diffResult) {
+    return (
+      <div className="flex flex-col h-full w-full relative">
+        {/* Diff 面板 header */}
+        <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/10 shrink-0">
+          <h3 className="text-sm font-semibold text-foreground">
+            {t("workbench.products.detail.refineDiffTitle", "AI 修改对比 — {{target}}", {
+              target: diffResult.targets[0] ?? title,
+            })}
+          </h3>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs border-destructive text-destructive hover:bg-destructive/10"
+              onClick={() => void handleRejectDiff()}
+            >
+              <X size={14} className="mr-1.5" />
+              {t("workbench.products.detail.refineReject", "拒绝")}
+            </Button>
+            <Button
+              size="sm"
+              className="h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+              onClick={() => void handleAcceptDiff()}
+            >
+              <Check size={14} className="mr-1.5" />
+              {t("workbench.products.detail.refineAccept", "接受全部")}
+            </Button>
+          </div>
+        </div>
+        {/* Monaco DiffEditor */}
+        <div className="flex-1 min-h-0">
+          <DiffEditor
+            original={diffResult.original}
+            modified={diffResult.proposed}
+            language="markdown"
+            theme={isDark ? "vs-dark" : "light"}
+            options={{
+              renderSideBySide: true,
+              wordWrap: "on",
+              minimap: { enabled: false },
+              fontSize: 13,
+              readOnly: true,
+              scrollBeyondLastLine: false,
+            }}
+          />
+        </div>
+        <div className="shrink-0 px-4 py-1.5 text-xs border-t bg-muted/10 text-muted-foreground">
+          {t("workbench.products.detail.refineDiffHint", "左侧为原文，右侧为 AI 修改建议。接受后将更新编辑器内容。")}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- 正常编辑器 ----
   return (
     <div className="flex flex-col h-full w-full relative">
       {/* Header Toolbar */}
@@ -384,13 +742,13 @@ export function ProductDocumentEditor({
           />
         )}
         
-        {/* Overlay when refining */}
-        {isRefining && (
+        {/* Overlay when refining / polling */}
+        {(isRefining || isPolling) && (
           <div className="absolute inset-0 bg-background/50 backdrop-blur-[1px] flex items-center justify-center z-10">
             <div className="flex flex-col items-center gap-3 bg-background p-6 rounded-lg shadow-lg border">
               <Loader2 size={32} className="animate-spin text-primary" />
               <span className="text-sm font-medium text-foreground">
-                {t("workbench.products.detail.refining", "AI 正在优化文档...")}
+                {refineStatusText || t("workbench.products.detail.refining", "AI 正在优化文档...")}
               </span>
             </div>
           </div>
@@ -406,32 +764,147 @@ export function ProductDocumentEditor({
       </div>
 
       {/* AI Refine Input */}
-      {!readonly && (
+      {!readonly && refineContext && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-full max-w-2xl px-4 z-20">
           <div className="flex items-center gap-2 bg-background border shadow-lg rounded-full p-1.5 pr-2 focus-within:ring-2 focus-within:ring-primary/20 transition-all">
-            <div className="flex items-center justify-center w-8 h-8 rounded-full bg-primary/10 text-primary shrink-0">
-              <Sparkles size={16} />
-            </div>
+            {/* 工具配置按钮 */}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              title={t("workbench.products.detail.refineConfigTitle", "AI 编辑配置")}
+              className="h-8 rounded-full px-3 shrink-0 border-primary/30 text-primary hover:bg-primary/10 hover:border-primary/50"
+              onClick={() => {
+                setConfigPanelOpen(true);
+                onLoadRefineCatalog?.();
+              }}
+              disabled={isRefining || isPolling || isSaving}
+            >
+              <Wrench size={14} className="mr-1.5" />
+              {t("workbench.products.detail.refineConfigBtn", "工具")}
+            </Button>
             <input
               type="text"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={t("workbench.products.detail.refinePlaceholder", "输入修改需求，AI 自动调整文档...")}
+              placeholder={
+                isDirty
+                  ? t("workbench.products.detail.refineDirtyPlaceholder", "请先保存文档再使用 AI 编辑")
+                  : isPolling
+                  ? t("workbench.products.detail.refinePollingPlaceholder", "AI 修改进行中，请等待结果...")
+                  : hasPendingSession
+                  ? t("workbench.products.detail.refinePendingPlaceholder", "请先处理上次 AI 修改结果")
+                  : t("workbench.products.detail.refinePlaceholder", "输入修改需求，AI 自动调整文档...")
+              }
               className="flex-1 bg-transparent border-none outline-none text-sm px-2 text-foreground placeholder:text-muted-foreground"
-              disabled={isRefining || isSaving}
+              disabled={isRefining || isPolling || isSaving || isDirty || hasPendingSession}
             />
             <Button
               size="sm"
               className="h-8 rounded-full px-4"
-              disabled={!prompt.trim() || isRefining || isSaving}
-              onClick={handleRefine}
+              disabled={!prompt.trim() || isRefining || isPolling || isSaving || isDirty || hasPendingSession}
+              onClick={() => void handleRefine()}
             >
-              {isRefining ? <Loader2 size={14} className="animate-spin" /> : t("common.send", "发送")}
+              {(isRefining || isPolling) ? <Loader2 size={14} className="animate-spin" /> : t("common.send", "发送")}
             </Button>
           </div>
+          {/* 状态提示行 */}
+          {(isDirty || hasPendingSession || isPolling) && (
+            <div className="mt-1 text-center text-xs text-amber-600 dark:text-amber-400">
+              {isDirty
+                ? t("workbench.products.detail.refineDirtyBlocked", "请先保存文档后再使用 AI 编辑")
+                : isPolling
+                ? (refineStatusText || t("workbench.products.detail.refinePollingPending", "AI 正在处理中，请稍候..."))
+                : t("workbench.products.detail.refinePendingBlocked", "请先处理上一次 AI 编辑结果（接受或拒绝）后再使用")}
+            </div>
+          )}
         </div>
       )}
+
+      {/* AI 编辑配置对话框 */}
+      <Dialog open={configPanelOpen} onOpenChange={setConfigPanelOpen}>
+        <DialogContent className="sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle>
+              {t("workbench.products.detail.refineConfigTitle", "AI 编辑配置")}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="grid gap-4 py-2">
+            {/* LLM 端点 */}
+            <div className="grid gap-2">
+              <Label className="text-xs font-medium">
+                {t("workbench.products.detail.refineConfigEndpoint", "LLM 端点")}
+              </Label>
+              <select
+                className="w-full text-sm border rounded-md px-3 py-1.5 bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+                value={refineEndpoint}
+                onChange={(e) => setRefineEndpoint(e.target.value)}
+              >
+                <option value="">{t("workbench.products.detail.refineConfigEndpointAuto", "自动（全局路由）")}</option>
+                {(refineCatalog?.llmEndpoints ?? []).map((ep) => (
+                  <option key={ep.name} value={ep.name}>
+                    {ep.name}{ep.model ? ` (${ep.model})` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 研发工具技能 */}
+            <div className="grid gap-2">
+              <Label className="text-xs font-medium">
+                {t("workbench.products.detail.refineConfigSkills", "研发工具技能")}
+              </Label>
+              {refineCatalog?.rdSkillsLoading ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                  <Loader2 size={12} className="animate-spin" />
+                  {t("workbench.products.detail.generateOptionsRdSkillLoading", "加载研发工具列表...")}
+                </div>
+              ) : (refineCatalog?.rdSkills ?? []).length === 0 ? (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  {t("workbench.products.detail.generateOptionsRdSkillEmpty", "未找到已启用的研发工具技能，请先在「研发工具」页面启用。")}
+                </p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {(refineCatalog?.rdSkills ?? []).map((skill) => (
+                    <label key={skill.skillId} className="flex items-center gap-2 text-sm cursor-pointer py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={refineSkills.length === 0 || refineSkills.includes(skill.skillId)}
+                        onChange={(e) => {
+                          const allIds = (refineCatalog?.rdSkills ?? []).map((s) => s.skillId);
+                          if (e.target.checked) {
+                            setRefineSkills((prev) =>
+                              prev.length === 0
+                                ? allIds.filter((id) => id !== skill.skillId).concat(skill.skillId)
+                                : [...prev, skill.skillId],
+                            );
+                          } else {
+                            setRefineSkills((prev) =>
+                              prev.length === 0
+                                ? allIds.filter((id) => id !== skill.skillId)
+                                : prev.filter((id) => id !== skill.skillId),
+                            );
+                          }
+                        }}
+                        className="rounded"
+                      />
+                      <span>{skill.name || skill.skillId}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button size="sm" onClick={() => setConfigPanelOpen(false)}>
+              {t("common.confirm", "确定")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

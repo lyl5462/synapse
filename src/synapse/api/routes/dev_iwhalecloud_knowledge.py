@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import time
 import uuid
 from dataclasses import replace
@@ -22,6 +23,7 @@ from synapse.config import settings
 logger = logging.getLogger(__name__)
 
 _FALLBACK_RD_SKILL_ID = "whalecloud-dev-tool-arch-create"
+_REFINE_SKILL_ID = "whalecloud-dev-tool-arch-modify"
 
 
 def _get_enabled_rd_skill_ids(agent: Any) -> set[str]:
@@ -98,8 +100,61 @@ class ProductKnowledgeGenerateRequest(BaseModel):
 
 
 class ProductKnowledgeRefineRequest(BaseModel):
-    content: str = Field(..., description="当前文档内容")
-    prompt: str = Field(..., description="修改需求")
+    prod_name: str = Field(..., description="产品标识，与 docs_initialize prod 一致", min_length=1, max_length=512)
+    doc_type: str = Field(..., description="文档类型，与生成任务一致", min_length=1, max_length=256)
+    targets: list[str] = Field(..., description="稳定文件名数组，必须恰好 1 个元素")
+    user_prompt: str = Field(..., description="用户修改要求（不含产品信息块）")
+    preferred_endpoint: str | None = Field(None, description="首选 LLM 端点 name", max_length=200)
+    rd_skill_ids: list[str] = Field(
+        default=[_FALLBACK_RD_SKILL_ID],
+        description="研发工具技能 id 列表（多选，动态白名单）",
+    )
+    product_desc: str = Field(default="", description="产品描述（服务端注入 user 消息）")
+    code_path: str = Field(default="", description="代码路径（服务端注入 user 消息）")
+    core_features: str = Field(default="", description="主要功能（服务端注入 user 消息）")
+    gitnexus_url: str = Field(default="", description="GitNexus 服务地址（源码缓存不存在时用于拉取）")
+
+
+class ProductKnowledgeRefineSessionBody(BaseModel):
+    """按 prod + doc_type + target 定位 refine_sessions/<target>/ 下的会话。"""
+
+    prod_name: str = Field(..., min_length=1, max_length=512)
+    doc_type: str = Field(..., min_length=1, max_length=256)
+    target: str = Field(..., min_length=1, max_length=512, description="与本地草稿 doc_name 一致的文件名")
+
+
+# 系统提示词：产品知识文档 AI 编辑（refine 专用）
+_REFINE_SYSTEM_PROMPT_BASE = """\
+你是一个产品知识文档编辑助手。你的任务是根据用户要求，精准修改指定的产品知识文档。
+
+## 核心原则（不得违反）
+1. **以实际代码为基础不臆断**：所有新增/修改内容必须有源码依据；若源码缓存存在则优先读取，找不到依据时须标注「[待源码确认]」，不得凭空描述。
+2. **以历史文档为参考不造谣**：必须先完整读取待修改文件，保留用户未要求修改的所有章节与措辞；不得凭印象替换已有准确描述。
+3. **以用户需求为根本不发散**：修改范围严格限定在用户指定内容，不主动扩展修改其他章节。
+
+## 工作流程
+请严格按照以下步骤执行（已注入的技能 whalecloud-dev-tool-arch-modify 中有完整的分阶段指引，请遵照执行）：
+
+1. **解析修改意图**：读取 user 消息中的产品上下文与用户修改要求，拆解修改点列表。
+2. **读取历史文档**：使用 read_file 工具读取待修改文件（会话 proposed/ 目录下的工作副本），记录不应被修改的章节。
+3. **查阅源码**（若修改涉及功能描述/架构关系）：
+   - 先检查源码本地缓存路径（`synapse_home/tmp/gitnexus/<repo_name>/files/`）是否存在；
+   - 缓存存在则直接用 read_file / list_directory 读取，**不需要重新拉取**；
+   - 缓存不存在则从 CODE_PATH 指定路径直接读取源文件；
+   - 每个修改点记录「源码依据：<文件路径> → <具体证据>」。
+4. **修改文档**：按修改点逐一修改，不扩散到其他章节，新增内容附源码路径作为论据。
+5. **完整性校验**：确认未被要求修改的章节均已保留，修改点均有源码依据或标注「[待源码确认]」。
+6. **写回文件**：使用 write_file 将完整修改后的文档写回 proposed/ 目录（同一文件名）。
+
+## 输出约束
+- Markdown 文档：输出完整可替换的正文；若在回复文字中附带文档片段，**必须**且仅能用 ```markdown ... ``` 包裹。
+- `.excalidraw` 文件：输出合法 JSON；优先使用工具写文件，避免在聊天中贴大段 JSON；节点名称必须来自真实源码符号。
+- **禁止**改变文件名（必须与 targets[0] 一致）。
+- **禁止**删除用户未要求删除的章节。
+- **禁止**直接写入知识文档根目录下的权威源文件（只允许写 proposed/ 子目录）。
+- **禁止**调用不在白名单中的工具（如 run_shell）。
+- **禁止**臆断产品功能和代码实现；未找到源码证据的描述必须标注「[待源码确认]」。
+"""
 
 
 class ProductKnowledgeLocalDraftQuery(BaseModel):
@@ -134,6 +189,66 @@ class ProductKnowledgeLocalDraftWriteRequest(BaseModel):
 _knowledge_tasks: dict[str, dict[str, Any]] = {}
 
 _ATOMIC_WRITE_SUFFIX = ".synapse_part"
+
+# refine 在途任务超时（秒）：超过后 status 查询视为超时并清理目录
+_REFINE_SESSION_TIMEOUT_SECS = 3600
+
+
+# ---------------------------------------------------------------------------
+# Refine session.status 落盘工具（目录：refine_sessions/<target>/）
+# ---------------------------------------------------------------------------
+
+def _refine_session_status_path(session_root: Path) -> Path:
+    return session_root / "session.status"
+
+
+def _refine_target_session_root(docs_root: Path, target_safe: str) -> Path:
+    return docs_root / "refine_sessions" / target_safe
+
+
+def _write_refine_session_status(session_root: Path, payload: dict[str, Any]) -> None:
+    """原子写入 session.status；失败仅记录日志不抛出。"""
+    path = _refine_session_status_path(session_root)
+    tmp = path.with_suffix(".synapse_part")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        logger.warning("write refine session.status failed: %s", e)
+
+
+def _read_refine_session_status(session_root: Path) -> dict[str, Any] | None:
+    """读取 session.status；不存在或解析失败返回 None。"""
+    path = _refine_session_status_path(session_root)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _rmtree_refine_session_root(session_root: Path) -> None:
+    try:
+        if session_root.exists():
+            shutil.rmtree(session_root, ignore_errors=True)
+    except Exception as e:
+        logger.warning("rmtree refine session %s failed: %s", session_root, e)
+
+
+def _cleanup_legacy_pkg_refine_dirs(docs_root: Path) -> None:
+    """移除旧版 refine_sessions/pkg_refine_* 目录，避免与按 target 分目录的布局冲突。"""
+    sessions_dir = docs_root / "refine_sessions"
+    if not sessions_dir.is_dir():
+        return
+    try:
+        entries = list(sessions_dir.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        if entry.name.startswith("pkg_refine_"):
+            _rmtree_refine_session_root(entry)
 
 
 def _knowledge_docs_root(doc_type: str, prod_name: str) -> Path:
@@ -629,53 +744,437 @@ def register_product_knowledge_routes(router: APIRouter) -> None:
         n = clear_local_draft_doc_dir(body.doc_type, body.prod_name)
         return success_response({"removed": n}, "本地草稿目录已清理")
 
-    # TODO: 需要做同步流式的改造
-    # TODO: 和初始化一样，TASK_ID要前端生成
     @router.post("/api/dev/iwhalecloud/product_knowledge/refine")
     async def product_knowledge_refine(
         request: Request, body: ProductKnowledgeRefineRequest
     ) -> Any:
+        """
+        异步提交 refine：落盘目录为 refine_sessions/<target>/ ，同 target 全局仅一个在途任务。
+        返回 data.target；通过 refine/session/status 传入 prod_name、doc_type、target 轮询。
+        """
+        if len(body.targets) != 1:
+            return error_response(400, "invalid_targets")
+        target_name = body.targets[0].strip()
+        safe_name = _safe_docs_file_basename(target_name)
+        if not safe_name:
+            return error_response(400, "invalid_targets")
+
+        docs_root = _knowledge_docs_root(body.doc_type, body.prod_name)
+        auth_file = docs_root / safe_name
+
+        if not auth_file.is_file():
+            return error_response(404, "target_not_found")
+
         pool = getattr(request.app.state, "agent_pool", None)
         if not pool:
             return error_response(503, "Agent pool not initialized")
-        prof_id = f"__pkg_refine_{uuid.uuid4().hex[:8]}"
+
+        _cleanup_legacy_pkg_refine_dirs(docs_root)
+
+        session_root = _refine_target_session_root(docs_root, safe_name)
+        existing = _read_refine_session_status(session_root)
+        if existing:
+            st = str(existing.get("status", ""))
+            started_at = float(existing.get("started_at", 0.0))
+            elapsed = time.time() - started_at
+            up = str(existing.get("user_prompt", ""))
+            if st in ("pending", "running"):
+                if elapsed < _REFINE_SESSION_TIMEOUT_SECS:
+                    return {
+                        "errorcode": 409,
+                        "message": "refine_session_pending",
+                        "data": {
+                            "target": safe_name,
+                            "user_prompt": up[:500],
+                            "elapsed_minutes": round(elapsed / 60, 1),
+                        },
+                    }
+                _rmtree_refine_session_root(session_root)
+                logger.info(
+                    "refine target %s timed out after %.1f min, cleaned before resubmit",
+                    safe_name,
+                    elapsed / 60,
+                )
+            elif st == "completed":
+                return {
+                    "errorcode": 409,
+                    "message": "refine_session_pending_review",
+                    "data": {
+                        "target": safe_name,
+                        "user_prompt": up[:500],
+                    },
+                }
+            elif st == "error":
+                _rmtree_refine_session_root(session_root)
+
         try:
-            rfprompt = f"""请根据以下修改需求，调整提供的 Markdown 文档内容。
-修改需求：{body.prompt}
+            auth_content = auth_file.read_text(encoding="utf-8")
+        except OSError as e:
+            return error_response(500, f"read_authoritative_failed:{e}")
 
-当前文档内容：
-```markdown
-{body.content}
-```
+        _rmtree_refine_session_root(session_root)
+        original_dir = session_root / "original"
+        proposed_dir = session_root / "proposed"
+        try:
+            original_dir.mkdir(parents=True, exist_ok=True)
+            proposed_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return error_response(500, f"mkdir_failed:{e}")
 
-请直接输出修改后的完整 Markdown 内容，不要包含任何额外的解释或说明。"""
-            base_profile = get_profile_store().get("default") or AgentProfile(
-                id="default", name="小鲸"
+        original_copy = original_dir / safe_name
+        proposed_copy = proposed_dir / safe_name
+        original_copy.write_text(auth_content, encoding="utf-8")
+        proposed_copy.write_text(auth_content, encoding="utf-8")
+
+        run_id = uuid.uuid4().hex
+        prof_id = f"__pkg_refine_{run_id}"
+        started_ts = time.time()
+
+        _write_refine_session_status(
+            session_root,
+            {
+                "status": "pending",
+                "run_id": run_id,
+                "prod_name": body.prod_name,
+                "doc_type": body.doc_type,
+                "target": safe_name,
+                "user_prompt": body.user_prompt,
+                "started_at": started_ts,
+            },
+        )
+
+        async def _run_refine_task() -> None:
+            _write_refine_session_status(
+                session_root,
+                {
+                    "status": "running",
+                    "run_id": run_id,
+                    "prod_name": body.prod_name,
+                    "doc_type": body.doc_type,
+                    "target": safe_name,
+                    "user_prompt": body.user_prompt,
+                    "started_at": started_ts,
+                },
             )
-            test_profile = replace(
-                base_profile,
-                id=prof_id,
-                ephemeral=True,
-            )
-            session_id = f"pkg_refine_{uuid.uuid4().hex}"
-            agent = await pool.get_or_create(session_id, test_profile)
-            result = await asyncio.wait_for(
-                agent.execute_task_from_message(rfprompt),
-                timeout=600.0,
-            )
-            if result.success:
-                output = str(result.data) if result.data else ""
-                md_match = re.search(r"```markdown\s*(.*?)\s*```", output, re.DOTALL)
-                refined_content = md_match.group(1) if md_match else output
-                return success_response({"content": refined_content}, "文档优化成功")
-            return error_response(500, result.error or "文档优化失败")
-        except TimeoutError:
-            return error_response(504, "文档优化超时")
-        except Exception as e:
-            logger.exception("Knowledge refine failed")
-            return error_response(500, str(e))
-        finally:
             try:
+                ep = (body.preferred_endpoint or "").strip() or None
+                base_profile = get_profile_store().get("default") or AgentProfile(id="default", name="小鲸")
+                _tmp_profile = replace(base_profile, id=prof_id, ephemeral=True, preferred_endpoint=ep)
+                agent = await pool.get_or_create(run_id, _tmp_profile)
+
+                enabled_ids = _get_enabled_rd_skill_ids(agent)
+                rd_skills = _normalize_rd_skill_ids(body.rd_skill_ids, enabled_ids)
+
+                refine_skills = list(rd_skills)
+                if _REFINE_SKILL_ID in enabled_ids and _REFINE_SKILL_ID not in refine_skills:
+                    refine_skills.append(_REFINE_SKILL_ID)
+
+                final_profile = replace(
+                    base_profile,
+                    id=prof_id,
+                    skills=refine_skills,
+                    skills_mode=SkillsMode.INCLUSIVE,
+                    ephemeral=True,
+                    preferred_endpoint=ep,
+                )
                 pool.invalidate_profile(prof_id)
-            except Exception:
-                pass
+                agent = await pool.get_or_create(run_id, final_profile)
+
+                skill_bodies: list[str] = []
+                loader = getattr(agent, "skill_loader", None)
+                if loader:
+                    _skill_order = [_REFINE_SKILL_ID] + [s for s in refine_skills if s != _REFINE_SKILL_ID]
+                    for sid in _skill_order:
+                        skill = loader.get_skill(sid)
+                        if skill and skill.body:
+                            skill_path_line = f"**技能路径**: {skill.skill_dir}\n\n"
+                            skill_bodies.append(f"### 研发技能：{sid}\n\n{skill_path_line}{skill.body}")
+
+                skill_section = ""
+                if skill_bodies:
+                    skill_section = (
+                        "\n\n---\n## 研发工具技能指引（请严格遵照以下指引执行任务）\n\n"
+                        + "\n\n---\n\n".join(skill_bodies)
+                    )
+                refine_system = _REFINE_SYSTEM_PROMPT_BASE + skill_section
+
+                # refine 允许 run_shell，用于源码缓存缺失时调用 gnx-tools.js materialize 拉取
+                _REFINE_TOOL_NAMES = frozenset(
+                    {"read_file", "write_file", "list_directory", "run_shell"}
+                )
+                _orig_tools = getattr(agent, "_tools", None)
+                _slim_tools = (
+                    [t for t in _orig_tools if t.get("name") in _REFINE_TOOL_NAMES]
+                    if _orig_tools is not None
+                    else None
+                )
+
+                _code_path = (body.code_path or "").strip()
+                _repo_name_hint = ""
+                if _code_path:
+                    _repo_name_hint = _repo_name_from_git_url(_code_path) or Path(_code_path).name
+                _gnx_cache_dir = (
+                    str(_gitnexus_local_data_path(_repo_name_hint)) if _repo_name_hint else ""
+                )
+
+                # 获取 arch-create 技能的脚本目录路径，供 LLM 调用 gnx-tools.js
+                _gnx_tools_script = ""
+                if loader:
+                    _arch_skill = loader.get_skill(_FALLBACK_RD_SKILL_ID)
+                    if _arch_skill and _arch_skill.skill_dir:
+                        _gnx_tools_script = str(
+                            Path(_arch_skill.skill_dir) / "scripts" / "gnx-tools.js"
+                        )
+
+                product_ctx = f"""\
+产品描述：[{body.product_desc}]
+代码路径：[{body.code_path}]
+主要功能：[{body.core_features}]
+产品标识：[{body.prod_name}]
+文档类型：[{body.doc_type}]
+GitNexus 服务地址：[{body.gitnexus_url}]
+源码缓存根目录：[{_gnx_cache_dir}]
+gnx-tools.js 脚本路径：[{_gnx_tools_script}]"""
+
+                user_message = f"""\
+## 产品上下文（系统自动注入，请勿删除）
+{product_ctx}
+
+## 关于源码读取的说明
+1. 优先检查「源码缓存根目录」下的 files/ 子目录是否存在且有内容（用 list_directory 检查）。
+2. 若缓存存在，直接用 read_file / list_directory 读取，**无需拉取**。
+3. 若缓存不存在或为空，使用 run_shell 执行以下命令拉取：
+   node "{_gnx_tools_script}" materialize --url {body.gitnexus_url} --repo {_repo_name_hint} --cache {_gnx_cache_dir} --concurrency 8
+4. 拉取完成后，源码位于「源码缓存根目录/files/」下，再用 read_file / list_directory 读取。
+
+## 用户修改要求
+{body.user_prompt}
+
+## 待修改文件（仅允许修改下列路径对应的临时工作副本）
+- {proposed_copy}
+
+请按照技能 whalecloud-dev-tool-arch-modify 的工作流程执行：先读历史文档，再查阅或拉取源码，最后将修改后的完整文档写回上述路径。"""
+
+                agent.default_cwd = str(docs_root)
+                if getattr(agent, "shell_tool", None):
+                    agent.shell_tool.default_cwd = str(docs_root)  # type: ignore[union-attr]
+                agent._current_session_id = run_id
+
+                _orig_org_context = getattr(agent, "_org_context", None)
+                _orig_system = getattr(getattr(agent, "_context", None), "system", None)
+                try:
+                    agent._org_context = True  # type: ignore[attr-defined]
+                    if hasattr(agent, "_context") and agent._context is not None:
+                        agent._context.system = refine_system
+                    if _slim_tools is not None:
+                        agent._tools = _slim_tools  # type: ignore[attr-defined]
+
+                    result = await asyncio.wait_for(
+                        agent.execute_task_from_message(user_message),
+                        timeout=3600.0,
+                    )
+                finally:
+                    agent._org_context = _orig_org_context  # type: ignore[attr-defined]
+                    if (
+                        hasattr(agent, "_context")
+                        and agent._context is not None
+                        and _orig_system is not None
+                    ):
+                        agent._context.system = _orig_system
+                    if _orig_tools is not None:
+                        agent._tools = _orig_tools  # type: ignore[attr-defined]
+
+                if not result.success:
+                    _write_refine_session_status(
+                        session_root,
+                        {
+                            "status": "error",
+                            "run_id": run_id,
+                            "prod_name": body.prod_name,
+                            "doc_type": body.doc_type,
+                            "target": safe_name,
+                            "user_prompt": body.user_prompt,
+                            "started_at": started_ts,
+                            "error": result.error or "文档优化失败",
+                        },
+                    )
+                    return
+
+                # --- 读取 proposed 产物 ---
+                proposed_text = ""
+                if proposed_copy.is_file():
+                    try:
+                        proposed_text = proposed_copy.read_text(encoding="utf-8")
+                    except OSError:
+                        pass
+
+                if not proposed_text.strip():
+                    output = str(result.data) if result.data else ""
+                    md_match = re.search(r"```markdown\s*(.*?)\s*```", output, re.DOTALL)
+                    if md_match:
+                        proposed_text = md_match.group(1)
+                        try:
+                            proposed_copy.write_text(proposed_text, encoding="utf-8")
+                        except OSError:
+                            pass
+
+                if not proposed_text.strip():
+                    _write_refine_session_status(
+                        session_root,
+                        {
+                            "status": "error",
+                            "run_id": run_id,
+                            "prod_name": body.prod_name,
+                            "doc_type": body.doc_type,
+                            "target": safe_name,
+                            "user_prompt": body.user_prompt,
+                            "started_at": started_ts,
+                            "error": "empty_proposed",
+                        },
+                    )
+                    return
+
+                _write_refine_session_status(
+                    session_root,
+                    {
+                        "status": "completed",
+                        "run_id": run_id,
+                        "prod_name": body.prod_name,
+                        "doc_type": body.doc_type,
+                        "target": safe_name,
+                        "user_prompt": body.user_prompt,
+                        "started_at": started_ts,
+                        "original": auth_content,
+                        "proposed": proposed_text,
+                    },
+                )
+
+            except TimeoutError:
+                _write_refine_session_status(
+                    session_root,
+                    {
+                        "status": "error",
+                        "run_id": run_id,
+                        "prod_name": body.prod_name,
+                        "doc_type": body.doc_type,
+                        "target": safe_name,
+                        "user_prompt": body.user_prompt,
+                        "started_at": started_ts,
+                        "error": "agent_timeout",
+                    },
+                )
+            except Exception as e:
+                logger.exception("Knowledge refine background task failed")
+                _write_refine_session_status(
+                    session_root,
+                    {
+                        "status": "error",
+                        "run_id": run_id,
+                        "prod_name": body.prod_name,
+                        "doc_type": body.doc_type,
+                        "target": safe_name,
+                        "user_prompt": body.user_prompt,
+                        "started_at": started_ts,
+                        "error": str(e),
+                    },
+                )
+            finally:
+                try:
+                    pool.invalidate_profile(prof_id)
+                except Exception:
+                    pass
+
+        asyncio.create_task(_run_refine_task())
+
+        return success_response(
+            {"target": safe_name},
+            "文档优化任务已提交，请按 target 轮询 session/status 获取结果",
+        )
+
+    @router.post("/api/dev/iwhalecloud/product_knowledge/refine/session/status")
+    def product_knowledge_refine_session_status(body: ProductKnowledgeRefineSessionBody) -> Any:
+        """
+        按 prod_name + doc_type + target 读取 refine_sessions/<target>/session.status。
+        返回 status: none | pending | running | completed | error | timeout。
+        pending/running 超过 1 小时：清理目录并返回 timeout；error：清理目录后返回 error。
+        completed 不清理，供前端展示对比直至 close。
+        """
+        safe = _safe_docs_file_basename(body.target.strip())
+        if not safe:
+            return error_response(400, "invalid_target")
+        docs_root = _knowledge_docs_root(body.doc_type, body.prod_name)
+        session_root = _refine_target_session_root(docs_root, safe)
+        raw = _read_refine_session_status(session_root)
+        if not raw:
+            return success_response({"status": "none", "target": safe})
+
+        st = str(raw.get("status", "unknown"))
+        started_at = float(raw.get("started_at", 0.0))
+        elapsed = time.time() - started_at
+        user_prompt = str(raw.get("user_prompt", ""))
+
+        if st in ("pending", "running"):
+            if elapsed >= _REFINE_SESSION_TIMEOUT_SECS:
+                _rmtree_refine_session_root(session_root)
+                return success_response(
+                    {
+                        "status": "timeout",
+                        "target": safe,
+                        "user_prompt": user_prompt,
+                        "elapsed_minutes": round(elapsed / 60, 1),
+                    },
+                )
+            return success_response(
+                {
+                    "status": st,
+                    "target": safe,
+                    "targets": [safe],
+                    "user_prompt": user_prompt,
+                    "started_at": started_at,
+                    "run_id": raw.get("run_id", ""),
+                },
+            )
+
+        if st == "completed":
+            return success_response(
+                {
+                    "status": "completed",
+                    "target": safe,
+                    "targets": [safe],
+                    "user_prompt": user_prompt,
+                    "started_at": started_at,
+                    "original": raw.get("original", ""),
+                    "proposed": raw.get("proposed", ""),
+                },
+            )
+
+        if st == "error":
+            err = str(raw.get("error", "unknown_error"))
+            _rmtree_refine_session_root(session_root)
+            return success_response(
+                {
+                    "status": "error",
+                    "target": safe,
+                    "user_prompt": user_prompt,
+                    "error": err,
+                },
+            )
+
+        return success_response({"status": "none", "target": safe})
+
+    @router.post("/api/dev/iwhalecloud/product_knowledge/refine/session/close")
+    def product_knowledge_refine_session_close(body: ProductKnowledgeRefineSessionBody) -> Any:
+        """接受/拒绝后删除 refine_sessions/<target>/。"""
+        safe = _safe_docs_file_basename(body.target.strip())
+        if not safe:
+            return error_response(400, "invalid_target")
+        docs_root = _knowledge_docs_root(body.doc_type, body.prod_name)
+        session_root = _refine_target_session_root(docs_root, safe)
+        removed = False
+        if session_root.exists():
+            try:
+                shutil.rmtree(session_root, ignore_errors=True)
+                removed = True
+            except Exception as e:
+                logger.warning("refine session close failed: %s", e)
+        return success_response({"removed": removed}, "会话已关闭")

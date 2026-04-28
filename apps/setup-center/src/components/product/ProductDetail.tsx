@@ -52,6 +52,7 @@ import { IS_TAURI, proxyFetch } from "@/platform";
 import { isWhalecloudDevToolSkill } from "@/utils/whalecloudDevToolSkill";
 import type { SkillInfo } from "@/types";
 import { ProductDocumentEditor } from "./ProductDocumentEditor";
+import type { RefineContext, RefineCatalog } from "./ProductDocumentEditor";
 import {
   buildCodeGraphEmbedUrl,
   buildTicketKnowledgeGraphEmbedUrl,
@@ -261,6 +262,13 @@ export function ProductDetail({
   const [rdSkillCatalog, setRdSkillCatalog] = useState<{ skillId: string; name: string }[]>([]);
   const [rdSkillCatalogLoading, setRdSkillCatalogLoading] = useState(false);
 
+  /** refine 专用 catalog（与生成弹窗同源，懒加载） */
+  const [refineCatalog, setRefineCatalog] = useState<RefineCatalog>({
+    llmEndpoints: [],
+    rdSkills: [],
+    rdSkillsLoading: false,
+  });
+
   /** 与后端 `tmp/.../product_knowledge` 下 `_knowledge_docs_root` 是否已有草稿一致，仅此时允许「提交到服务端」 */
   const [knowledgeLocalDraftExists, setKnowledgeLocalDraftExists] = useState<
     Record<ProductKnowledgeCategory, boolean>
@@ -320,6 +328,7 @@ export function ProductDetail({
       manual: false,
       delivery: false,
     };
+
     await Promise.all(
       PRODUCT_KNOWLEDGE_KEYS.map(async (k) => {
         try {
@@ -333,6 +342,7 @@ export function ProductDetail({
         }
       }),
     );
+
     setKnowledgeLocalDraftExists(next);
   }, [synapseApiBase]);
 
@@ -739,27 +749,6 @@ export function ProductDetail({
       ? product.taskOrderCount
       : product.latestTickets?.filter((tick) => !tick.title.includes("需求")).length ?? 0;
 
-  const getMockDocsForCategory = (categoryKey: string, productName: string): OpenProductDoc[] => {
-    // 方案和需求为只读
-    const isReadonly = categoryKey === "solution" || categoryKey === "requirements";
-    return [
-      {
-        id: `doc-${categoryKey}-1`,
-        title: `${productName}-${categoryKey === "architecture" ? "总体设计" : "需求概要"} v1.0`,
-        content: `# ${productName} \n\n这是一篇关于 **${categoryKey}** 的技术文档。包含 Markdown 与示意图占位，以便演示混合展示效果。\n\n- 核心特点：高性能、高可用、可扩展\n- 依赖服务：Redis, PostgreSQL`,
-        category: categoryKey,
-        readonly: isReadonly,
-      },
-      {
-        id: `doc-${categoryKey}-2`,
-        title: `迭代日志与附录`,
-        content: `# 迭代日志\n目前处于 v1.0.0 版本阶段，持续完善中。`,
-        category: categoryKey,
-        readonly: isReadonly,
-      },
-    ];
-  };
-
   const handleOpenDoc = async (doc: OpenProductDoc, category: string) => {
     if (activeTab === doc.id) return;
     if (!(await guardOwnerMatch())) return;
@@ -775,6 +764,36 @@ export function ProductDetail({
       ...prev,
       [key]: { ...prev[key], expanded: !prev[key].expanded },
     }));
+  };
+
+  const loadRefineCatalog = () => {
+    setRefineCatalog((prev) => ({ ...prev, rdSkillsLoading: true }));
+    void (async () => {
+      try {
+        const rows = await fetchLlmEndpointsCatalog(synapseApiBase);
+        setRefineCatalog((prev) => ({ ...prev, llmEndpoints: rows }));
+      } catch {
+        /* 静默失败 */
+      }
+    })();
+    void (async () => {
+      try {
+        const base = synapseApiBase.replace(/\/$/, "");
+        const resp = await proxyFetch(`${base}/api/skills`, { timeoutSecs: 15 });
+        const raw = JSON.parse(resp.body) as { skills?: Record<string, unknown>[] };
+        const skills = (raw.skills ?? []).map((s) => ({
+          skillId: (s.skill_id as string) || (s.name as string) || "",
+          name: (s.name as string) || "",
+          enabled: typeof s.enabled === "boolean" ? s.enabled : undefined,
+        }));
+        const devTools = skills
+          .filter((s) => isWhalecloudDevToolSkill(s as import("@/types").SkillInfo) && s.enabled !== false)
+          .map((s) => ({ skillId: s.skillId, name: s.name }));
+        setRefineCatalog((prev) => ({ ...prev, rdSkills: devTools, rdSkillsLoading: false }));
+      } catch {
+        setRefineCatalog((prev) => ({ ...prev, rdSkillsLoading: false }));
+      }
+    })();
   };
 
   const openGenerateOptionsDialog = (cat: ProductKnowledgeCategory) => {
@@ -1199,7 +1218,7 @@ export function ProductDetail({
                   const done = isProductKnowledgeSlotDone(slot);
                   const categoryDocs = openDocs.filter((d) => d.category === cat);
                   const hasGeneratedDocs = categoryDocs.length > 0;
-                  const docs = hasGeneratedDocs ? categoryDocs : (done ? getMockDocsForCategory(item.key, product.name) : []);
+                  const docs = categoryDocs;
                   const kv = knowledgeCategoryView[cat];
                   const isExpanded = kv.expanded;
                   const generating = kv.generating;
@@ -1712,6 +1731,27 @@ export function ProductDetail({
                       await persistCategoryDocsToLocal(doc.category, merged, { notifySuccess });
                     }}
                     onSubmit={() => handleSubmitDocs(doc.category)}
+                    refineContext={
+                      IS_TAURI && product && !doc.readonly
+                        ? {
+                            prod_name: product.name,
+                            doc_type: unifiedDocTypeForKnowledgeCategory(
+                              doc.category as ProductKnowledgeCategory,
+                            ),
+                            target: doc.title,
+                            product_desc: product.description || "",
+                            code_path:
+                              (product.repositories.find((r) => r.isMain) || product.repositories[0])
+                                ?.codePath || "",
+                            core_features: product.features || "",
+                            gitnexus_url: devserviceHost
+                              ? `http://${unifiedServiceHostAuthority(devserviceHost)}:${CODE_GRAPH_SERVER_PORT}/`
+                              : undefined,
+                          }
+                        : undefined
+                    }
+                    refineCatalog={refineCatalog}
+                    onLoadRefineCatalog={loadRefineCatalog}
                   />
                 </div>
               );
