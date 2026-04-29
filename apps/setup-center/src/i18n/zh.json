@@ -270,6 +270,7 @@
         "autoGenerateArch": "自动生成架构",
         "autoGenerateManual": "自动生成手册",
         "generate": "生成",
+        "autoProcessFromError": "自动处理",
         "generating": "生成中...",
         "manualGenerationPlanned": "规划中",
         "generateMissingDevserviceHost": "未获取到产品公共服务主机，无法生成文档。请在引导中完成「产品公共服务」或检查用户目录 .synapse\\devservice.ip。",

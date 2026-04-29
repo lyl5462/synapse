@@ -270,6 +270,7 @@
         "autoGenerateArch": "Auto-generate Architecture",
         "autoGenerateManual": "Auto-generate Manual",
         "generate": "Generate",
+        "autoProcessFromError": "Auto process",
         "generating": "Generating...",
         "manualGenerationPlanned": "Planned",
         "generateMissingDevserviceHost": "Unified product service host is not available; cannot generate documents. Complete onboarding or check ~/.synapse/devservice.ip.",

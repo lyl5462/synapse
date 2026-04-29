@@ -22,6 +22,11 @@ export const RD_UNIFIED_PATHS = {
   gitNexusAnalysis: "/dev/iwhalecloud/synapse/gitnexus_analysis",
   orderInitialize: "/dev/iwhalecloud/synapse/order_initialize",
   docsInitialize: "/dev/iwhalecloud/synapse/docs_initialize",
+  /**
+   * Synapse 任务已失败时回写：将 `doc_process_state` 由 I/P 置为 E（与 `docs_fail` 请求体一致）。
+   * 由研发统一服务实现。
+   */
+  docsFail: "/dev/iwhalecloud/synapse/docs_fail",
   docsSubmit: "/dev/iwhalecloud/synapse/docs_submit",
   getDoc: "/dev/iwhalecloud/synapse/get_doc",
   changeRepoInfo: "/dev/iwhalecloud/synapse/change_repo_info",
@@ -58,8 +63,7 @@ export type DocProcessWireItem = {
   doc_process_time?: string | null;
   /**
    * 与「初始化」时前端写入的 `task_id` 同源（统一服务登记后在此回显）。
-   * **状态探测**：仅当 `doc_process_state` 为 I/P 时，前端才用此值请求 Synapse `product_knowledge/status`；
-   * 为 D 时正文走 `get_doc`，勿再用此字段轮询后台。
+   * **状态探测**：I/P 时前端用其请求 Synapse `product_knowledge/status`；Synapse 为 error 时由 `docs_fail` 将统一服务置为 E；D 时正文走 `get_doc`。
    */
   doc_process_info?: string | null;
 };
@@ -186,6 +190,17 @@ export type DocsInitializeBody = {
    * 统一服务登记后通过 `get_prod_process_info` → `doc_process_info` 在 I/P 探测阶段回传。
    */
   task_id: string;
+};
+
+/**
+ * `docs_fail`：在 Synapse `product_knowledge/status` 为 error 时回写，使统一服务进入失败态 E。
+ * 与 {@link DocsInitializeBody} 同维度，多 `error` 可选为失败原因摘要。
+ */
+export type DocsFailBody = {
+  prod: string;
+  doc_type: string;
+  task_id: string;
+  error?: string;
 };
 
 /** 研发统一服务 get_doc：拉取已落库文档正文（doc_process_state 为 D 时） */
@@ -623,6 +638,51 @@ export function buildDocsInitializeWireBody(body: DocsInitializeBody): Record<st
     docType: doc_type,
     taskId: task_id,
   };
+}
+
+/**
+ * 组装 `POST .../docs_fail` 请求体（snake + camel 双写，与 {@link buildDocsInitializeWireBody} 同风格）。
+ */
+export function buildDocsFailWireBody(body: DocsFailBody): Record<string, string> {
+  const prod = String(body.prod ?? "").trim();
+  const doc_type = String(body.doc_type ?? "").trim();
+  const task_id = String(body.task_id ?? "").trim();
+  if (!prod) throw new Error("docs_fail_prod_required");
+  if (!doc_type) throw new Error("docs_fail_doc_type_required");
+  if (!task_id) throw new Error("docs_fail_task_id_required");
+  const out: Record<string, string> = {
+    prod,
+    doc_type,
+    task_id,
+    docType: doc_type,
+    taskId: task_id,
+  };
+  const err = (body.error ?? "").trim();
+  if (err) {
+    out.error = err;
+    out.errorMessage = err;
+  }
+  return out;
+}
+
+/**
+ * 文档任务失败回写：研发统一服务将对应过程置为 E（I/P 结束）。
+ * 在确认 Synapse 侧已为 error 时调用。仅应在 Tauri 下调用。
+ */
+export async function docsFail(_synapseApiBase: string, body: DocsFailBody): Promise<DevServiceResponse> {
+  if (!IS_TAURI) {
+    throw new Error("rd_unified_tauri_only");
+  }
+  const host = await getDevserviceHost();
+  if (!host) {
+    throw new Error("missing_devservice_ip");
+  }
+  const wireBody = buildDocsFailWireBody(body);
+  const resp = await postRdUnifiedJson<DevServiceResponse>(host, RD_UNIFIED_PATHS.docsFail, wireBody);
+  if (resp.code !== 0) {
+    throw new Error(resp.message || "docs_fail_failed");
+  }
+  return resp;
 }
 
 /**

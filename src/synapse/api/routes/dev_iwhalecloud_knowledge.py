@@ -195,6 +195,10 @@ _knowledge_tasks: dict[str, dict[str, Any]] = {}
 
 _ATOMIC_WRITE_SUFFIX = ".synapse_part"
 
+# 与 _run_knowledge_generation_task 内 asyncio.wait_for(..., 3600) 对齐，余量 100s 后仍为
+# pending/running 的视为僵死，在 product_knowledge/status 查询时收束为 error 并落盘。
+_KNOWLEDGE_GEN_STALE_MAX_SECS = 3600 + 100
+
 # refine 在途任务超时（秒）：超过后 status 查询视为超时并清理目录
 _REFINE_SESSION_TIMEOUT_SECS = 3600
 
@@ -466,6 +470,22 @@ def _assemble_task_for_response(task_id: str) -> dict[str, Any] | None:
     if not meta:
         return None
     st = meta.get("status")
+    if st in ("pending", "running"):
+        created = meta.get("created_at")
+        if isinstance(created, (int, float)) and (
+            time.time() - float(created) > _KNOWLEDGE_GEN_STALE_MAX_SECS
+        ):
+            err = (
+                f"Task stale: pending/running exceeded {_KNOWLEDGE_GEN_STALE_MAX_SECS}s (3600+100)"
+            )
+            new_meta: dict[str, Any] = {"status": "error", "error": err}
+            for k in ("created_at", "repo_name", "prod_name", "doc_type"):
+                if k in meta:
+                    new_meta[k] = meta[k]
+            _knowledge_tasks[task_id] = new_meta
+            _persist_task(task_id)
+            meta = new_meta
+            st = "error"
     if st == "completed":
         raw_dt = meta.get("doc_type")
         raw_pn = meta.get("prod_name")

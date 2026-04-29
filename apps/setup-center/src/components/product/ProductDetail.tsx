@@ -70,6 +70,7 @@ import {
   gitNexusInitialize,
   orderInitialize,
   docsInitialize,
+  docsFail,
   docsSubmit,
   getProdDoc,
   generateProductKnowledge,
@@ -605,6 +606,20 @@ export function ProductDetail({
                 synapseGenCompletedHydratedRef.current.add(taskIdFromUnified);
                 const categoryKey =
                   productKnowledgeCategoryFromDocTypeWire(String(row?.doc_type ?? "")) ?? cat;
+                if (IS_TAURI) {
+                  try {
+                    const docTypeParam = unifiedDocTypeForKnowledgeCategory(categoryKey);
+                    await docsFail(synapseApiBase, {
+                      prod: prodKey,
+                      doc_type: docTypeParam,
+                      task_id: taskIdFromUnified,
+                      error: statusRes.error,
+                    });
+                    void fetchProcessOnce();
+                  } catch {
+                    // 回写统一服务为 E 失败不阻断下方 UI，避免列表长期停在 I
+                  }
+                }
                 setKnowledgeCategoryView((prev) => ({
                   ...prev,
                   [categoryKey]: { ...prev[categoryKey], generating: false },
@@ -1279,11 +1294,16 @@ export function ProductDetail({
                   const archDone = isProductKnowledgeSlotDone(product.knowledge.architecture);
                   const canGenerateArchitecture = isArchitecture && !done && mainRepoAnalysisDone;
                   const canGenerateManual = isManual && !done && archDone;
-                  const rowActive = done || hasGeneratedDocs || slot.wireState === "init" || slot.wireState === "process";
-                  /** 仅「未创建」(wireState new) 时展示自动生成；init/process/done/error 均不展示 */
+                  const rowActive =
+                    done ||
+                    hasGeneratedDocs ||
+                    slot.wireState === "init" ||
+                    slot.wireState === "process" ||
+                    slot.wireState === "error";
+                  /** 未创建(new) 或 失败(error) 时展示生成/重试 CTA；error 时先 E→N 再与 new 同流程进入 I */
                   const showGenerateBtn =
                     isProductOwner &&
-                    slot.wireState === "new" &&
+                    (slot.wireState === "new" || slot.wireState === "error") &&
                     !hasGeneratedDocs &&
                     (canGenerateArchitecture || canGenerateManual);
                   const showDocs = (done || hasGeneratedDocs) && isExpanded;
@@ -1336,7 +1356,9 @@ export function ProductDetail({
                                 )}
                                 {generating
                                   ? t("workbench.products.detail.generating", "生成中...")
-                                  : t("workbench.products.detail.generate", "生成")}
+                                  : slot.wireState === "error"
+                                    ? t("workbench.products.detail.autoProcessFromError", "自动处理")
+                                    : t("workbench.products.detail.generate", "生成")}
                               </Button>
                             )}
                             {done || hasGeneratedDocs ? (
@@ -1349,18 +1371,20 @@ export function ProductDetail({
                                   className={`shrink-0 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}
                                 />
                               </>
-                            ) : slot.wireState !== "new" ? (
+                            ) : slot.wireState === "init" ||
+                              slot.wireState === "process" ||
+                              (slot.wireState === "error" && !showGenerateBtn) ? (
                               <Badge
                                 variant="secondary"
                                 className={`h-5 max-w-[140px] shrink px-1.5 text-[10px] font-normal border-none ${detailWireBadgeClass(slot.wireState)}`}
                               >
                                 <span className="truncate">{detailWireStateLabel(t, slot.wireState)}</span>
                               </Badge>
-                            ) : (
+                            ) : slot.wireState === "new" ? (
                               <span className="text-[11px] text-muted-foreground">
                                 {t("workbench.products.detail.notCreated")}
                               </span>
-                            )}
+                            ) : null}
                           </div>
                           {done && slot.completedAt && (
                             <span className="text-[10px] text-muted-foreground tabular-nums">
