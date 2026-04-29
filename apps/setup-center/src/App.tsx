@@ -31,6 +31,10 @@ const ProductManagerView = lazy(() =>
   import("./views/workbench/ProductManagerView").then((m) => ({ default: m.ProductManagerView })),
 );
 
+const OrderManagementView = lazy(() =>
+  import("./views/rd-manage/OrderManagementView").then((m) => ({ default: m.OrderManagementView })),
+);
+
 import { FeedbackModal } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
 import { AgentSystemView } from "./views/AgentSystemView";
@@ -5915,7 +5919,7 @@ export function App() {
       return <ProductManagerView synapseApiBase={httpApiBase()} />;
     }
     if (view === "workbench_tickets") {
-      return <WorkbenchPlaceholderView titleKey="sidebar.workbenchTickets" />;
+      return <OrderManagementView synapseApiBase={httpApiBase()} onViewChange={setView} />;
     }
     if (view === "workbench_meeting") {
       return <WorkbenchPlaceholderView titleKey="sidebar.workbenchMeeting" />;

@@ -85,7 +85,11 @@ import {
   unifiedServiceHostAuthority,
 } from "@/api/rdUnifiedService";
 import type { ProdProcessDataPayload } from "@/api/rdUnifiedService";
-import { assertOwnerInfoMatchesProduct, toastOwnerInfoGuardError } from "@/utils/ownerInfoGuard";
+import {
+  assertOwnerInfoMatchesProduct,
+  isCurrentUserProductOwner,
+  toastOwnerInfoGuardError,
+} from "@/utils/ownerInfoGuard";
 import "./product-workbench.css";
 
 /**
@@ -289,6 +293,8 @@ export function ProductDetail({
   const [docIdsWithUnsavedEdits, setDocIdsWithUnsavedEdits] = useState<Set<string>>(
     () => new Set(),
   );
+  /** Tauri 下在异步校验前默认为 false，避免非负责人短暂看到写操作入口 */
+  const [isProductOwner, setIsProductOwner] = useState(!IS_TAURI);
   const [unsavedNavigationOpen, setUnsavedNavigationOpen] = useState(false);
   const docUnsavedRef = useRef(docIdsWithUnsavedEdits);
   docUnsavedRef.current = docIdsWithUnsavedEdits;
@@ -370,6 +376,22 @@ export function ProductDetail({
   useEffect(() => {
     setDocIdsWithUnsavedEdits(new Set());
   }, [product?.id]);
+
+  useEffect(() => {
+    if (!open || !product) return;
+    if (!IS_TAURI) {
+      setIsProductOwner(true);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const ok = await isCurrentUserProductOwner(synapseApiBase, product);
+      if (!cancelled) setIsProductOwner(ok);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, product?.id, product?.ownerInfo, synapseApiBase]);
 
   const guardOwnerMatch = useCallback(async (): Promise<boolean> => {
     const p = productRef.current;
@@ -758,7 +780,6 @@ export function ProductDetail({
 
   const handleOpenDoc = async (doc: OpenProductDoc, category: string) => {
     if (activeTab === doc.id) return;
-    if (!(await guardOwnerMatch())) return;
     setOpenDocs((prev) => {
       if (prev.find((d) => d.id === doc.id)) return prev;
       return [...prev, { ...doc, category }];
@@ -973,7 +994,11 @@ export function ProductDetail({
 
   const handleSubmitDocs = async (categoryKey: string) => {
     if (!product || !IS_TAURI) return;
-    
+    if (!isProductOwner) {
+      toast.error(t("workbench.products.ownerInfoGuardMismatch"));
+      return;
+    }
+
     // 收集当前分类下所有打开的文档
     const categoryDocs = openDocs.filter(d => d.category === categoryKey);
     if (categoryDocs.length === 0) {
@@ -1117,7 +1142,7 @@ export function ProductDetail({
                               </Badge>
                             )}
                           </div>
-                          {wireU !== "new" && (
+                          {isProductOwner && wireU !== "new" && (
                             <div className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100">
                               <Button
                                 variant="ghost"
@@ -1181,7 +1206,7 @@ export function ProductDetail({
                           )}
                         </div>
 
-                        {wireU === "new" && (
+                        {wireU === "new" && isProductOwner && (
                           <div className="mt-2.5" onClick={(e) => e.stopPropagation()}>
                             <Button
                               type="button"
@@ -1257,6 +1282,7 @@ export function ProductDetail({
                   const rowActive = done || hasGeneratedDocs || slot.wireState === "init" || slot.wireState === "process";
                   /** 仅「未创建」(wireState new) 时展示自动生成；init/process/done/error 均不展示 */
                   const showGenerateBtn =
+                    isProductOwner &&
                     slot.wireState === "new" &&
                     !hasGeneratedDocs &&
                     (canGenerateArchitecture || canGenerateManual);
@@ -1417,7 +1443,7 @@ export function ProductDetail({
                   </div>
                 </div>
 
-                {ticketU === "new" && (
+                {ticketU === "new" && isProductOwner && (
                   <div className="mb-3" onClick={(e) => e.stopPropagation()}>
                     <Button
                       type="button"
@@ -1737,9 +1763,11 @@ export function ProductDetail({
                     title={doc.title}
                     synapseApiBase={synapseApiBase}
                     excalidrawByFileName={doc.excalidrawByFileName}
-                    readonly={doc.readonly}
+                    readonly={!!doc.readonly || !isProductOwner}
                     submitEnabled={
-                      IS_TAURI && knowledgeLocalDraftExists[doc.category as ProductKnowledgeCategory]
+                      IS_TAURI &&
+                      isProductOwner &&
+                      knowledgeLocalDraftExists[doc.category as ProductKnowledgeCategory]
                     }
                     onDirtyChange={(dirty) => {
                       setDocIdsWithUnsavedEdits((prev) => {
@@ -1763,7 +1791,7 @@ export function ProductDetail({
                     }}
                     onSubmit={() => handleSubmitDocs(doc.category)}
                     refineContext={
-                      IS_TAURI && product && !doc.readonly
+                      IS_TAURI && product && isProductOwner && !doc.readonly
                         ? {
                             prod_name: product.name,
                             doc_type: unifiedDocTypeForKnowledgeCategory(

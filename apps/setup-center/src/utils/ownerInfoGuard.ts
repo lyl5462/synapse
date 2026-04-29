@@ -1,6 +1,7 @@
 import { toast } from "sonner";
 import { fetchUserinfoForUnifiedService } from "@/api/rdUnifiedService";
 import type { Product } from "@/components/product/types";
+import { IS_TAURI } from "@/platform";
 
 export const OWNER_GUARD_MISSING_LOCAL = "owner_guard_missing_local";
 export const OWNER_GUARD_MISSING_PRODUCT = "owner_guard_missing_product";
@@ -31,6 +32,22 @@ export async function assertOwnerInfoMatchesProduct(
   }
   if (local !== stored) {
     throw new Error(OWNER_GUARD_MISMATCH);
+  }
+}
+
+/**
+ * 浏览器预览模式下视为负责人；Tauri 下与 assertOwnerInfoMatchesProduct 一致但不抛错。
+ */
+export async function isCurrentUserProductOwner(
+  synapseApiBase: string,
+  product: Product,
+): Promise<boolean> {
+  if (!IS_TAURI) return true;
+  try {
+    await assertOwnerInfoMatchesProduct(synapseApiBase, product);
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -3768,6 +3768,64 @@ async def _ensure_valid_creds_async(force_refresh: bool = False) -> tuple[str, s
 class ProductInitializeRequest(BaseModel):
     product_id: int = Field(..., description="产品ID")
 
+@router.get("/api/dev/iwhalecloud/rd-manage/demands")
+def get_rd_manage_demands():
+    """获取工单信息，按照工单类别返回"""
+    mock_demand = {
+        "需求单号": "DEMAND-2026-0413-001",
+        "需求单名称": "智能研发助手核心调度模块",
+        "需求描述": "实现核心调度模块，支持多Agent并发执行任务并处理状态回传。目前在沙箱环境中发现并发锁死异常。",
+        "需求开始时间": "2026-04-13 09:00:00",
+        "需求结束时间": "",
+        "需求工作量": 1200,
+        "需求状态": "processing",
+        "需求影响": "核心调度流程优化",
+        "需求类型": "优化",
+        "需求优先级": "高",
+        "需求关联应用模块": "调度模块",
+        "设计人员": "Admin",
+        "当前sop节点": "exception_check"
+    }
+
+    data = {
+        "预备工单": [{**mock_demand, "需求单号": "DEMAND-2026-0413-003", "需求状态": "pending", "当前sop节点": "pending"}],
+        "可处理工单": [{**mock_demand, "需求单号": "DEMAND-2026-0413-001", "需求状态": "human_intervention", "当前sop节点": "exception_check"}],
+        "在途工单": [{**mock_demand, "需求单号": "DEMAND-2026-0413-002", "需求状态": "processing", "当前sop节点": "solution_review"}],
+        "近三月完成工单": [{**mock_demand, "需求单号": "DEMAND-2026-0411-001", "需求状态": "completed", "当前sop节点": "leader_review", "需求结束时间": "2026-04-12 10:00:00"}]
+    }
+    return success_response(data)
+
+@router.get("/api/dev/iwhalecloud/rd-manage/demands/{demand_no}/nodes")
+def get_rd_manage_demand_nodes(demand_no: str):
+    """获取工单节点信息"""
+    nodes = [
+        {
+            "node_name": "需求澄清",
+            "node_status": "completed",
+            "time_cost": "15m",
+            "token_cost": 15000,
+            "role": "AI",
+            "model": "Claude-3.5",
+            "tools": ["search_history"],
+            "agent": "需求分析助手",
+            "session_info": "session_xxx",
+            "output_artifacts": {"docs": "澄清文档.md"}
+        },
+        {
+            "node_name": "异常检查",
+            "node_status": "human_intervention" if "001" in demand_no else "pending",
+            "time_cost": "0m",
+            "token_cost": 0,
+            "role": "Human",
+            "model": "",
+            "tools": [],
+            "agent": "",
+            "session_info": "",
+            "output_artifacts": {}
+        }
+    ]
+    return success_response({"nodes": nodes})
+
 
 def _register_product_knowledge_routes() -> None:
     from synapse.api.routes import dev_iwhalecloud_knowledge
