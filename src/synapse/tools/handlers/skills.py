@@ -764,6 +764,7 @@ class SkillsHandler:
                 conversation_id=fork_conv_id,
                 is_sub_agent=True,
                 endpoint_override=endpoint_override,
+                usage_scene=f"execute_skill_{skill.skill_id}",
             )
         except Exception as e:
             logger.error("Fork execution of skill '%s' failed: %s", skill_name, e, exc_info=True)

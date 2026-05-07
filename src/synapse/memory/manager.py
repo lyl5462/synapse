@@ -592,6 +592,7 @@ class MemoryManager:
                 f"记忆B: {existing_content}\n\n"
                 f"只回答 YES 或 NO。",
                 system="你是记忆去重判断器。如果两条记忆表达的核心信息相同（即使措辞不同），回答YES。否则回答NO。只输出一个词。",
+                usage_scene="check_duplicate_with_llm",
             )
             text = (getattr(resp, "content", None) or str(resp)).strip().upper()
             return "YES" in text and "NO" not in text

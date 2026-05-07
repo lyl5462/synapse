@@ -310,7 +310,7 @@ class TaskExecutor:
 
 只回复 NO_ACTION 或 NEEDS_ACTION，不要有其他内容。"""
 
-                response = await brain.think(check_prompt)
+                response = await brain.think(check_prompt, usage_scene="check_if_needs_execution")
                 result = response.content.strip().upper()
 
                 needs_action = "NEEDS_ACTION" in result
@@ -559,7 +559,7 @@ class TaskExecutor:
         """
         # 优先使用 Ralph 模式（execute_task_from_message）
         if hasattr(agent, "execute_task_from_message"):
-            result = await agent.execute_task_from_message(prompt)
+            result = await agent.execute_task_from_message(prompt, usage_scene="scheduler_execute_task")
             if isinstance(result, str):
                 return result
             return result.data if result.success else (result.error or "Unknown error")
@@ -757,7 +757,7 @@ class TaskExecutor:
                 f"Conversation:\n{conversation_text}"
             )
 
-            response = await brain.think_lightweight(review_prompt, max_tokens=2048)
+            response = await brain.think_lightweight(review_prompt, max_tokens=2048, usage_scene="memory_nudge_review_lightweight")
             raw = response.content.strip()
 
             import json

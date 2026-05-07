@@ -548,10 +548,10 @@ class RetrievalEngine:
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, think_fn(prompt, system="只输出JSON"))
+                    future = pool.submit(asyncio.run, think_fn(prompt, system="只输出JSON", usage_scene="decompose_query_with_llm"))
                     response = future.result(timeout=10)
             else:
-                response = asyncio.run(think_fn(prompt, system="只输出JSON"))
+                response = asyncio.run(think_fn(prompt, system="只输出JSON", usage_scene="decompose_query_with_llm"))
 
             text = (getattr(response, "content", None) or str(response)).strip()
 

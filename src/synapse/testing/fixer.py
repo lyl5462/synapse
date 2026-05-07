@@ -99,7 +99,7 @@ class CodeFixer:
     ]
 }}"""
 
-        response = await self.brain.think(prompt)
+        response = await self.brain.think(prompt, usage_scene="analyze_failure")
 
         import json
 
@@ -179,7 +179,7 @@ class CodeFixer:
 
 请输出修复后的完整代码。只输出代码，不要解释。"""
 
-        response = await self.brain.think(prompt)
+        response = await self.brain.think(prompt, usage_scene="generate_fix")
 
         code = response.content
         if "```python" in code:

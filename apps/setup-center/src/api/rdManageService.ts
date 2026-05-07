@@ -1,5 +1,3 @@
-import { fetchSynapseJson } from "./rdUnifiedService";
-
 /** 与 Synapse 接口 `data` 字段一致：研发子单 */
 export interface OwnedWorkItem {
   task_no: string;
@@ -210,16 +208,60 @@ export function getRdManageDemandsMockPayload(): RdManageDemandsPayload {
   };
 }
 
+const OWNER_ORDER_SNAPSHOT_PATH = "/api/dev/iwhalecloud/owner_order_snapshot";
+
+/** 将快照 `data` 规范为看板可用的 {@link RdManageDemandsPayload} */
+function normalizeOwnerOrderSnapshotData(raw: unknown): RdManageDemandsPayload {
+  if (!raw || typeof raw !== "object") {
+    return { list: [] };
+  }
+  const o = raw as Record<string, unknown>;
+  const listRaw = o.list;
+  const list = Array.isArray(listRaw) ? listRaw : [];
+  const out: DemandListItem[] = [];
+  for (const row of list) {
+    if (!row || typeof row !== "object") continue;
+    const d = row as Record<string, unknown>;
+    const wi = d.owned_work_items;
+    const owned = Array.isArray(wi) ? wi : [];
+    out.push({
+      ...(d as unknown as DemandListItem),
+      owned_work_items: owned as OwnedWorkItem[],
+    });
+  }
+  return {
+    list: out,
+    updated_at: typeof o.updated_at === "string" ? o.updated_at : undefined,
+  };
+}
+
+type SynapseWire = {
+  errorcode?: number;
+  message?: string;
+  data?: unknown;
+};
+
 /**
- * 拉取研发工单列表。后端实现后返回与 {@link RdManageDemandsPayload} 一致的 `data`。
- * 当前若请求失败（例如接口尚未部署），回退到前端 Mock 以便联调 UI。
+ * 拉取智能任务看板数据：读取 Synapse 落地的负责人需求快照（`userwork.json`）。
+ *
+ * - 成功：`GET /api/dev/iwhalecloud/owner_order_snapshot` → `data` 与 {@link RdManageDemandsPayload} 一致。
+ * - 404（尚未调用 `get_demand_by_user` 生成快照）：返回空列表。
+ * - 其它网络/服务端错误：回退前端 Mock，便于离线联调 UI。
  */
 export async function fetchRdManageDemands(synapseApiBase: string): Promise<RdManageDemandsPayload> {
+  const base = synapseApiBase.replace(/\/$/, "");
   try {
-    return await fetchSynapseJson<RdManageDemandsPayload>(
-      synapseApiBase,
-      "/api/dev/iwhalecloud/rd-manage/demands",
-    );
+    const res = await fetch(`${base}${OWNER_ORDER_SNAPSHOT_PATH}`, {
+      signal: AbortSignal.timeout(60_000),
+    });
+    const j = (await res.json()) as SynapseWire;
+    if (j.errorcode !== 0) {
+      if (j.errorcode === 404) {
+        return { list: [], updated_at: undefined };
+      }
+      throw new Error(j.message || "owner_order_snapshot_error");
+    }
+    return normalizeOwnerOrderSnapshotData(j.data);
   } catch {
     return getRdManageDemandsMockPayload();
   }

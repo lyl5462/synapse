@@ -320,6 +320,8 @@ export const OrderManagement: React.FC<{
   const [selectedTicketForModal, setSelectedTicketForModal] = useState<Ticket | null>(null);
   const [ticketFilter, setTicketFilter] = useState<'prepare' | 'pending' | 'processing' | 'human_intervention' | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  /** 看板数据是否已完成首次拉取（用于区分「加载中」与「快照为空」） */
+  const [boardDataInitialized, setBoardDataInitialized] = useState(false);
 
   const [collapsedStages, setCollapsedStages] = useState<Record<number, boolean>>({});
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -331,11 +333,14 @@ export const OrderManagement: React.FC<{
   const containerRef = useRef<HTMLDivElement>(null);
   const antDark = useAntThemeDark();
 
-  // Load Data（接口 `data: { list, updated_at }`；失败时由 rdManageService 回退前端 Mock）
+  // Load Data：`GET /api/dev/iwhalecloud/owner_order_snapshot`；无快照时列表为空；异常时 rdManageService 回退 Mock
   useEffect(() => {
+    let cancelled = false;
+    setBoardDataInitialized(false);
     async function loadData() {
       try {
         const data = await fetchRdManageDemands(synapseApiBase);
+        if (cancelled) return;
         const allTickets = (data.list || []).map(mapDemandListItemToTicket);
 
         allTickets.forEach((t) => {
@@ -357,12 +362,20 @@ export const OrderManagement: React.FC<{
           } else {
             setActiveWorkItemId("");
           }
+        } else {
+          setActiveTicketId("");
+          setActiveWorkItemId("");
         }
       } catch (e) {
-        console.error("Failed to load demands:", e);
+        if (!cancelled) console.error("Failed to load demands:", e);
+      } finally {
+        if (!cancelled) setBoardDataInitialized(true);
       }
     }
     loadData();
+    return () => {
+      cancelled = true;
+    };
   }, [synapseApiBase]);
 
   const filteredTickets = useMemo(() => {
@@ -839,7 +852,23 @@ export const OrderManagement: React.FC<{
   };
 
   if (!displayTicket) {
-    return <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground">Loading demands...</div>;
+    if (!boardDataInitialized) {
+      return (
+        <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground">
+          正在加载智能任务看板…
+        </div>
+      );
+    }
+    return (
+      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-background px-6 text-center text-muted-foreground">
+        <FileText className="h-10 w-10 opacity-40" />
+        <p className="max-w-md text-sm leading-relaxed">
+          当前没有可用的工单快照数据。请先在 Synapse 中调用研发云接口
+          <span className="font-mono text-foreground/80"> POST /api/dev/iwhalecloud/get_demand_by_user </span>
+          同步负责人需求列表后，本页将自动读取快照文件展示。
+        </p>
+      </div>
+    );
   }
 
   return (
@@ -923,6 +952,33 @@ export const OrderManagement: React.FC<{
 
                 const isActive = isWorkItem ? activeWorkItemId === item.id : activeTicketId === item.id && !activeWorkItemId;
 
+                const onTicketDetailsClick = (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  handleShowTicketDetails(e, {
+                    ...ticket,
+                    title: item.title,
+                    description: item.description,
+                    branch: item.branch,
+                    tokens: item.tokens,
+                    createdAt: item.createdAt,
+                    currentNode: isWorkItem ? (item as WorkItem).currentNode : ticket.currentNode,
+                    currentStage: isWorkItem
+                      ? stageIdForNodeId((item as WorkItem).currentNode)
+                      : ticket.currentStage,
+                  });
+                };
+
+                const ticketInfoButton = (
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<Info className="h-3.5 w-3.5" />}
+                    className="z-10 flex h-6 w-6 items-center justify-center p-0 text-muted-foreground hover:text-primary"
+                    title="工单信息"
+                    onClick={onTicketDetailsClick}
+                  />
+                );
+
                 return (
                   <motion.div
                     key={item.id}
@@ -959,30 +1015,13 @@ export const OrderManagement: React.FC<{
                       </div>
                     )}
 
-                    {/* Details Button */}
-                    <div className="absolute right-2 top-2 z-20 flex items-center gap-2">
-                      <Button 
-                        type="text" 
-                        size="small" 
-                        icon={<Info className="h-3.5 w-3.5" />} 
-                        className="z-10 flex h-6 w-6 items-center justify-center p-0 text-muted-foreground hover:text-primary"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleShowTicketDetails(e, {
-                            ...ticket,
-                            title: item.title,
-                            description: item.description,
-                            branch: item.branch,
-                            tokens: item.tokens,
-                            createdAt: item.createdAt,
-                            currentNode: isWorkItem ? (item as WorkItem).currentNode : ticket.currentNode,
-                            currentStage: isWorkItem
-                              ? stageIdForNodeId((item as WorkItem).currentNode)
-                              : ticket.currentStage,
-                          });
-                        }}
-                      />
-                    </div>
+                    {/* 工单信息：全人工时 hover 遮罩 z-30 会盖住默认层，在遮罩之上再渲染一份到右上角 */}
+                    {ticket.status !== 'human_intervention' && (
+                      <div className="absolute right-2 top-2 z-20 flex items-center gap-2">{ticketInfoButton}</div>
+                    )}
+                    {ticket.status === 'human_intervention' && (
+                      <div className="absolute right-2 top-2 z-40 flex items-center gap-2">{ticketInfoButton}</div>
+                    )}
 
                     {/* Top: Created At */}
                     <div className="mb-2 flex items-center pl-2 pr-10">

@@ -217,13 +217,32 @@ class Database:
                 channel TEXT,
                 user_id TEXT,
                 agent_profile_id TEXT DEFAULT 'default',
-                estimated_cost REAL DEFAULT 0
+                estimated_cost REAL DEFAULT 0,
+                usage_scene TEXT DEFAULT 'unknown'
             );
 
             CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(timestamp);
             CREATE INDEX IF NOT EXISTS idx_token_usage_session ON token_usage(session_id);
             CREATE INDEX IF NOT EXISTS idx_token_usage_endpoint ON token_usage(endpoint_name);
             CREATE INDEX IF NOT EXISTS idx_token_usage_op ON token_usage(operation_type);
+            CREATE INDEX IF NOT EXISTS idx_token_usage_usage_scene ON token_usage(usage_scene);
+
+            -- ========== SOP 轨迹表 ==========
+            CREATE TABLE IF NOT EXISTS sop_trajectories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT NOT NULL,
+                sop_step_id TEXT NOT NULL,
+                sop_node_id TEXT NOT NULL,
+                sop_node_status TEXT NOT NULL,
+                sop_node_start_time TIMESTAMP NOT NULL,
+                sop_node_end_time TIMESTAMP NOT NULL,
+                sop_node_use_model TEXT NOT NULL,
+                sop_node_use_tokens INTEGER DEFAULT 0,
+                sop_node_output_list TEXT NOT NULL,
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sop_trajectories_order ON sop_trajectories(order_id, sop_step_id, sop_node_id);
+            CREATE INDEX IF NOT EXISTS idx_sop_trajectories_step ON sop_trajectories(sop_step_id);
+            CREATE INDEX IF NOT EXISTS idx_sop_trajectories_node ON sop_trajectories(sop_node_id);
         """)
         await self._connection.commit()
 
@@ -239,6 +258,18 @@ class Database:
         try:
             await self._connection.execute(
                 "ALTER TABLE token_usage ADD COLUMN agent_profile_id TEXT DEFAULT 'default'"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass  # 列已存在则忽略
+
+        # Migration: 为旧数据库添加 usage_scene 列
+        try:
+            await self._connection.execute(
+                "ALTER TABLE token_usage ADD COLUMN usage_scene TEXT DEFAULT 'unknown'"
+            )
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_usage_usage_scene ON token_usage(usage_scene)"
             )
             await self._connection.commit()
         except Exception:

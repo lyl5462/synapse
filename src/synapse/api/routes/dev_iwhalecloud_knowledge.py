@@ -620,7 +620,7 @@ GitNexus 本地数据根目录(GNX_CACHE_DIR)：[{local_data_path}]（materializ
             _knowledge_tasks[task_id]["status"] = "running"
             _persist_task(task_id)
             result = await asyncio.wait_for(
-                agent.execute_task_from_message(prompt),
+                agent.execute_task_from_message(prompt, usage_scene=f"knowledge_generation_task_{prod_name}_{doc_type}"),
                 timeout=3600.0,
             )
         finally:
@@ -993,7 +993,7 @@ gnx-tools.js 脚本路径：[{_gnx_tools_script}]"""
                         agent._tools = _slim_tools  # type: ignore[attr-defined]
 
                     result = await asyncio.wait_for(
-                        agent.execute_task_from_message(user_message),
+                        agent.execute_task_from_message(user_message, usage_scene=f"knowledge_refine_task_{body.prod_name}_{body.doc_type}_{safe_name}"),
                         timeout=3600.0,
                     )
                 finally:

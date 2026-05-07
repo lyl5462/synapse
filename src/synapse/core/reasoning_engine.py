@@ -717,6 +717,7 @@ class ReasoningEngine:
         force_tool_retries: int | None = None,
         is_sub_agent: bool = False,
         mode: str = "agent",
+        usage_scene: str,
     ) -> str:
         """
         主推理循环: Reason -> Act -> Observe。
@@ -1097,6 +1098,7 @@ class ReasoningEngine:
                     iteration=iteration,
                     agent_profile_id=agent_profile_id,
                     cancel_event=state.cancel_event,
+                    usage_scene=usage_scene,
                 )
 
                 if task_monitor:
@@ -2084,6 +2086,7 @@ class ReasoningEngine:
         session: Any = None,
         force_tool_retries: int | None = None,
         is_sub_agent: bool = False,
+        usage_scene: str,
     ):
         """
         流式推理循环，为 HTTP API (SSE) 设计。
@@ -2514,6 +2517,7 @@ class ReasoningEngine:
                         thinking_depth=thinking_depth,
                         iteration=_iteration,
                         agent_profile_id=agent_profile_id,
+                        usage_scene=usage_scene,
                     ):
                         _evt_type = stream_event.get("type")
                         if _evt_type == "heartbeat":
@@ -4364,6 +4368,7 @@ class ReasoningEngine:
             try:
                 farewell_response = await asyncio.wait_for(
                     self._brain.messages_create_async(
+                        usage_scene="_background_cancel_farewell",
                         model=current_model,
                         max_tokens=200,
                         system=system_prompt,
@@ -4405,6 +4410,7 @@ class ReasoningEngine:
         thinking_depth: str | None = None,
         iteration: int = 0,
         agent_profile_id: str = "default",
+        usage_scene: str,
     ):
         """流式推理迭代器：即时 yield text/thinking delta，流结束后 yield Decision。
 
@@ -4469,6 +4475,7 @@ class ReasoningEngine:
                 conversation_id=conversation_id,
                 iteration=iteration,
                 agent_profile_id=agent_profile_id,
+                usage_scene=usage_scene,
             ):
                 if cancel_event.is_set():
                     cancel_reason = state.cancel_reason if state else "用户请求停止"
@@ -4521,6 +4528,7 @@ class ReasoningEngine:
         thinking_depth: str | None = None,
         iteration: int = 0,
         agent_profile_id: str = "default",
+        usage_scene: str,
     ):
         """
         包装 _reason()，在等待 LLM 响应期间每隔 HEARTBEAT_INTERVAL 秒
@@ -4552,6 +4560,7 @@ class ReasoningEngine:
                     iteration=iteration,
                     agent_profile_id=agent_profile_id,
                     cancel_event=cancel_event,
+                    usage_scene=usage_scene,
                 )
                 await queue.put(("result", decision))
             except Exception as exc:
@@ -4618,6 +4627,7 @@ class ReasoningEngine:
         iteration: int = 0,
         agent_profile_id: str = "default",
         cancel_event: asyncio.Event | None = None,
+        usage_scene: str,
     ) -> Decision:
         """
         推理阶段: 调用 LLM，返回结构化 Decision。
@@ -4652,6 +4662,7 @@ class ReasoningEngine:
                     tools=tools,
                     messages=messages,
                     conversation_id=conversation_id,
+                    usage_scene=usage_scene,
                 )
             finally:
                 reset_tracking_context(_tt)

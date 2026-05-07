@@ -1,10 +1,10 @@
 """
-Token 用量追踪：contextvars 上下文 + 后台写入线程。
+SOP 调用轨迹追踪：contextvars 上下文 + 后台写入线程。
 
 架构：
 - 上层调用方（ReasoningEngine / Agent / ContextManager 等）在发起 LLM 调用前
   通过 set_tracking_context() 设置本次调用的元数据（session_id / operation_type …）。
-- Brain.messages_create / messages_create_async 在拿到响应后调用 record_usage()，
+- Brain.messages_create / messages_create_async 在拿到响应后调用 record_sop_trajectory()，
   该函数读取 contextvars 中的元数据并投递到写入队列。
 - 后台守护线程 (_writer_loop) 持有独立的 sqlite3 同步连接，批量 flush 队列中的记录。
 """

@@ -191,7 +191,7 @@ async def auto_translate_skill(
     )
 
     try:
-        resp = await brain.think_lightweight(prompt, max_tokens=512)
+        resp = await brain.think_lightweight(prompt, max_tokens=512, usage_scene="auto_translate_skill_lightweight")
         parsed = _extract_json(resp.content)
         if not parsed or "name" not in parsed or "description" not in parsed:
             logger.warning(f"LLM translation returned unexpected format for {name}")

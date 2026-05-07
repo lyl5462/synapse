@@ -238,7 +238,7 @@ class MemoryConsolidator:
 
         try:
             response = await self.brain.think(
-                prompt, system="你是一个会话分析专家，擅长提取关键信息。只输出 JSON，不要其他内容。"
+                prompt, system="你是一个会话分析专家，擅长提取关键信息。只输出 JSON，不要其他内容。", usage_scene="generate_summary"
             )
 
             # 解析 JSON

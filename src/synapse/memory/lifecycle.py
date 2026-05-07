@@ -616,6 +616,7 @@ class LifecycleManager:
                 response = await self.extractor.brain.think(
                     prompt,
                     system="你是记忆质量审查专家。只输出 JSON 数组。",
+                    usage_scene="review_memories_with_llm",
                 )
                 text = (getattr(response, "content", None) or str(response)).strip()
 
@@ -814,6 +815,7 @@ class LifecycleManager:
             response = await self.extractor.brain.think(
                 prompt,
                 system="你是经验归纳专家。只输出 JSON 数组。",
+                usage_scene="synthesize_experiences",
             )
             text = (getattr(response, "content", None) or str(response)).strip()
             json_match = re.search(r"\[[\s\S]*\]", text)

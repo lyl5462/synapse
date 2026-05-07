@@ -121,9 +121,9 @@ class PromptCompiler:
             try:
                 prompt = config["user"].format(content=content, max_tokens=config["max_tokens"])
                 if hasattr(self.brain, "think_lightweight"):
-                    response = await self.brain.think_lightweight(prompt, system=config["system"])
+                    response = await self.brain.think_lightweight(prompt, system=config["system"], usage_scene="compile_with_llm_lightweight")
                 else:
-                    response = await self.brain.think(prompt, system=config["system"])
+                    response = await self.brain.think(prompt, system=config["system"], usage_scene="compile_with_llm_main")
                 result = (getattr(response, "content", None) or str(response)).strip()
                 if result:
                     return result

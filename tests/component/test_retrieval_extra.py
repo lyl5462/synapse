@@ -275,7 +275,7 @@ class TestDecomposeWithLLM:
             content: str = ""
 
         class _Brain:
-            async def think_lightweight(self, prompt, **kw):
+            async def think_lightweight(self, prompt, usage_scene, **kw):
                 return _Resp(content='{"keywords": ["橘猫", "沙发"], "intent": "search_file"}')
 
         engine = RetrievalEngine(store, brain=_Brain())
@@ -291,7 +291,7 @@ class TestDecomposeWithLLM:
             content: str = ""
 
         class _Brain:
-            async def think_lightweight(self, prompt, **kw):
+            async def think_lightweight(self, prompt, usage_scene, **kw):
                 return _Resp(content="not json!")
 
         engine = RetrievalEngine(store, brain=_Brain())
@@ -316,7 +316,7 @@ class TestDecomposeWithLLM:
             content: str = ""
 
         class _Brain:
-            async def think_lightweight(self, prompt, **kw):
+            async def think_lightweight(self, prompt, usage_scene, **kw):
                 return _Resp(content='{"keywords": ["橘猫", "沙发"], "intent": "search_file"}')
 
         engine = RetrievalEngine(store, brain=_Brain())

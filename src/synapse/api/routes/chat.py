@@ -461,6 +461,8 @@ async def _stream_chat(
                     attachments=chat_request.attachments,
                     thinking_mode=chat_request.thinking_mode,
                     thinking_depth=chat_request.thinking_depth,
+                    # TODO: 后续根据不同场景调整usage_scene
+                    usage_scene="api_chat",
                 ):
                     await _agent_queue.put(ev)
             except Exception as exc:

@@ -115,7 +115,7 @@ async def test_qa():
         print(f"\n  测试: {desc}")
         print(f"  问题: {question}")
         
-        response = await agent.chat(question)
+        response = await agent.chat(question, usage_scene="test_qa")
         judge_result = await judge.evaluate(response, expected, desc)
         
         status = "✓ PASS" if judge_result.passed else "✗ FAIL"

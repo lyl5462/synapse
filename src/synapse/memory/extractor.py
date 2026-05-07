@@ -879,17 +879,17 @@ duration 参考:
         think_lw = getattr(self.brain, "think_lightweight", None)
         if think_lw and callable(think_lw):
             try:
-                return await think_lw(prompt, **kwargs)
+                return await think_lw(prompt, usage_scene="extract_from_turn_with_ai_lightweight", **kwargs)
             except Exception:
                 pass
-        return await self.brain.think(prompt, **kwargs)
+        return await self.brain.think(prompt, usage_scene="extract_from_turn_with_ai", **kwargs)
 
     async def _call_brain_main(self, prompt: str, system: str = "", max_tokens: int | None = None):
         """Always use main model — for critical tasks like memory extraction."""
         kwargs: dict = {"system": system} if system else {}
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
-        return await self.brain.think(prompt, **kwargs)
+        return await self.brain.think(prompt, usage_scene="extract_from_turn_with_ai_main", **kwargs)
 
     def extract_from_turn(self, turn: ConversationTurn) -> list[Memory]:
         """同步规则提取 (向后兼容)"""
@@ -993,6 +993,7 @@ duration 参考:
                 prompt,
                 system="你是记忆提取专家。只输出 JSON 数组。",
                 max_tokens=1000,
+                usage_scene="extract_memory_with_llm",
             )
             return self._parse_json_response(response.content)
         except Exception as e:

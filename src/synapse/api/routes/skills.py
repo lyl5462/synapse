@@ -802,7 +802,7 @@ async def dev_tools_test_skill(request: Request):
         user_msg = message or default_msg
 
         result = await asyncio.wait_for(
-            agent.execute_task_from_message(user_msg),
+            agent.execute_task_from_message(user_msg, usage_scene="dev_tools_test"),
             timeout=timeout_s,
         )
         out_data = result.data

@@ -327,6 +327,7 @@ async def generate_title(request: Request, body: GenerateTitleRequest):
             prompt,
             system="你是标题生成助手。只输出标题文字，不要任何额外内容。",
             max_tokens=50,
+            usage_scene="generate_title",
         )
         title = (
             response.content.strip()

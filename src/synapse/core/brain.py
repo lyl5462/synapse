@@ -309,6 +309,8 @@ class Brain:
                     max_tokens=max_tokens,
                 )
                 self._compiler_on_success()
+                # add usage scene to response
+                response.usage_scene = "compiler_think"
                 self._record_usage(response)
                 result = self._llm_response_to_response(response)
                 self._dump_llm_request(system, messages, [], caller="compiler_think")
@@ -339,6 +341,8 @@ class Brain:
             enable_thinking=False,
             max_tokens=_fallback_max,
         )
+        # add usage scene to response
+        response.usage_scene = "compiler_think"
         self._record_usage(response)
         req_id = self._dump_llm_request(system, messages, [], caller="compiler_think")
         self._dump_llm_response(
@@ -353,6 +357,7 @@ class Brain:
         prompt: str,
         system: str | None = None,
         max_tokens: int = 2048,
+        usage_scene: str = "unknown",
     ) -> Response:
         """
         轻量级思考：优先使用 compiler 端点。
@@ -411,6 +416,8 @@ class Brain:
         self._dump_llm_response(
             response, caller=f"think_lightweight_{client_name}", request_id=req_id
         )
+        # add usage scene to response
+        response.usage_scene = usage_scene
 
         self._record_usage(response)
         return self._llm_response_to_response(response)
@@ -523,6 +530,7 @@ class Brain:
         system = kwargs.get("system", "")
         llm_tools = self._convert_tools_to_llm(kwargs.get("tools", []))
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
+        usage_scene = kwargs.get("usage_scene", "unknown")
 
         # 调试输出：保存完整请求到文件
         req_id = self._dump_llm_request(system, llm_messages, llm_tools, caller="messages_create")
@@ -559,6 +567,9 @@ class Brain:
         # 保存响应到调试文件
         self._dump_llm_response(response, caller="messages_create", request_id=req_id)
 
+        # add usage scene to response
+        response.usage_scene = usage_scene
+
         # 记录 token 用量
         self._record_usage(response)
 
@@ -585,6 +596,7 @@ class Brain:
         llm_tools = self._convert_tools_to_llm(kwargs.get("tools", []))
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
         conversation_id = kwargs.get("conversation_id")
+        usage_scene = kwargs.get("usage_scene", "unknown")
 
         logger.info(
             f"[Brain] messages_create_async called: msg_count={len(llm_messages)}, "
@@ -621,6 +633,9 @@ class Brain:
             raise
 
         self._dump_llm_response(response, caller="messages_create_async", request_id=req_id)
+
+        # add usage scene to response
+        response.usage_scene = usage_scene
 
         # 记录 token 用量
         self._record_usage(response)
@@ -714,6 +729,7 @@ class Brain:
                 cache_creation_tokens=usage.cache_creation_input_tokens,
                 cache_read_tokens=usage.cache_read_input_tokens,
                 estimated_cost=cost,
+                usage_scene=response.usage_scene,
             )
         except Exception as e:
             logger.debug(f"[Brain] _record_usage failed (non-fatal): {e}")
@@ -1107,6 +1123,7 @@ class Brain:
         tools: list[ToolParam] | None = None,
         max_tokens: int | None = None,
         thinking_depth: str | None = None,
+        usage_scene: str = "unknown",
     ) -> Response:
         """
         发送思考请求到 LLM（通过 LLMClient）
@@ -1158,6 +1175,9 @@ class Brain:
 
         # 保存响应到调试文件
         self._dump_llm_response(response, caller="_chat_with_llm_client", request_id=req_id)
+
+        # add usage scene to response
+        response.usage_scene = usage_scene
 
         self._record_usage(response)
 
@@ -1651,7 +1671,7 @@ class Brain:
 
 请以 Markdown 格式输出计划。"""
 
-        response = await self.think(prompt, context)
+        response = await self.think(prompt, context, usage_scene="plan")
         return response.content
 
     async def generate_code(
@@ -1674,7 +1694,7 @@ class Brain:
 
 只输出代码，不要解释。"""
 
-        response = await self.think(prompt, context)
+        response = await self.think(prompt, context, usage_scene="generate_code")
 
         # 提取代码块
         code = response.content
@@ -1716,7 +1736,7 @@ class Brain:
     "prevention": "预防措施"
 }}"""
 
-        response = await self.think(prompt)
+        response = await self.think(prompt, usage_scene="analyze_error")
 
         import json
 

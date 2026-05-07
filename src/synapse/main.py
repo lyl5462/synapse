@@ -988,6 +988,7 @@ async def start_im_channels(agent_or_master):
                 session_id=session.id,
                 session=session,
                 gateway=_message_gateway,
+                usage_scene="im_message"
             )
             return response
         except Exception as e:
@@ -1011,6 +1012,7 @@ async def start_im_channels(agent_or_master):
             session_id=session.id,
             session=session,
             gateway=_message_gateway,
+            usage_scene="im_message_stream",
         ):
             yield event
 
@@ -1306,6 +1308,7 @@ async def run_interactive():
             session_messages=session_messages,
             session_id=_sid,
             session=_active_session,
+            usage_scene="cli_interactive_chat",
         )
         reply_text = await render_stream(event_stream, console, agent_name=agent_name)
 
@@ -1698,7 +1701,7 @@ def run(
         await agent.initialize()
 
         with console.status("[bold green]执行任务中...", spinner="dots"):
-            result = await agent.execute_task_from_message(task)
+            result = await agent.execute_task_from_message(task, usage_scene="run_task")
 
         if result.success:
             console.print(

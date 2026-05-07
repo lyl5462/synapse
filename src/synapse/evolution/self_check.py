@@ -468,7 +468,7 @@ class SelfChecker:
     async def _run_core_test(self, test: TestCase) -> Any:
         """运行核心测试"""
         if "brain" in test.id:
-            response = await self.brain.think(test.input)
+            response = await self.brain.think(test.input, usage_scene="self_check_core_test")
             return response.content
         return None
 
@@ -537,7 +537,7 @@ ID: {result.test_id}
 
 请分析可能的原因并提供修复建议。"""
 
-        response = await self.brain.think(prompt)
+        response = await self.brain.think(prompt, usage_scene="self_check_try_fix")
 
         logger.info(f"Fix suggestion: {response.content}")
 
@@ -1007,6 +1007,7 @@ ID: {result.test_id}
             response = await self.brain.think(
                 prompt,
                 system="你是一个系统优化专家。请从错误记录中提取可行的优化建议。只输出 JSON 数组，不要其他内容。",
+                usage_scene="self_check_generate_optimization_suggestions",
             )
 
             # 解析 JSON
@@ -1120,6 +1121,7 @@ ID: {result.test_id}
             response = await self.brain.think(
                 user_prompt,
                 system=system_prompt,
+                usage_scene="self_check_analyze_single_batch",
             )
 
             # 解析 JSON 结果
@@ -1331,7 +1333,7 @@ ID: {result.test_id}
                 try:
                     if hasattr(agent, "execute_task_from_message"):
                         result = await asyncio.wait_for(
-                            agent.execute_task_from_message(fix_prompt),
+                            agent.execute_task_from_message(fix_prompt, usage_scene="self_check_fix"),
                             timeout=self.FIX_TIMEOUT_SECONDS,
                         )
                         success = result.success if result else False
@@ -1342,7 +1344,7 @@ ID: {result.test_id}
                         )
                     else:
                         result_msg = await asyncio.wait_for(
-                            agent.chat(fix_prompt),
+                            agent.chat(fix_prompt, usage_scene="self_check_fix"),
                             timeout=self.FIX_TIMEOUT_SECONDS,
                         )
                         success = "失败" not in result_msg and "error" not in result_msg.lower()

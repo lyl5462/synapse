@@ -992,6 +992,7 @@ class AgentOrchestrator:
             _start = time.time()
             exit_reason = "completed"
             try:
+                usage_scene = "sub_agent_chat" if is_sub_agent else "main_agent_chat"
                 session_messages = session.context.get_messages()
                 result = await agent.chat_with_session(
                     message=message,
@@ -1000,6 +1001,7 @@ class AgentOrchestrator:
                     session=session,
                     gateway=gateway,
                     mode=_mode,
+                    usage_scene=usage_scene,
                 )
                 # Persist sub-agent work record into parent session
                 try:

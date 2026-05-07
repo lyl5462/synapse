@@ -2647,6 +2647,7 @@ class Agent:
                         }
                     ],
                     use_thinking=False,
+                    usage_scene="_llm_compress_text",
                 )
             )
 
@@ -2825,6 +2826,7 @@ class Agent:
                             }
                         ],
                         use_thinking=False,
+                        usage_scene="_summarize_messages_chunked",
                     )
                 )
 
@@ -3013,7 +3015,7 @@ class Agent:
         )
         return truncated
 
-    async def chat(self, message: str, session_id: str | None = None) -> str:
+    async def chat(self, message: str, session_id: str | None = None, usage_scene: str = "unknown") -> str:
         """
         对话接口 - 委托给 chat_with_session() 复用完整处理链路
 
@@ -3048,6 +3050,7 @@ class Agent:
             session_id=session_id or self._cli_session.id,
             session=self._cli_session,
             gateway=None,  # CLI 无 Gateway
+            usage_scene=usage_scene,
         )
 
         # 记录 Assistant 响应到 Session（工具执行摘要作为独立字段）
@@ -4015,6 +4018,7 @@ class Agent:
         endpoint_override: str | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
+        usage_scene: str,
     ) -> str:
         """
         使用外部 Session 历史进行对话（用于 IM / CLI 通道）。
@@ -4174,6 +4178,7 @@ class Agent:
                     _fast_resp = await self.brain.think_lightweight(
                         prompt=message,
                         system=_fast_system,
+                        usage_scene="fast_reply",
                     )
                     _fast_usage = _fast_resp.usage
                     response_text = (
@@ -4216,6 +4221,7 @@ class Agent:
                     _fast_resp = await self.brain.think_lightweight(
                         prompt=message,
                         system=_fast_system,
+                        usage_scene="fast_query",
                     )
                     _fast_usage = _fast_resp.usage
                     response_text = clean_llm_response(
@@ -4240,6 +4246,7 @@ class Agent:
                     session=session,
                     endpoint_override=endpoint_override,
                     intent_result=_intent,
+                    usage_scene=usage_scene,
                 )
 
             # === flush 残留的 IM 进度消息，确保思维链先于回答到达 ===
@@ -4284,6 +4291,7 @@ class Agent:
         attachments: list | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
+        usage_scene: str,
     ):
         """
         流式版 chat_with_session，yield SSE 事件字典。
@@ -4305,7 +4313,7 @@ class Agent:
             attachments: Desktop Chat 附件列表
             thinking_mode: 思考模式覆盖 ('auto'/'on'/'off'/None)
             thinking_depth: 思考深度 ('low'/'medium'/'high'/None)
-
+            usage_scene: 使用场景
         Yields:
             SSE 事件字典 {"type": "...", ...}
         """
@@ -4498,6 +4506,7 @@ class Agent:
                     _fast_response = await self.brain.think_lightweight(
                         prompt=message,
                         system=_fast_system,
+                        usage_scene="fast_reply",
                     )
                     _fast_usage = _fast_response.usage
                     _reply_text = clean_llm_response(
@@ -4560,6 +4569,7 @@ class Agent:
                     _fast_response = await self.brain.think_lightweight(
                         prompt=message,
                         system=_fast_system,
+                        usage_scene="fast_query",
                     )
                     _fast_usage = _fast_response.usage
                     _reply_text = clean_llm_response(
@@ -4635,6 +4645,7 @@ class Agent:
                 session=session,
                 force_tool_retries=_force_tool_retries,
                 is_sub_agent=getattr(self, "_is_sub_agent_call", False),
+                usage_scene=usage_scene,
             ):
                 # 收集回复文本（用于 session 保存 & memory）
                 if event.get("type") == "text_delta":
@@ -5027,6 +5038,7 @@ class Agent:
                 prompt=prompt,
                 system="你是一个任务执行分析专家。请简洁地分析任务执行情况，找出耗时原因和改进建议。",
                 max_tokens=512,
+                usage_scene="task_retrospect",
             )
 
             result = strip_thinking_tags(response.content).strip() if response.content else ""
@@ -5347,6 +5359,7 @@ class Agent:
                         system=system_prompt,
                         tools=[],
                         messages=working_messages,
+                        usage_scene="_background_cancel_farewell",
                     ),
                     timeout=5.0,
                 )
@@ -5420,6 +5433,7 @@ class Agent:
                     tools=[],
                     max_tokens=self.brain.max_tokens,
                     endpoint_override=endpoint_override,
+                    usage_scene="_chat_lightweight",
                 )
 
                 content = getattr(response, "content", None)
@@ -5471,6 +5485,7 @@ class Agent:
         session: Any = None,
         endpoint_override: str | None = None,
         intent_result: Any = None,
+        usage_scene: str,
     ) -> str:
         """
         使用指定的消息上下文进行对话（委托给 ReasoningEngine）
@@ -5548,6 +5563,7 @@ class Agent:
             endpoint_override=endpoint_override,
             force_tool_retries=force_tool_retries,
             is_sub_agent=getattr(self, "_is_sub_agent_call", False),
+            usage_scene=usage_scene,
         )
 
     # ==================== 取消状态代理属性 ====================
@@ -5857,6 +5873,7 @@ class Agent:
                     system=_build_effective_system_prompt_cli(),
                     tools=self._effective_tools,
                     messages=messages,
+                    usage_scene="deprecated_cli_chat_with_tools",
                 )
             except UserCancelledError:
                 logger.info("[StopTask] LLM call interrupted by user cancel in _chat_with_tools")
@@ -5963,13 +5980,14 @@ class Agent:
         _, _final = parse_intent_tag(_final)
         return _final or "操作完成"
 
-    async def execute_task_from_message(self, message: str) -> TaskResult:
+    async def execute_task_from_message(self, message: str, usage_scene: str) -> TaskResult:
         """从消息创建并执行任务"""
         task = Task(
             id=str(uuid.uuid4())[:8],
             description=message,
             session_id=getattr(self, "_current_session_id", None),  # 关联当前会话
             priority=1,
+            usage_scene=usage_scene
         )
         return await self.execute_task(task)
 
@@ -6307,6 +6325,7 @@ class Agent:
                         tools=self._effective_tools,
                         messages=messages,
                         conversation_id=conversation_id,
+                        usage_scene=task.usage_scene
                     )
 
                     # 成功调用，重置重试计数
@@ -6601,6 +6620,7 @@ class Agent:
                                 system=_build_effective_system_prompt_task(),
                                 messages=messages,
                                 conversation_id=conversation_id,
+                                usage_scene=task.usage_scene
                             ),
                             _cancel_event,
                         )
@@ -6699,7 +6719,7 @@ class Agent:
 
         # 检查 Brain
         try:
-            response = await self.brain.think("你好，这是一个测试。请回复'OK'。")
+            response = await self.brain.think("你好，这是一个测试。请回复'OK'。", usage_scene="self_check_brain")
             results["checks"]["brain"] = {
                 "status": "ok"
                 if "OK" in response.content or "ok" in response.content.lower()

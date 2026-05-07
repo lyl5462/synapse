@@ -362,6 +362,7 @@ class TestReasonWithHeartbeatCancel:
                 system_prompt="",
                 tools=[],
                 current_model="test",
+                usage_scene="test",
             ):
                 pass
 

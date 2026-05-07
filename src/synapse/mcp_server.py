@@ -142,9 +142,10 @@ class MCPServer:
 
         if tool_name == "synapse_chat":
             message = arguments.get("message", "")
+            usage_scene = arguments.get("usage_scene", "unknown")
             if not message:
                 return "Error: message is required"
-            response = await self._agent.chat(message)
+            response = await self._agent.chat(message, usage_scene=usage_scene)
             return response
 
         elif tool_name == "synapse_memory_search":

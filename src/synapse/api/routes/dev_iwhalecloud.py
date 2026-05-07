@@ -150,7 +150,7 @@ def _snapshot_norm_id(value: Any) -> str:
 def _merge_owned_work_items(
     old_items: list[Any] | None, new_items: list[Any] | None
 ) -> list[dict[str, Any]]:
-    """研发单：新有老无则插入，老有新无则保留，新老均有则整条以新为准（全字段更新）。"""
+    """研发单：新有老无则插入，老有新无则保留，新老均有则整条记录除了sop_node之外的字段更新。"""
     old_items = [x for x in (old_items or []) if isinstance(x, dict)]
     new_items = [x for x in (new_items or []) if isinstance(x, dict)]
 
@@ -174,7 +174,9 @@ def _merge_owned_work_items(
             continue
         seen_old_order.add(tn)
         if tn in new_by_task:
-            out.append(dict(new_by_task[tn]))
+            merged_task = dict(new_by_task[tn])
+            merged_task["sop_node"] = old_by_task[tn].get("sop_node")
+            out.append(merged_task)
         else:
             out.append(dict(old_by_task[tn]))
 
@@ -302,6 +304,46 @@ def load_owner_order_snapshot_from_file() -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return data if isinstance(data, dict) else None
+
+
+def append_owned_work_item_to_demand(demand_no: str, work_item: dict[str, Any]) -> None:
+    """将新拆分的研发单安全地追加到指定需求单的 ``owned_work_items`` 中（在同一把文件锁内完成读取、修改与写入）。"""
+    from filelock import FileLock
+
+    path = _owner_order_file_name()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(_owner_order_file_lock_path()), timeout=30)
+    with lock:
+        existing_list: list[Any] = []
+        if path.is_file():
+            try:
+                raw = path.read_text(encoding="utf-8")
+                prev = json.loads(raw)
+                if isinstance(prev, dict):
+                    lst = prev.get("list")
+                    if isinstance(lst, list):
+                        existing_list = lst
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("读取已有 userwork.json 失败: %s", exc)
+                return
+
+        modified = False
+        for demand in existing_list:
+            if isinstance(demand, dict) and demand.get("demand_no") == demand_no:
+                owned = demand.get("owned_work_items")
+                if not isinstance(owned, list):
+                    owned = []
+                owned.append(work_item)
+                demand["owned_work_items"] = owned
+                modified = True
+                break
+
+        if modified:
+            payload = {
+                "list": existing_list,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            _atomic_write_json_file(path, payload)
 
 
 DEVSERVICE_PROBE_PORTS: tuple[int, ...] = (10001, 11001, 11011, 12001, 12011, 13001, 13011)
@@ -1971,6 +2013,21 @@ async def create_task(body: CreateTaskRequest) -> dict:
     if isinstance(branch_result, dict) and branch_result.get("errorcode") not in (None, 0):
         return error_response(502, "任务已创建，但创建特性分支失败", error=str(branch_result))
     branch_data = branch_result.get("data") if isinstance(branch_result, dict) else None
+
+    # 步骤12：将新研发单落盘到 userwork.json，并设置初始 sop_node 为"任务执行"
+    work_item = {
+        "task_no": created_task_no,
+        "task_title": body.taskTitle,
+        "task_desc": body.comments,
+        "created_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sccb_work_hours": None,
+        "stage_name": "待处理",
+        "product_module_id": branch_data.get("productModuleId") if isinstance(branch_data, dict) else None,
+        "product_module_name": branch_data.get("productModuleName") if isinstance(branch_data, dict) else (body.productModuleName or ""),
+        "repo_url": branch_data.get("repoUrl") if isinstance(branch_data, dict) else "",
+        "sop_node": "任务执行",
+    }
+    append_owned_work_item_to_demand(body.taskNo, work_item)
 
     return success_response(
         {
@@ -4215,6 +4272,118 @@ def userinfo_for_unified_service():
         return error_response(400, str(e))
     owner_name = (data or {}).get("name") or ""
     return success_response({"owner_info": raw, "owner_name": owner_name})
+
+
+class UpdateOrderWorkItemRequest(BaseModel):
+    task_no: str = Field(..., description="任务单号")
+    sop_node: str | None = Field(None, description="研发单 sop_node 节点")
+
+class UpdateOrderSopLocalProcessStateRequest(BaseModel):
+    demand_no: str = Field(..., description="需求单号")
+    sop_node: str | None = Field(None, description="需求单 sop_node 节点")
+    local_process_state: str | None = Field(None, description="需求单 local_process_state")
+    owned_work_items: list[UpdateOrderWorkItemRequest] | None = Field(None, description="研发单列表")
+
+@router.post("/api/dev/iwhalecloud/update_order_sop_local_process_state")
+async def update_order_sop_local_process_state(body: UpdateOrderSopLocalProcessStateRequest) -> dict:
+    """
+    功能：修改userwork.json的需求单sop_node信息和local_process_state，以及研发单的sop_node节点。
+    """
+    from filelock import FileLock
+
+    path = _owner_order_file_name()
+    if not path.is_file():
+        return success_response(None, "success")
+
+    lock = FileLock(str(_owner_order_file_lock_path()), timeout=30)
+    with lock:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            prev = json.loads(raw)
+            if not isinstance(prev, dict):
+                return success_response(None, "success")
+            existing_list = prev.get("list")
+            if not isinstance(existing_list, list):
+                return success_response(None, "success")
+        except (OSError, json.JSONDecodeError):
+            return success_response(None, "success")
+
+        modified = False
+        for demand in existing_list:
+            if isinstance(demand, dict) and demand.get("demand_no") == body.demand_no:
+                if body.sop_node is not None:
+                    demand["sop_node"] = body.sop_node
+                    modified = True
+                if body.local_process_state is not None:
+                    demand["local_process_state"] = body.local_process_state
+                    modified = True
+
+                if body.owned_work_items:
+                    task_updates = {item.task_no: item for item in body.owned_work_items}
+                    owned = demand.get("owned_work_items")
+                    if isinstance(owned, list):
+                        for task in owned:
+                            if isinstance(task, dict):
+                                t_no = task.get("task_no")
+                                if t_no in task_updates:
+                                    update_data = task_updates[t_no]
+                                    if update_data.sop_node is not None:
+                                        task["sop_node"] = update_data.sop_node
+                                        modified = True
+                break
+
+        if modified:
+            payload = {
+                "list": existing_list,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            _atomic_write_json_file(path, payload)
+
+    return success_response(None, "success")
+
+
+class DeleteOrderInfoRequest(BaseModel):
+    demand_no: str = Field(..., description="需求单号")
+
+@router.post("/api/dev/iwhalecloud/delete_order_info")
+async def delete_order_info(body: DeleteOrderInfoRequest) -> dict:
+    """
+    功能：删除userwork.json中的指定需求单。
+    """
+    from filelock import FileLock
+
+    path = _owner_order_file_name()
+    if not path.is_file():
+        return success_response(None, "success")
+
+    lock = FileLock(str(_owner_order_file_lock_path()), timeout=30)
+    with lock:
+        try:
+            raw = path.read_text(encoding="utf-8")
+            prev = json.loads(raw)
+            if not isinstance(prev, dict):
+                return success_response(None, "success")
+            existing_list = prev.get("list")
+            if not isinstance(existing_list, list):
+                return success_response(None, "success")
+        except (OSError, json.JSONDecodeError):
+            return success_response(None, "success")
+
+        original_len = len(existing_list)
+        # 过滤掉 demand_no 匹配的需求单
+        existing_list = [
+            demand for demand in existing_list 
+            if not (isinstance(demand, dict) and demand.get("demand_no") == body.demand_no)
+        ]
+
+        if len(existing_list) < original_len:
+            payload = {
+                "list": existing_list,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            _atomic_write_json_file(path, payload)
+
+    return success_response(None, "success")
 
 
 @router.post("/api/dev/iwhalecloud/login")

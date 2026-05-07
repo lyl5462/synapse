@@ -446,6 +446,7 @@ NEXT: 建议的下一步"""
                     "必须区分「宿主内已验证完成」与「用户本机可观测完成」，不要仅凭宿主命令退出成功判定后者已完成。"
                 ),
                 max_tokens=512,
+                usage_scene="verify_task_completion",
             )
 
             result = response.content.strip().upper() if response.content else ""
@@ -498,6 +499,7 @@ NEXT: 建议的下一步"""
                 prompt=prompt,
                 system="你是一个任务执行分析专家。请简洁地分析任务执行情况，找出耗时原因和改进建议。",
                 max_tokens=512,
+                usage_scene="task_retrospect",
             )
 
             result = strip_thinking_tags(response.content).strip() if response.content else ""
