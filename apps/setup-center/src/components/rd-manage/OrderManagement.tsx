@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
-import { ConfigProvider, theme, Badge, Avatar, Button, Drawer, Modal, Tag, Progress, Tabs, Popover, Tooltip } from 'antd';
+import { ConfigProvider, theme, Badge, Avatar, Button, Drawer, Modal, Tag, Progress, Tabs, Popover, Tooltip, Collapse } from 'antd';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   GitBranch,
@@ -35,7 +35,8 @@ import {
   AlertCircle,
   Search,
   Banknote,
-  RefreshCw
+  RefreshCw,
+  ExternalLink
 } from 'lucide-react';
 import {
   fetchRdManageDemands,
@@ -438,6 +439,115 @@ function demandItemFallbackFromTicket(ticket: Ticket): DemandListItem {
   };
 }
 
+/** 工单弹窗内：研发子单属性区（与「处理汇总」同款大卡分栏，含仓库） */
+function TaskModalWorkItemStats({
+  wi,
+  tm,
+  dbMetricsLoading,
+  t,
+  onOpenProductModule,
+}: {
+  wi: OwnedWorkItem;
+  tm: { deal_seconds: number; deal_tokens: number } | undefined;
+  dbMetricsLoading: boolean;
+  t: (key: string, options?: Record<string, unknown>) => string;
+  onOpenProductModule: () => void;
+}) {
+  const repo = (wi.repo_url || '').trim();
+  const isHttp = /^https?:\/\//i.test(repo);
+  const stageText = (wi.stage_name || '—').trim() || '—';
+  const stageDone =
+    stageText.includes('完成') ||
+    stageText.includes('走查') ||
+    stageText.toLowerCase().includes('done');
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+          <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+            {t('rdManageOrder.taskDealTime')}
+          </div>
+          <div className="relative z-10 mt-1 font-mono text-xl font-bold text-foreground sm:text-2xl">
+            {dbMetricsLoading && !tm ? '…' : formatDurationSeconds(tm?.deal_seconds ?? 0, t)}
+          </div>
+          <Clock className="absolute -bottom-2 -right-2 h-14 w-14 text-primary/5 sm:h-16 sm:w-16" />
+        </div>
+        <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+          <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+            {t('rdManageOrder.taskDealToken')}
+          </div>
+          <div className="relative z-10 mt-1 font-mono text-xl font-bold text-foreground sm:text-2xl">
+            {dbMetricsLoading && !tm ? '…' : (tm?.deal_tokens ?? 0).toLocaleString()}
+          </div>
+          <Coins className="absolute -bottom-2 -right-2 h-14 w-14 text-primary/5 sm:h-16 sm:w-16" />
+        </div>
+        <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+          <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+            {t('rdManageOrder.taskCreated')}
+          </div>
+          <div className="relative z-10 mt-1 text-xs font-medium leading-snug text-foreground sm:text-sm">
+            {wi.created_date || '—'}
+          </div>
+          <ClipboardList className="absolute -bottom-2 -right-2 h-14 w-14 text-primary/5 sm:h-16 sm:w-16" />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+          <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+            {t('rdManageOrder.stageName')}
+          </div>
+          <div className="relative z-10 mt-2 flex items-center gap-2">
+            <Badge status={stageDone ? 'success' : 'processing'} text={<span className="text-sm text-foreground/90">{stageText}</span>} />
+          </div>
+          <Code className="absolute -bottom-3 -right-2 h-16 w-16 text-primary/5" />
+        </div>
+        <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+          <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+            {t('rdManageOrder.productModule')}
+          </div>
+          <div className="relative z-10 mt-2">
+            {(wi.product_module_name || '').trim() ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-left text-sm font-medium text-primary underline decoration-primary/40 underline-offset-2 transition-colors hover:text-primary/90"
+                title={t('rdManageOrder.openProductModule')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenProductModule();
+                }}
+              >
+                {wi.product_module_name}
+                <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+              </button>
+            ) : (
+              <span className="text-sm text-foreground/80">—</span>
+            )}
+          </div>
+          <Network className="absolute -bottom-3 -right-2 h-16 w-16 text-primary/5" />
+        </div>
+      </div>
+      <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+        <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+          {t('rdManageOrder.repoUrl')}
+        </div>
+        <div className="relative z-10 mt-2 break-all font-mono text-xs leading-relaxed text-foreground/90">
+          {!repo ? (
+            <span className="text-muted-foreground">—</span>
+          ) : isHttp ? (
+            <a href={repo} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+              {repo}
+            </a>
+          ) : (
+            repo
+          )}
+        </div>
+        <Network className="absolute -bottom-4 -right-2 h-20 w-20 text-primary/5" />
+      </div>
+    </div>
+  );
+}
+
 // --- Main Components ---
 
 export const OrderManagement: React.FC<{
@@ -453,6 +563,7 @@ export const OrderManagement: React.FC<{
   const [selectedNode, setSelectedNode] = useState<SOPNode | null>(null);
   const [ticketModalOpen, setTicketModalOpen] = useState(false);
   const [selectedTicketForModal, setSelectedTicketForModal] = useState<Ticket | null>(null);
+  const [selectedWorkItemIdForModal, setSelectedWorkItemIdForModal] = useState<string | null>(null);
   const [modalDemand, setModalDemand] = useState<DemandListItem | null>(null);
   const [dbMetrics, setDbMetrics] = useState<WorkOrderDbMetricsPayload | null>(null);
   const [dbMetricsLoading, setDbMetricsLoading] = useState(false);
@@ -679,6 +790,19 @@ export const OrderManagement: React.FC<{
     }
     return activeTicket;
   }, [activeTicket, activeWorkItem]);
+
+  /** 工单弹窗：从子单 id 解析出要展示的研发单子集（必须在任意提前 return 之前调用，遵守 Hooks 规则） */
+  const ticketModalWorkItemsResolved = useMemo(() => {
+    const allOwned = modalDemand?.owned_work_items ?? [];
+    const workItemIdTrim = (selectedWorkItemIdForModal || '').trim();
+    const matched =
+      workItemIdTrim.length > 0
+        ? allOwned.filter((wi) => (wi.task_no || '').trim() === workItemIdTrim)
+        : [];
+    const singleTaskMode = Boolean(workItemIdTrim && matched.length > 0);
+    const displayWorkItems = singleTaskMode ? matched : allOwned;
+    return { workItemIdTrim, matched, singleTaskMode, displayWorkItems };
+  }, [modalDemand, selectedWorkItemIdForModal]);
 
   const getNodeStateGlobal = (ticket: Ticket | null, nodeId: string): NodeState => {
     if (!ticket) return 'pending';
@@ -907,11 +1031,12 @@ export const OrderManagement: React.FC<{
     setDrawerOpen(true);
   };
 
-  const handleShowTicketDetails = (e: React.MouseEvent, ticket: Ticket) => {
+  const handleShowTicketDetails = (e: React.MouseEvent, ticket: Ticket, workItemId?: string) => {
     e.stopPropagation();
     const raw = demandListRaw.find((d) => (d.demand_no || "").trim() === ticket.id.trim());
     setModalDemand(raw ?? demandItemFallbackFromTicket(ticket));
     setSelectedTicketForModal(ticket);
+    setSelectedWorkItemIdForModal(workItemId || null);
     setTicketModalOpen(true);
   };
 
@@ -1267,7 +1392,7 @@ export const OrderManagement: React.FC<{
                     sopAwaitingHuman: isWorkItem
                       ? Boolean((item as WorkItem).humanIntervention)
                       : ticket.sopAwaitingHuman,
-                  });
+                  }, isWorkItem ? item.id : undefined);
                 };
 
                 const ticketInfoButton = (
@@ -1394,7 +1519,7 @@ export const OrderManagement: React.FC<{
               if (ticket.status === 'processing' && ticket.workItems && ticket.workItems.length > 0) {
                 return (
                   <div key={ticket.id} className="relative mb-2 mt-3 rounded-[10px] border border-dashed border-primary/40 p-1.5 pt-3">
-                    <div className="absolute -top-2.5 left-2 bg-[color:var(--panel)] px-1 text-[10px] font-medium text-primary">
+                    <div className="absolute -top-2.5 left-2 right-2 min-w-0 truncate bg-[color:var(--panel)] px-1 text-[10px] font-medium text-primary">
                       {ticket.title}
                     </div>
                     {ticket.workItems.map(workItem => renderCard(workItem, true))}
@@ -1857,14 +1982,19 @@ export const OrderManagement: React.FC<{
 
       {/* Ticket Details Modal */}
       <Modal
+        closable={false}
         title={
           modalDemand ? (
-            <div className="flex flex-col gap-1 border-b border-border pb-3 pr-8 text-foreground">
-              <div className="flex items-start gap-2 text-base font-semibold leading-snug">
-                <FileText className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                <span className="line-clamp-3">{modalDemand.demand_title}</span>
+            <div className="flex min-w-0 items-center gap-3 border-b border-border pb-3 text-foreground">
+              <div className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold leading-snug">
+                <FileText className="h-5 w-5 shrink-0 text-primary" />
+                <span className="line-clamp-1" title={modalDemand.demand_title}>
+                  {modalDemand.demand_title}
+                </span>
               </div>
-              <div className="pl-7 font-mono text-xs text-muted-foreground">#{modalDemand.demand_no}</div>
+              <Tag color="blue" bordered={false} className="m-0 shrink-0 font-mono text-xs">
+                #{modalDemand.demand_no}
+              </Tag>
             </div>
           ) : (
             <div className="flex items-center gap-2 border-b border-border pb-3 text-foreground">
@@ -1877,6 +2007,7 @@ export const OrderManagement: React.FC<{
         onCancel={() => {
           setTicketModalOpen(false);
           setSelectedTicketForModal(null);
+          setSelectedWorkItemIdForModal(null);
           setModalDemand(null);
           setDbMetrics(null);
           setDbMetricsErr(null);
@@ -1885,236 +2016,339 @@ export const OrderManagement: React.FC<{
         width={720}
         styles={{
           root: { background: 'var(--panel2)', border: '1px solid var(--line)', color: 'var(--text)' },
-          body: { paddingTop: 8, maxHeight: 'min(82vh, 840px)', overflowY: 'auto' },
+          body: { paddingTop: 0, paddingBottom: 16, maxHeight: 'min(85vh, 860px)', overflowY: 'auto' },
           header: { background: 'transparent' },
           mask: { backdropFilter: 'blur(4px)' },
         }}
-        closeIcon={<span className="text-muted-foreground hover:text-foreground">✕</span>}
       >
         {selectedTicketForModal && modalDemand && (
-            <div className="space-y-5 pt-1">
-              {showTicketModalPipelineLayers && (
-                <section className="rounded-xl border border-border/70 bg-muted/15 p-4">
-                  <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <Activity className="h-4 w-4 text-primary" />
-                    {t('rdManageOrder.sectionSummary')}
-                  </h3>
-                  {dbMetricsLoading ? (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {t('rdManageOrder.loadingMetrics')}
+          <Tabs
+            key={`ticket-modal-${modalDemand.demand_no}-${ticketModalWorkItemsResolved.singleTaskMode ? ticketModalWorkItemsResolved.workItemIdTrim : 'all'}`}
+            defaultActiveKey={ticketModalWorkItemsResolved.singleTaskMode ? 'tasks' : 'overview'}
+            items={[
+              {
+                key: 'overview',
+                label: t('rdManageOrder.tabOverview'),
+                children: (
+                  <div className="space-y-5 pt-2">
+                    {showTicketModalPipelineLayers && (
+                      <section>
+                        <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          <Activity className="h-4 w-4 text-primary" />
+                          {t('rdManageOrder.sectionSummary')}
+                        </h3>
+                        {dbMetricsLoading ? (
+                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            {t('rdManageOrder.loadingMetrics')}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+                              <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+                                {t('rdManageOrder.processDuration')}
+                              </div>
+                              <div className="relative z-10 mt-1 font-mono text-2xl font-bold text-foreground">
+                                {formatDurationSeconds(modalSummaryMetrics?.process_seconds ?? 0, t)}
+                              </div>
+                              <Clock className="absolute -bottom-2 -right-2 h-16 w-16 text-primary/5" />
+                            </div>
+                            <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+                              <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+                                {t('rdManageOrder.totalTokens')}
+                              </div>
+                              <div className="relative z-10 mt-1 font-mono text-2xl font-bold text-foreground">
+                                {(modalSummaryMetrics?.total_tokens ?? 0).toLocaleString()}
+                              </div>
+                              <Coins className="absolute -bottom-2 -right-2 h-16 w-16 text-primary/5" />
+                            </div>
+                            <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+                              <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+                                {t('rdManageOrder.humanInterventions')}
+                              </div>
+                              <div className="relative z-10 mt-1 font-mono text-2xl font-bold text-foreground">
+                                {modalSummaryMetrics?.human_interventions ?? 0}
+                              </div>
+                              <User className="absolute -bottom-2 -right-2 h-16 w-16 text-primary/5" />
+                            </div>
+                            <div className="col-span-3 relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-br from-background/60 to-muted/20 p-4">
+                              <div className="relative z-10 text-[10px] font-medium uppercase text-muted-foreground">
+                                {t('rdManageOrder.artifacts')}
+                              </div>
+                              <div className="relative z-10 mt-2 flex flex-wrap gap-1.5">
+                                {(modalSummaryMetrics?.artifacts?.length ?? 0) === 0 ? (
+                                  <span className="text-xs text-muted-foreground">{t('rdManageOrder.noArtifacts')}</span>
+                                ) : (
+                                  (modalSummaryMetrics?.artifacts ?? []).map((a, i) => (
+                                    <Tag color="purple" bordered={false} key={`${a}-${i}`} className="m-0 max-w-full truncate text-xs">
+                                      {a}
+                                    </Tag>
+                                  ))
+                                )}
+                              </div>
+                              <FileCode2 className="absolute -bottom-4 -right-2 h-20 w-20 text-primary/5" />
+                            </div>
+                          </div>
+                        )}
+                        {dbMetricsErr && !dbMetricsLoading ? (
+                          <p className="mt-2 text-xs text-destructive/90">{dbMetricsErr}</p>
+                        ) : null}
+                      </section>
+                    )}
+
+                    <section>
+                      <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <ClipboardList className="h-4 w-4 text-primary" />
+                        {t('rdManageOrder.sectionDemand')}
+                      </h3>
+                      <div className="mb-4 grid grid-cols-1 gap-x-4 gap-y-3 rounded-xl border border-border/50 bg-muted/10 p-4 sm:grid-cols-2">
+                        <div className="flex items-center justify-between text-sm sm:block">
+                          <span className="text-xs text-muted-foreground">
+                            {t('rdManageOrder.labelColon', { label: t('rdManageOrder.demandCreateTime') })}
+                          </span>
+                          <span className="font-mono text-foreground/90">{modalDemand.demand_create_time || '—'}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-sm sm:block">
+                          <span className="text-xs text-muted-foreground">
+                            {t('rdManageOrder.labelColon', { label: t('rdManageOrder.demandStatus') })}
+                          </span>
+                          <Badge 
+                            status={modalDemand.demand_status?.includes('完成') || modalDemand.demand_status?.includes('Done') ? 'success' : 'processing'} 
+                            text={
+                              <span className="font-medium text-foreground/90">{(modalDemand.demand_status || '—').trim() || '—'}</span>
+                            } 
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-sm sm:block">
+                          <span className="text-xs text-muted-foreground">
+                            {t('rdManageOrder.labelColon', { label: t('rdManageOrder.demandImpact') })}
+                          </span>
+                          <span className="text-foreground/90">{(modalDemand.demand_impact || '—').trim() || '—'}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-sm sm:block">
+                          <span className="text-xs text-muted-foreground">
+                            {t('rdManageOrder.labelColon', { label: t('rdManageOrder.productVersion') })}
+                          </span>
+                          <Tag bordered={false} className="m-0 font-mono">
+                            {(modalDemand.product_version_code || '—').trim() || '—'}
+                          </Tag>
+                        </div>
+                        <div className="flex items-center justify-between text-sm sm:block">
+                          <span className="text-xs text-muted-foreground">
+                            {t('rdManageOrder.labelColon', { label: t('rdManageOrder.demandDealTime') })}
+                          </span>
+                          <span className="font-mono text-foreground/90">
+                            {dbMetricsLoading && !modalDemandMetrics
+                              ? '…'
+                              : formatDurationSeconds(modalDemandMetrics?.deal_seconds ?? 0, t)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-sm sm:block">
+                          <span className="text-xs text-muted-foreground">
+                            {t('rdManageOrder.labelColon', { label: t('rdManageOrder.demandDealToken') })}
+                          </span>
+                          <span className="font-mono text-foreground/90">
+                            {dbMetricsLoading && !modalDemandMetrics
+                              ? '…'
+                              : (modalDemandMetrics?.deal_tokens ?? 0).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="mb-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                        {t('rdManageOrder.demandDesc')}
+                      </div>
+                      <div className="rounded-lg border border-border/60 bg-background/50 p-4 text-sm">
+                        {(modalDemand.demand_desc || '').trim() ? (
+                          <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 prose-pre:border prose-pre:border-border/50 prose-pre:bg-muted/30 prose-a:text-primary">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                a: ({ ...props }) => (
+                                  <a {...props} className="underline" target="_blank" rel="noopener noreferrer" />
+                                ),
+                              }}
+                            >
+                              {modalDemand.demand_desc || ''}
+                            </ReactMarkdown>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
+                        )}
+                      </div>
+                    </section>
+                    
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-4 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1.5">
+                        <span>{t('rdManageOrder.labelColon', { label: t('rdManageOrder.designer') })}</span>
+                        <Avatar size={18} className="bg-primary/20 text-xs font-semibold text-primary">
+                          {(modalDemand.demand_designer || selectedTicketForModal.owner || '?').charAt(0)}
+                        </Avatar>
+                        <span className="font-medium text-foreground/80">
+                          {(modalDemand.demand_designer || selectedTicketForModal.owner || '—').trim()}
+                        </span>
+                      </div>
                     </div>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                      <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
-                        <div className="text-[10px] uppercase text-muted-foreground">
-                          {t('rdManageOrder.processDuration')}
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-medium text-foreground">
-                          {formatDurationSeconds(modalSummaryMetrics?.process_seconds ?? 0, t)}
-                        </div>
-                      </div>
-                      <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
-                        <div className="text-[10px] uppercase text-muted-foreground">
-                          {t('rdManageOrder.totalTokens')}
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-medium text-foreground">
-                          {(modalSummaryMetrics?.total_tokens ?? 0).toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
-                        <div className="text-[10px] uppercase text-muted-foreground">
-                          {t('rdManageOrder.humanInterventions')}
-                        </div>
-                        <div className="mt-0.5 font-mono text-sm font-medium text-foreground">
-                          {modalSummaryMetrics?.human_interventions ?? 0}
-                        </div>
-                      </div>
-                      <div className="col-span-2 rounded-lg border border-border/50 bg-background/40 px-3 py-2 sm:col-span-4">
-                        <div className="text-[10px] uppercase text-muted-foreground">
-                          {t('rdManageOrder.artifacts')}
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {(modalSummaryMetrics?.artifacts?.length ?? 0) === 0 ? (
-                            <span className="text-xs text-muted-foreground">{t('rdManageOrder.noArtifacts')}</span>
+                  </div>
+                )
+              },
+              ...(showTicketModalPipelineLayers && ticketModalWorkItemsResolved.displayWorkItems.length > 0
+                ? [
+                    {
+                      key: 'tasks',
+                      label: ticketModalWorkItemsResolved.singleTaskMode
+                        ? t('rdManageOrder.sectionTaskDetails')
+                        : t('rdManageOrder.tabTasksWithCount', {
+                            count: ticketModalWorkItemsResolved.displayWorkItems.length,
+                          }),
+                      children: (
+                        <div className="space-y-4 pt-2">
+                          {ticketModalWorkItemsResolved.singleTaskMode ? (
+                            ticketModalWorkItemsResolved.displayWorkItems.map((wi) => {
+                              const tm = dbMetrics?.task_metrics?.[wi.task_no];
+                              return (
+                                <div key={wi.task_no} className="rounded-xl border border-border/60 bg-muted/10 p-5">
+                                  <div className="mb-5 flex min-w-0 items-center gap-2 border-b border-border/50 pb-4">
+                                    <Tag color="processing" bordered={false} className="m-0 shrink-0 font-mono text-xs">
+                                      {wi.task_no}
+                                    </Tag>
+                                    <h4
+                                      className="min-w-0 flex-1 text-base font-medium leading-snug text-foreground line-clamp-2"
+                                      title={wi.task_title}
+                                    >
+                                      {wi.task_title}
+                                    </h4>
+                                  </div>
+                                  <TaskModalWorkItemStats
+                                    wi={wi}
+                                    tm={tm}
+                                    dbMetricsLoading={dbMetricsLoading}
+                                    t={t}
+                                    onOpenProductModule={() => void openProductDetailForWorkItem(wi)}
+                                  />
+                                  <div className="mt-6 rounded-lg border border-border/50 bg-background/40 p-4 text-sm">
+                                    <div className="mb-3 border-b border-border/40 pb-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                                      {t('rdManageOrder.taskDescription')}
+                                    </div>
+                                    {(wi.task_desc || '').trim() ? (
+                                      <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/85 prose-pre:border prose-pre:border-border/50 prose-pre:bg-muted/30 prose-a:text-primary">
+                                        <ReactMarkdown
+                                          remarkPlugins={[remarkGfm]}
+                                          components={{
+                                            a: ({ ...props }) => (
+                                              <a {...props} className="underline" target="_blank" rel="noopener noreferrer" />
+                                            ),
+                                          }}
+                                        >
+                                          {wi.task_desc}
+                                        </ReactMarkdown>
+                                      </div>
+                                    ) : (
+                                      <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
                           ) : (
-                            (modalSummaryMetrics?.artifacts ?? []).map((a, i) => (
-                              <Tag key={`${a}-${i}`} className="m-0 max-w-full truncate border-border/60 text-xs">
-                                {a}
-                              </Tag>
-                            ))
+                            <Collapse
+                              className="bg-transparent"
+                              bordered={false}
+                              expandIconPosition="end"
+                              items={ticketModalWorkItemsResolved.displayWorkItems.map((wi) => {
+                                const tm = dbMetrics?.task_metrics?.[wi.task_no];
+                                return {
+                                  key: wi.task_no,
+                                  style: {
+                                    marginBottom: 12,
+                                    background: 'var(--panel2)',
+                                    borderRadius: 8,
+                                    border: '1px solid var(--line)',
+                                    overflow: 'hidden',
+                                  },
+                                  label: (
+                                    <div className="flex flex-col gap-1.5 pr-2">
+                                      <div className="flex min-w-0 items-center gap-2">
+                                        <Tag color="processing" bordered={false} className="m-0 shrink-0 font-mono text-[10px]">
+                                          {wi.task_no}
+                                        </Tag>
+                                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={wi.task_title}>
+                                          {wi.task_title}
+                                        </span>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                                        <Badge
+                                          status={
+                                            wi.stage_name?.includes('完成') || wi.stage_name?.includes('走查')
+                                              ? 'success'
+                                              : 'processing'
+                                          }
+                                          text={
+                                            <span className="text-muted-foreground">
+                                              {(wi.stage_name || '—').trim() || '—'}
+                                            </span>
+                                          }
+                                        />
+                                        <div className="flex items-center gap-1">
+                                          <Clock className="h-3 w-3" />
+                                          <span>
+                                            {dbMetricsLoading && !tm
+                                              ? '…'
+                                              : formatDurationSeconds(tm?.deal_seconds ?? 0, t)}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ),
+                                  children: (
+                                    <div className="border-t border-border/50 pt-4">
+                                      <TaskModalWorkItemStats
+                                        wi={wi}
+                                        tm={tm}
+                                        dbMetricsLoading={dbMetricsLoading}
+                                        t={t}
+                                        onOpenProductModule={() => void openProductDetailForWorkItem(wi)}
+                                      />
+                                      <div className="mt-6 rounded-lg border border-border/50 bg-muted/10 p-3 text-xs">
+                                        <div className="mb-3 border-b border-border/40 pb-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                                          {t('rdManageOrder.taskDescription')}
+                                        </div>
+                                        {(wi.task_desc || '').trim() ? (
+                                          <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/85 prose-pre:border prose-pre:border-border/50 prose-pre:bg-muted/30 prose-a:text-primary">
+                                            <ReactMarkdown
+                                              remarkPlugins={[remarkGfm]}
+                                              components={{
+                                                a: ({ ...props }) => (
+                                                  <a
+                                                    {...props}
+                                                    className="underline"
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                  />
+                                                ),
+                                              }}
+                                            >
+                                              {wi.task_desc}
+                                            </ReactMarkdown>
+                                          </div>
+                                        ) : (
+                                          <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ),
+                                };
+                              })}
+                            />
                           )}
                         </div>
-                      </div>
-                    </div>
-                  )}
-                  {dbMetricsErr && !dbMetricsLoading ? (
-                    <p className="mt-2 text-xs text-destructive/90">{dbMetricsErr}</p>
-                  ) : null}
-                </section>
-              )}
-
-              <section className="rounded-xl border border-border/70 bg-muted/15 p-4">
-                <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  <ClipboardList className="h-4 w-4 text-primary" />
-                  {t('rdManageOrder.sectionDemand')}
-                </h3>
-                <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div className="flex justify-between gap-2 text-xs sm:block">
-                    <span className="text-muted-foreground">{t('rdManageOrder.demandCreateTime')}</span>
-                    <span className="font-mono text-foreground/90">{modalDemand.demand_create_time || '—'}</span>
-                  </div>
-                  <div className="flex justify-between gap-2 text-xs sm:block">
-                    <span className="text-muted-foreground">{t('rdManageOrder.demandStatus')}</span>
-                    <span className="text-foreground/90">{(modalDemand.demand_status || '—').trim() || '—'}</span>
-                  </div>
-                  <div className="flex justify-between gap-2 text-xs sm:block">
-                    <span className="text-muted-foreground">{t('rdManageOrder.demandImpact')}</span>
-                    <span className="text-foreground/90">{(modalDemand.demand_impact || '—').trim() || '—'}</span>
-                  </div>
-                  <div className="flex justify-between gap-2 text-xs sm:block">
-                    <span className="text-muted-foreground">{t('rdManageOrder.productVersion')}</span>
-                    <span className="font-mono text-foreground/90">
-                      {(modalDemand.product_version_code || '—').trim() || '—'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-2 text-xs sm:block">
-                    <span className="text-muted-foreground">{t('rdManageOrder.demandDealTime')}</span>
-                    <span className="font-mono text-foreground/90">
-                      {dbMetricsLoading && !modalDemandMetrics
-                        ? '…'
-                        : formatDurationSeconds(modalDemandMetrics?.deal_seconds ?? 0, t)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-2 text-xs sm:block">
-                    <span className="text-muted-foreground">{t('rdManageOrder.demandDealToken')}</span>
-                    <span className="font-mono text-foreground/90">
-                      {dbMetricsLoading && !modalDemandMetrics
-                        ? '…'
-                        : (modalDemandMetrics?.deal_tokens ?? 0).toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">
-                  {t('rdManageOrder.demandDesc')}
-                </div>
-                <div className="max-h-72 overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-3 text-sm custom-scrollbar">
-                  {(modalDemand.demand_desc || '').trim() ? (
-                    <div className="leading-relaxed text-foreground/90 [&_a]:text-primary [&_code]:rounded [&_code]:bg-muted/50 [&_code]:px-1 [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-sm [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:my-2 [&_pre]:max-h-48 [&_pre]:overflow-auto [&_pre]:rounded-md [&_pre]:bg-muted/30 [&_pre]:p-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          a: ({ ...props }) => (
-                            <a {...props} className="underline" target="_blank" rel="noopener noreferrer" />
-                          ),
-                        }}
-                      >
-                        {modalDemand.demand_desc || ''}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
-                  )}
-                </div>
-              </section>
-
-              {showTicketModalPipelineLayers && (modalDemand.owned_work_items || []).length > 0 ? (
-                <section className="rounded-xl border border-border/70 bg-muted/15 p-4">
-                  <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    <Code className="h-4 w-4 text-primary" />
-                    {t('rdManageOrder.sectionTasks')}
-                  </h3>
-                  <div className="space-y-3">
-                    {(modalDemand.owned_work_items || []).map((wi) => {
-                      const tm = dbMetrics?.task_metrics?.[wi.task_no];
-                      return (
-                        <div
-                          key={wi.task_no}
-                          className="rounded-lg border border-l-4 border-border/60 border-l-primary/70 bg-background/30 p-3"
-                        >
-                          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-                            <div className="font-mono text-xs text-muted-foreground">{wi.task_no}</div>
-                            <div className="text-xs text-muted-foreground">
-                              {t('rdManageOrder.taskCreated')}: {wi.created_date || '—'}
-                            </div>
-                          </div>
-                          <div className="mb-2 text-sm font-medium text-foreground">{wi.task_title}</div>
-                          <div className="mb-2 grid grid-cols-1 gap-1.5 text-xs sm:grid-cols-2">
-                            <div>
-                              <span className="text-muted-foreground">{t('rdManageOrder.stageName')}: </span>
-                              <span>{(wi.stage_name || '—').trim() || '—'}</span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">{t('rdManageOrder.productModule')}: </span>
-                              {(wi.product_module_name || '').trim() ? (
-                                <button
-                                  type="button"
-                                  className="text-primary underline decoration-primary/40 underline-offset-2 hover:text-primary/90"
-                                  title={t('rdManageOrder.openProductModule')}
-                                  onClick={() => void openProductDetailForWorkItem(wi)}
-                                >
-                                  {wi.product_module_name}
-                                </button>
-                              ) : (
-                                '—'
-                              )}
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">{t('rdManageOrder.taskDealTime')}: </span>
-                              <span className="font-mono">
-                                {dbMetricsLoading && !tm
-                                  ? '…'
-                                  : formatDurationSeconds(tm?.deal_seconds ?? 0, t)}
-                              </span>
-                            </div>
-                            <div>
-                              <span className="text-muted-foreground">{t('rdManageOrder.taskDealToken')}: </span>
-                              <span className="font-mono">
-                                {dbMetricsLoading && !tm ? '…' : (tm?.deal_tokens ?? 0).toLocaleString()}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
-                            {t('rdManageOrder.taskDesc')}
-                          </div>
-                          <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-border/50 bg-muted/20 p-2 text-xs custom-scrollbar">
-                            {(wi.task_desc || '').trim() ? (
-                              <div className="leading-relaxed text-foreground/85 [&_a]:text-primary [&_code]:rounded [&_code]:bg-muted/50 [&_code]:px-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4">
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkGfm]}
-                                  components={{
-                                    a: ({ ...props }) => (
-                                      <a {...props} className="underline" target="_blank" rel="noopener noreferrer" />
-                                    ),
-                                  }}
-                                >
-                                  {wi.task_desc}
-                                </ReactMarkdown>
-                              </div>
-                            ) : (
-                              <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              ) : null}
-
-              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                  <span>{t('rdManageOrder.designer')}:</span>
-                  <Avatar size={16} className="bg-muted text-[10px] text-foreground">
-                    {(modalDemand.demand_designer || selectedTicketForModal.owner || '?').charAt(0)}
-                  </Avatar>
-                  <span className="text-foreground/80">
-                    {(modalDemand.demand_designer || selectedTicketForModal.owner || '—').trim()}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
+                      ),
+                    },
+                  ]
+                : [])
+            ]}
+          />
+        )}
       </Modal>
 
       <ProductDetail

@@ -39,7 +39,7 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-[dialog-fade-in_150ms_ease-out_both] data-[state=closed]:animate-[dialog-fade-out_100ms_ease-in_both]",
+        "fixed inset-0 z-[1210] bg-black/50 data-[state=open]:animate-[dialog-fade-in_150ms_ease-out_both] data-[state=closed]:animate-[dialog-fade-out_100ms_ease-in_both]",
         className
       )}
       {...props}
@@ -63,7 +63,7 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg bg-popover text-popover-foreground p-6 shadow-lg outline-none transform-gpu data-[state=open]:animate-[dialog-fade-in_150ms_ease-out_both] data-[state=closed]:animate-[dialog-fade-out_100ms_ease-in_both] sm:max-w-lg",
+          "fixed top-[50%] left-[50%] z-[1210] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg bg-popover text-popover-foreground p-6 shadow-lg outline-none transform-gpu data-[state=open]:animate-[dialog-fade-in_150ms_ease-out_both] data-[state=closed]:animate-[dialog-fade-out_100ms_ease-in_both] sm:max-w-lg",
           className
         )}
         onAnimationEnd={(e) => {
