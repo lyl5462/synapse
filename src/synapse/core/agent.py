@@ -1773,6 +1773,7 @@ class Agent:
         - 记忆整理（凌晨 3:00，适应期内每 N 小时一次）
         - 系统自检（凌晨 4:00）
         - 活人感心跳（每 30 分钟）
+        - 工单快照同步（每 1 小时）
         """
         from ..config import settings
         from ..scheduler import ScheduledTask, TriggerType
@@ -1968,6 +1969,40 @@ class Agent:
                         await self.task_scheduler.disable_task(backup_task_id)
         except Exception as e:
             logger.warning(f"Failed to register workspace_backup task: {e}")
+
+        # 任务 6: 研发负责人工单快照（每小时）
+        try:
+            wo_sync_id = "system_sync_owner_work_orders"
+            if wo_sync_id not in existing_ids:
+                wo_task = ScheduledTask(
+                    id=wo_sync_id,
+                    name="工单快照同步",
+                    trigger_type=TriggerType.INTERVAL,
+                    trigger_config={"interval_minutes": 60},
+                    action="system:sync_owner_work_orders",
+                    prompt="从研发云同步负责人需求列表并写入本地快照",
+                    description="每小时同步工单快照（依赖 userinfo.encryption）",
+                    task_type=TaskType.TASK,
+                    enabled=True,
+                    deletable=False,
+                    metadata={"notify_on_start": False, "notify_on_complete": False},
+                )
+                await self.task_scheduler.add_task(wo_task)
+                logger.info("Registered system task: sync_owner_work_orders (every 60 min)")
+            else:
+                existing_wo = self.task_scheduler.get_task(wo_sync_id)
+                if existing_wo:
+                    changed = False
+                    if existing_wo.deletable:
+                        existing_wo.deletable = False
+                        changed = True
+                    if getattr(existing_wo, "action", None) != "system:sync_owner_work_orders":
+                        existing_wo.action = "system:sync_owner_work_orders"
+                        changed = True
+                    if changed:
+                        await self.task_scheduler.save()
+        except Exception as e:
+            logger.warning(f"Failed to register sync_owner_work_orders task: {e}")
 
     def _build_system_prompt(
         self,
@@ -5485,7 +5520,7 @@ class Agent:
         session: Any = None,
         endpoint_override: str | None = None,
         intent_result: Any = None,
-        usage_scene: str,
+        usage_scene: str = "unknown",
     ) -> str:
         """
         使用指定的消息上下文进行对话（委托给 ReasoningEngine）

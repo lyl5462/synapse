@@ -586,6 +586,7 @@ class TaskExecutor:
         - system:proactive_heartbeat - 活人感心跳
         - system:workspace_backup - 定时工作区备份
         - system:memory_nudge_review - 周期性记忆回顾
+        - system:sync_owner_work_orders - 研发负责人工单快照同步（研发云）
         """
         action = task.action
         logger.info(f"Executing system task: {action}")
@@ -596,6 +597,7 @@ class TaskExecutor:
             "system:daily_memory": 1800,  # 30 分钟（含 LLM review 大量记忆）
             "system:workspace_backup": 300,  # 5 分钟
             "system:memory_nudge_review": 120,  # 2 分钟（轻量 LLM 审视）
+            "system:sync_owner_work_orders": 1800,  # 30 分钟（Playwright + 串行拉研发云）
         }
         timeout = SYSTEM_TASK_TIMEOUTS.get(action)
 
@@ -610,6 +612,8 @@ class TaskExecutor:
                 coro = self._system_workspace_backup()
             elif action == "system:memory_nudge_review":
                 coro = self._system_memory_nudge_review()
+            elif action == "system:sync_owner_work_orders":
+                coro = self._system_sync_owner_work_orders()
             else:
                 return False, f"Unknown system action: {action}"
 
@@ -1049,6 +1053,28 @@ class TaskExecutor:
         except Exception as e:
             logger.error(f"Workspace backup failed: {e}")
             return False, str(e)
+
+    async def _system_sync_owner_work_orders(self) -> tuple[bool, str]:
+        """从研发云同步负责人需求快照（``userinfo.encryption``）；无凭据时跳过，不计为失败。"""
+        try:
+            from synapse.api.routes.dev_iwhalecloud import sync_owner_orders_from_local_userinfo
+
+            r = await sync_owner_orders_from_local_userinfo()
+        except Exception as e:
+            logger.error(f"sync_owner_work_orders failed: {e}")
+            return False, str(e)
+
+        ec = r.get("errorcode", 500)
+        if ec != 0:
+            return False, str(r.get("message", "sync_owner_work_orders_error"))
+
+        data = r.get("data")
+        if isinstance(data, dict) and data.get("skipped"):
+            reason = str(data.get("reason", "skipped"))
+            logger.info("sync_owner_work_orders skipped: %s", reason)
+            return True, f"[SKIP] {reason}"
+
+        return True, "工单快照已同步"
 
     def _find_all_im_targets(self) -> list[tuple[str, str]]:
         """

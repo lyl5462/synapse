@@ -1,4 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { toast } from 'sonner';
 import { ConfigProvider, theme, Badge, Avatar, Button, Drawer, Modal, Tag, Progress, Tabs, Popover, Tooltip } from 'antd';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -24,14 +28,36 @@ import {
   TestTube,
   CheckSquare,
   Activity,
+  ClipboardList,
   Flame,
   TrendingUp,
   Loader2,
   AlertCircle,
   Search,
-  Banknote
+  Banknote,
+  RefreshCw
 } from 'lucide-react';
-import { fetchRdManageDemands, type DemandListItem } from '../../api/rdManageService';
+import {
+  fetchRdManageDemands,
+  syncRdManageDemandsFromDevCloud,
+  fetchWorkOrderDbMetrics,
+  fetchHumanInLoopFlags,
+  type DemandListItem,
+  type OwnedWorkItem,
+  type RdManageDemandsPayload,
+  type WorkOrderDbMetricsPayload,
+} from '../../api/rdManageService';
+import { getProdInfo } from '@/api/rdUnifiedService';
+import type { ProdInfoWireItem, ProdProcessDataPayload } from '@/api/rdUnifiedService';
+import { IS_TAURI } from '@/platform';
+import { ProductDetail } from '@/components/product/ProductDetail';
+import {
+  Product,
+  applyProcessPayloadToProduct,
+  patchProductKnowledgeSlots,
+  prodInfoWireToProduct,
+  type ProductKnowledgePatch,
+} from '@/components/product/types';
 import { ViewId } from '../../types';
 
 // --- Types & Data ---
@@ -61,6 +87,8 @@ export interface WorkItem {
   description: string;
   /** 该研发单对应的流水线当前节点 id（由接口 task sop_node 解析） */
   currentNode: string;
+  /** 处理中且本地 sop_trajectories（order_id=task_no）存在人工介入节点时为 true */
+  humanIntervention?: boolean;
 }
 
 export interface Ticket {
@@ -233,6 +261,47 @@ function stageIdForNodeId(nodeId: string): number {
   return stage ? stage.id : 0;
 }
 
+/**
+ * 仅「处理中」工单需要查轨迹人工介入；order_id 与左侧展示维度一致：
+ * - 仅有需求单（无研发子单）→ 传 demand_no
+ * - 有研发子单（按子单展示）→ 只传各 task_no，不传 demand_no
+ */
+function collectOrderIdsForHitlFlags(list: DemandListItem[]): string[] {
+  const ids = new Set<string>();
+  for (const d of list) {
+    const base = deriveBaseTicketStatus(d);
+    if (base !== "processing") continue;
+    const owned = d.owned_work_items || [];
+    if (owned.length === 0) {
+      const dn = (d.demand_no || "").trim();
+      if (dn) ids.add(dn);
+    } else {
+      for (const w of owned) {
+        const tid = (w.task_no || "").trim();
+        if (tid) ids.add(tid);
+      }
+    }
+  }
+  return Array.from(ids);
+}
+
+/** 不含人工介入态（人工介入仅由处理中 + sop_trajectories 叠加得到） */
+function deriveBaseTicketStatus(d: DemandListItem): Ticket["status"] {
+  const local = effectiveLocalProcessState(d);
+  const isCompleted =
+    local === "已完成" ||
+    (d.demand_status || "").trim() === "已完成" ||
+    (d.demand_status || "").trim() === "completed";
+  if (isCompleted) return "completed";
+  if (local === "预备中") return "prepare";
+  if (local === "待处理") return "pending";
+  if (local === "处理中") return "processing";
+  if (["需求开发", "开发中", "测试中"].some((x) => (d.demand_status || "").includes(x))) {
+    return "processing";
+  }
+  return "pending";
+}
+
 /** 接口可能省略 local_process_state，用需求状态兜底「待处理」 */
 function effectiveLocalProcessState(d: DemandListItem): string {
   const s = (d.local_process_state || "").trim();
@@ -241,18 +310,16 @@ function effectiveLocalProcessState(d: DemandListItem): string {
   return "";
 }
 
-function mapDemandListItemToTicket(d: DemandListItem): Ticket {
+function mapDemandListItemToTicket(d: DemandListItem, flags: Record<string, boolean>): Ticket {
   const local = effectiveLocalProcessState(d);
-  let status: Ticket["status"] = "pending";
-  if (local === "预备中") status = "prepare";
-  else if (local === "待处理") status = "pending";
-  else if (local === "处理中") status = "processing";
-  else if (local === "全人工") status = "human_intervention";
-  else if (local === "已完成" || d.demand_status === "已完成" || d.demand_status === "completed")
-    status = "completed";
-  else if (["需求开发", "开发中", "测试中"].some((x) => (d.demand_status || "").includes(x)))
-    status = "processing";
-  else status = "pending";
+  const baseStatus = deriveBaseTicketStatus(d);
+  const owned = d.owned_work_items || [];
+  const dn = (d.demand_no || "").trim();
+
+  let status: Ticket["status"] = baseStatus;
+  if (baseStatus === "processing" && owned.length === 0 && dn && flags[dn]) {
+    status = "human_intervention";
+  }
 
   let demandNodeId = "pending";
   if (status === "completed") {
@@ -260,9 +327,12 @@ function mapDemandListItemToTicket(d: DemandListItem): Ticket {
   } else if (local === "待处理") {
     // 契约：待处理时需求单一定在「等待调度」，与接口 sop_node 文案无关
     demandNodeId = "pending";
-  } else if (local === "预备中" || local === "全人工") {
-    // 契约：预备中/全人工时 sop_node 必为空，不解析接口 sop
+  } else if (local === "预备中") {
+    // 契约：预备中时 sop_node 必为空，不解析接口 sop
     demandNodeId = "pending";
+  } else if (status === "human_intervention") {
+    const sop = (d.sop_node || "").trim();
+    demandNodeId = resolveSopRawToNodeId(sop) ?? "pending";
   } else if (status === "processing") {
     const sop = (d.sop_node || "").trim();
     demandNodeId = resolveSopRawToNodeId(sop) ?? "pending";
@@ -273,10 +343,11 @@ function mapDemandListItemToTicket(d: DemandListItem): Ticket {
     (d.demand_finish_time || "").trim() ||
     "0h";
 
-  const items = d.owned_work_items || [];
-  const workItems: WorkItem[] = items.map((w) => {
+  const workItems: WorkItem[] = owned.map((w) => {
     const taskResolved = resolveSopRawToNodeId((w.sop_node || "").trim());
     const currentNode = taskResolved ?? demandNodeId;
+    const tid = (w.task_no || "").trim();
+    const humanIntervention = baseStatus === "processing" && Boolean(tid && flags[tid]);
     return {
       id: w.task_no,
       title: w.task_title,
@@ -285,6 +356,7 @@ function mapDemandListItemToTicket(d: DemandListItem): Ticket {
       branch: w.product_module_name || "master",
       description: w.task_desc || "",
       currentNode,
+      humanIntervention,
     };
   });
 
@@ -305,23 +377,75 @@ function mapDemandListItemToTicket(d: DemandListItem): Ticket {
   };
 }
 
+/** 秒 → 可读时长（优先小时/分钟） */
+function formatDurationSeconds(totalSec: number, tFormat: (k: string, o?: Record<string, unknown>) => string): string {
+  const s = Math.max(0, Math.floor(totalSec));
+  if (s < 60) return tFormat('rdManageOrder.seconds', { count: s });
+  const m = Math.floor(s / 60);
+  if (m < 60) return tFormat('rdManageOrder.minutes', { count: m });
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  if (remM === 0) return tFormat('rdManageOrder.hours', { count: h });
+  return tFormat('rdManageOrder.hoursMinutes', { hours: h, minutes: remM });
+}
+
+function demandItemFallbackFromTicket(ticket: Ticket): DemandListItem {
+  const items: OwnedWorkItem[] = (ticket.workItems || []).map((w) => ({
+    task_no: w.id,
+    task_title: w.title,
+    task_desc: w.description,
+    created_date: w.createdAt,
+    sccb_work_hours: null,
+    stage_name: '',
+    product_module_id: null,
+    product_module_name: w.branch,
+    repo_url: '',
+    sop_node: '',
+  }));
+  return {
+    demand_no: ticket.id,
+    demand_title: ticket.title,
+    demand_desc: ticket.description,
+    demand_create_time: ticket.createdAt,
+    demand_finish_time: '',
+    demand_sccb_work_minutes: ticket.tokens,
+    demand_status: '',
+    demand_impact: '',
+    demand_designer: ticket.owner,
+    product_version_id: null,
+    product_version_code: ticket.branch,
+    sop_node: '',
+    local_process_state: '',
+    owned_work_items: items,
+  };
+}
+
 // --- Main Components ---
 
 export const OrderManagement: React.FC<{
   synapseApiBase?: string;
   onViewChange?: (view: ViewId) => void;
 }> = ({ synapseApiBase = "http://127.0.0.1:18900", onViewChange }) => {
+  const { t } = useTranslation();
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [demandListRaw, setDemandListRaw] = useState<DemandListItem[]>([]);
   const [activeTicketId, setActiveTicketId] = useState<string>('');
   const [activeWorkItemId, setActiveWorkItemId] = useState<string>('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedNode, setSelectedNode] = useState<SOPNode | null>(null);
   const [ticketModalOpen, setTicketModalOpen] = useState(false);
   const [selectedTicketForModal, setSelectedTicketForModal] = useState<Ticket | null>(null);
+  const [modalDemand, setModalDemand] = useState<DemandListItem | null>(null);
+  const [dbMetrics, setDbMetrics] = useState<WorkOrderDbMetricsPayload | null>(null);
+  const [dbMetricsLoading, setDbMetricsLoading] = useState(false);
+  const [dbMetricsErr, setDbMetricsErr] = useState<string | null>(null);
+  const [detailProduct, setDetailProduct] = useState<Product | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [ticketFilter, setTicketFilter] = useState<'prepare' | 'pending' | 'processing' | 'human_intervention' | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   /** 看板数据是否已完成首次拉取（用于区分「加载中」与「快照为空」） */
   const [boardDataInitialized, setBoardDataInitialized] = useState(false);
+  const [boardRefreshBusy, setBoardRefreshBusy] = useState(false);
 
   const [collapsedStages, setCollapsedStages] = useState<Record<number, boolean>>({});
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -333,7 +457,138 @@ export const OrderManagement: React.FC<{
   const containerRef = useRef<HTMLDivElement>(null);
   const antDark = useAntThemeDark();
 
-  // Load Data：`GET /api/dev/iwhalecloud/owner_order_snapshot`；无快照时列表为空；异常时 rdManageService 回退 Mock
+  useEffect(() => {
+    if (!ticketModalOpen || !modalDemand) return;
+    let cancelled = false;
+    setDbMetricsLoading(true);
+    setDbMetricsErr(null);
+    setDbMetrics(null);
+    const taskNos = (modalDemand.owned_work_items || []).map((w) => w.task_no).filter(Boolean);
+    void fetchWorkOrderDbMetrics(synapseApiBase, {
+      demand_no: modalDemand.demand_no,
+      task_nos: taskNos,
+    })
+      .then((data) => {
+        if (!cancelled) setDbMetrics(data);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setDbMetricsErr(msg);
+          toast.error(t("rdManageOrder.metricsLoadFailed", { message: msg }));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDbMetricsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticketModalOpen, modalDemand, synapseApiBase, t]);
+
+  const mergeProcessIntoProduct = useCallback((productId: string, payload: ProdProcessDataPayload) => {
+    setDetailProduct((p) => (p && p.id === productId ? applyProcessPayloadToProduct(p, payload) : p));
+  }, []);
+
+  const patchProductKnowledge = useCallback((productId: string, patch: ProductKnowledgePatch) => {
+    setDetailProduct((sp) =>
+      sp && sp.id === productId
+        ? { ...sp, knowledge: patchProductKnowledgeSlots(sp.knowledge, patch) }
+        : sp,
+    );
+  }, []);
+
+  const openProductDetailForWorkItem = useCallback(
+    async (wi: OwnedWorkItem) => {
+      if (!IS_TAURI) {
+        toast.message(t("rdManageOrder.productOpenTauriOnly"));
+        return;
+      }
+      const modName = (wi.product_module_name || "").trim();
+      const repoUrl = (wi.repo_url || "").trim();
+      try {
+        const resp = await getProdInfo(synapseApiBase);
+        const raw = Array.isArray(resp.data) ? resp.data : [];
+        const rows = raw.filter((row): row is ProdInfoWireItem => row != null);
+        const hit =
+          (modName && rows.find((r) => (r.module || "").trim() === modName)) ||
+          (repoUrl
+            ? rows.find(
+                (r) =>
+                  Array.isArray(r.repo_info) &&
+                  r.repo_info.some((repo) => (repo?.repo_url || "").trim() === repoUrl),
+              )
+            : undefined);
+        if (!hit) {
+          toast.error(t("rdManageOrder.productNotFound"));
+          return;
+        }
+        setDetailProduct(prodInfoWireToProduct(hit));
+        setDetailOpen(true);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast.error(`${t("rdManageOrder.productNotFound")} (${msg})`);
+      }
+    },
+    [synapseApiBase, t],
+  );
+
+  const applyBoardPayload = useCallback(
+    async (data: RdManageDemandsPayload) => {
+      setDemandListRaw(data.list || []);
+      const list = data.list || [];
+      const orderIds = collectOrderIdsForHitlFlags(list);
+      let flags: Record<string, boolean> = {};
+      try {
+        flags = await fetchHumanInLoopFlags(synapseApiBase, orderIds);
+      } catch {
+        flags = {};
+      }
+      const allTickets = list.map((d) => mapDemandListItemToTicket(d, flags));
+
+      allTickets.forEach((tk) => {
+        if (tk.status === "completed") {
+          tk.currentNode = LAST_PIPELINE_NODE_ID;
+          tk.currentStage = LAST_PIPELINE_STAGE_ID;
+        } else {
+          const stage = SOP_STAGES.find((s) => s.nodes.some((n) => n.id === tk.currentNode));
+          tk.currentStage = stage ? stage.id : 0;
+        }
+      });
+
+      setTickets(allTickets);
+      if (allTickets.length > 0) {
+        const first = allTickets[0];
+        setActiveTicketId(first.id);
+        if (first.status === "processing" && first.workItems && first.workItems.length > 0) {
+          setActiveWorkItemId(first.workItems[0].id);
+        } else {
+          setActiveWorkItemId("");
+        }
+      } else {
+        setActiveTicketId("");
+        setActiveWorkItemId("");
+      }
+    },
+    [synapseApiBase],
+  );
+
+  const refreshWorkOrdersFromDevCloud = useCallback(async () => {
+    setBoardRefreshBusy(true);
+    try {
+      const data = await syncRdManageDemandsFromDevCloud(synapseApiBase);
+      await applyBoardPayload(data);
+      toast.success(t("rdManageOrder.refreshSuccess"));
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      const msg = raw === "owner_info_missing" ? t("rdManageOrder.userinfoMissing") : raw;
+      toast.error(t("rdManageOrder.refreshFailed", { message: msg }));
+    } finally {
+      setBoardRefreshBusy(false);
+    }
+  }, [synapseApiBase, t, applyBoardPayload]);
+
+  // Load Data：`GET owner_order_snapshot`；无快照时列表为空；异常时 rdManageService 可回退 Mock
   useEffect(() => {
     let cancelled = false;
     setBoardDataInitialized(false);
@@ -341,33 +596,9 @@ export const OrderManagement: React.FC<{
       try {
         const data = await fetchRdManageDemands(synapseApiBase);
         if (cancelled) return;
-        const allTickets = (data.list || []).map(mapDemandListItemToTicket);
-
-        allTickets.forEach((t) => {
-          if (t.status === "completed") {
-            t.currentNode = LAST_PIPELINE_NODE_ID;
-            t.currentStage = LAST_PIPELINE_STAGE_ID;
-          } else {
-            const stage = SOP_STAGES.find((s) => s.nodes.some((n) => n.id === t.currentNode));
-            t.currentStage = stage ? stage.id : 0;
-          }
-        });
-
-        setTickets(allTickets);
-        if (allTickets.length > 0) {
-          const first = allTickets[0];
-          setActiveTicketId(first.id);
-          if (first.status === "processing" && first.workItems && first.workItems.length > 0) {
-            setActiveWorkItemId(first.workItems[0].id);
-          } else {
-            setActiveWorkItemId("");
-          }
-        } else {
-          setActiveTicketId("");
-          setActiveWorkItemId("");
-        }
-      } catch (e) {
-        if (!cancelled) console.error("Failed to load demands:", e);
+        await applyBoardPayload(data);
+      } catch (err) {
+        if (!cancelled) console.error("Failed to load demands:", err);
       } finally {
         if (!cancelled) setBoardDataInitialized(true);
       }
@@ -376,7 +607,7 @@ export const OrderManagement: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [synapseApiBase]);
+  }, [synapseApiBase, applyBoardPayload]);
 
   const filteredTickets = useMemo(() => {
     return tickets.filter(t => {
@@ -391,7 +622,12 @@ export const OrderManagement: React.FC<{
       }
       if (ticketFilter === 'pending') return t.status === 'pending';
       if (ticketFilter === 'processing') return t.status === 'processing' || t.status === 'error';
-      if (ticketFilter === 'human_intervention') return t.status === 'human_intervention';
+      if (ticketFilter === 'human_intervention') {
+        return (
+          t.status === 'human_intervention' ||
+          Boolean(t.workItems?.some((w) => w.humanIntervention))
+        );
+      }
       if (ticketFilter === 'prepare') return t.status === 'prepare';
       return true;
     });
@@ -399,7 +635,14 @@ export const OrderManagement: React.FC<{
 
   const pendingCount = useMemo(() => tickets.filter(t => t.status === 'pending').length, [tickets]);
   const processingCount = useMemo(() => tickets.filter(t => t.status === 'processing' || t.status === 'error').length, [tickets]);
-  const humanInterventionCount = useMemo(() => tickets.filter(t => t.status === 'human_intervention').length, [tickets]);
+  const humanInterventionCount = useMemo(
+    () =>
+      tickets.filter(
+        (t) =>
+          t.status === 'human_intervention' || Boolean(t.workItems?.some((w) => w.humanIntervention)),
+      ).length,
+    [tickets],
+  );
   const prepareCount = useMemo(() => tickets.filter(t => t.status === 'prepare').length, [tickets]);
   const completedCount = useMemo(() => tickets.filter(t => t.status === 'completed').length, [tickets]);
 
@@ -417,11 +660,14 @@ export const OrderManagement: React.FC<{
         branch: activeWorkItem.branch,
         description: activeWorkItem.description,
       };
-      if (activeTicket.status === "processing") {
+      const effectiveStatus = activeWorkItem.humanIntervention
+        ? "human_intervention"
+        : activeTicket.status;
+      if (effectiveStatus === "processing" || effectiveStatus === "human_intervention") {
         merge.currentNode = activeWorkItem.currentNode;
         merge.currentStage = stageIdForNodeId(activeWorkItem.currentNode);
       }
-      return { ...activeTicket, ...merge };
+      return { ...activeTicket, ...merge, status: effectiveStatus };
     }
     return activeTicket;
   }, [activeTicket, activeWorkItem]);
@@ -644,6 +890,8 @@ export const OrderManagement: React.FC<{
 
   const handleShowTicketDetails = (e: React.MouseEvent, ticket: Ticket) => {
     e.stopPropagation();
+    const raw = demandListRaw.find((d) => (d.demand_no || "").trim() === ticket.id.trim());
+    setModalDemand(raw ?? demandItemFallbackFromTicket(ticket));
     setSelectedTicketForModal(ticket);
     setTicketModalOpen(true);
   };
@@ -855,21 +1103,26 @@ export const OrderManagement: React.FC<{
     if (!boardDataInitialized) {
       return (
         <div className="flex h-full min-h-0 flex-1 items-center justify-center text-muted-foreground">
-          正在加载智能任务看板…
+          {t("rdManageOrder.loadingBoard")}
         </div>
       );
     }
     return (
-      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-background px-6 text-center text-muted-foreground">
+      <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-4 bg-background px-6 text-center text-muted-foreground">
         <FileText className="h-10 w-10 opacity-40" />
-        <p className="max-w-md text-sm leading-relaxed">
-          当前没有可用的工单快照数据。请先在 Synapse 中调用研发云接口
-          <span className="font-mono text-foreground/80"> POST /api/dev/iwhalecloud/get_demand_by_user </span>
-          同步负责人需求列表后，本页将自动读取快照文件展示。
-        </p>
+        <p className="max-w-md text-sm leading-relaxed">{t("rdManageOrder.emptySnapshot")}</p>
+        <Button type="primary" onClick={() => void refreshWorkOrdersFromDevCloud()} loading={boardRefreshBusy}>
+          {t("rdManageOrder.refresh")}
+        </Button>
       </div>
     );
   }
+
+  const showTicketModalPipelineLayers =
+    !!selectedTicketForModal &&
+    !['prepare', 'pending', 'human_intervention'].includes(selectedTicketForModal.status);
+  const modalDemandMetrics = dbMetrics?.demand_metrics;
+  const modalSummaryMetrics = dbMetrics?.summary;
 
   return (
     <ConfigProvider theme={{ algorithm: antDark ? theme.darkAlgorithm : theme.defaultAlgorithm }}>
@@ -878,7 +1131,8 @@ export const OrderManagement: React.FC<{
         {/* Left Panel: 与会话列表同宽 */}
         <div className="z-20 flex w-[340px] min-w-[340px] shrink-0 flex-col border-r border-border bg-[color:var(--panel)]">
           <div className="convSidebarHeader">
-            <h2 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <div className="flex items-start justify-between gap-2">
+              <h2 className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-foreground">
               <FileText className="h-4 w-4 shrink-0 text-primary" />
               智能任务看板
               <Tooltip
@@ -890,7 +1144,19 @@ export const OrderManagement: React.FC<{
                   <Info className="h-3.5 w-3.5" aria-hidden />
                 </span>
               </Tooltip>
-            </h2>
+              </h2>
+              <Button
+                type="text"
+                size="small"
+                className="shrink-0 !text-muted-foreground hover:!text-foreground"
+                loading={boardRefreshBusy}
+                disabled={boardRefreshBusy}
+                icon={<RefreshCw className="h-4 w-4" />}
+                onClick={() => void refreshWorkOrdersFromDevCloud()}
+                aria-label={t("rdManageOrder.refresh")}
+                title={t("rdManageOrder.refresh")}
+              />
+            </div>
             
             <div className="mt-2 flex items-center rounded-lg border border-border bg-background px-2.5 py-1.5 focus-within:ring-1 focus-within:ring-primary/50">
               <Search className="h-3.5 w-3.5 opacity-70 text-muted-foreground" />
@@ -943,9 +1209,13 @@ export const OrderManagement: React.FC<{
                   ? stageIdForNodeId((item as WorkItem).currentNode)
                   : ticket.currentStage;
                 const progressPercent = Math.round((rowStageId / (SOP_STAGES.length - 1)) * 100);
+
+                const rowHitl = !isWorkItem
+                  ? ticket.status === 'human_intervention'
+                  : Boolean((item as WorkItem).humanIntervention);
                 
                 const statusBorderColor = 
-                  ticket.status === 'human_intervention' ? 'bg-destructive' :
+                  rowHitl ? 'bg-destructive' :
                   ticket.status === 'processing' ? 'bg-primary' :
                   ticket.status === 'completed' ? 'bg-green-600 dark:bg-green-500' :
                   'bg-muted-foreground/40';
@@ -998,7 +1268,7 @@ export const OrderManagement: React.FC<{
                     <div className={`absolute bottom-0 left-0 top-0 w-1 ${statusBorderColor}`} />
 
                     {/* Global Hover Mask for Immediate Action */}
-                    {ticket.status === 'human_intervention' && (
+                    {rowHitl && (
                       <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/40 opacity-0 backdrop-blur-[2px] transition-opacity duration-300 group-hover:opacity-100">
                         <Button 
                           type="primary" 
@@ -1015,11 +1285,11 @@ export const OrderManagement: React.FC<{
                       </div>
                     )}
 
-                    {/* 工单信息：全人工时 hover 遮罩 z-30 会盖住默认层，在遮罩之上再渲染一份到右上角 */}
-                    {ticket.status !== 'human_intervention' && (
+                    {/* 工单信息：人工介入时 hover 遮罩 z-30 会盖住默认层，在遮罩之上再渲染一份到右上角 */}
+                    {!rowHitl && (
                       <div className="absolute right-2 top-2 z-20 flex items-center gap-2">{ticketInfoButton}</div>
                     )}
-                    {ticket.status === 'human_intervention' && (
+                    {rowHitl && (
                       <div className="absolute right-2 top-2 z-40 flex items-center gap-2">{ticketInfoButton}</div>
                     )}
 
@@ -1059,11 +1329,11 @@ export const OrderManagement: React.FC<{
                       
                       <div className="flex shrink-0 items-center gap-2 font-mono text-[10px]">
                         <span className="relative flex items-center gap-1">
-                          <Coins className={`h-3 w-3 ${ticket.status === 'processing' ? 'text-amber-500' : 'text-amber-500/70'}`} />
-                          <span className={ticket.status === 'processing' ? 'text-amber-500' : 'text-amber-600/70 dark:text-amber-400/70'}>
+                          <Coins className={`h-3 w-3 ${ticket.status === 'processing' || rowHitl ? 'text-amber-500' : 'text-amber-500/70'}`} />
+                          <span className={ticket.status === 'processing' || rowHitl ? 'text-amber-500' : 'text-amber-600/70 dark:text-amber-400/70'}>
                             {item.tokens >= 1000 ? (item.tokens/1000).toFixed(1) + 'k' : item.tokens}
                           </span>
-                          {ticket.status === 'processing' && (
+                          {(ticket.status === 'processing' || rowHitl) && (
                             <motion.div
                               initial={{ y: 5, opacity: 0 }}
                               animate={{ y: -10, opacity: [0, 1, 0] }}
@@ -1082,7 +1352,7 @@ export const OrderManagement: React.FC<{
                       <motion.div 
                         className={`h-full ${ticket.status === 'completed' ? 'bg-green-500' : 'bg-gradient-to-r from-primary via-primary/70 to-primary bg-[length:200%_100%]'}`}
                         style={{ width: ticket.status === 'completed' ? '100%' : ticket.status === 'pending' || ticket.status === 'prepare' ? '0%' : `${progressPercent}%` }} 
-                        animate={ticket.status === 'processing' ? { backgroundPosition: ['100% 0', '-100% 0'] } : {}}
+                        animate={(ticket.status === 'processing' || rowHitl) ? { backgroundPosition: ['100% 0', '-100% 0'] } : {}}
                         transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
                       />
                     </div>
@@ -1549,72 +1819,276 @@ export const OrderManagement: React.FC<{
       {/* Ticket Details Modal */}
       <Modal
         title={
-          <div className="mb-2 flex items-center gap-2 border-b border-border pb-4 text-lg text-foreground">
-            <FileText className="h-5 w-5 text-primary" />
-            工单详情
-          </div>
+          modalDemand ? (
+            <div className="flex flex-col gap-1 border-b border-border pb-3 pr-8 text-foreground">
+              <div className="flex items-start gap-2 text-base font-semibold leading-snug">
+                <FileText className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                <span className="line-clamp-3">{modalDemand.demand_title}</span>
+              </div>
+              <div className="pl-7 font-mono text-xs text-muted-foreground">#{modalDemand.demand_no}</div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 border-b border-border pb-3 text-foreground">
+              <FileText className="h-5 w-5 text-primary" />
+              <span className="text-lg">—</span>
+            </div>
+          )
         }
         open={ticketModalOpen}
-        onCancel={() => setTicketModalOpen(false)}
+        onCancel={() => {
+          setTicketModalOpen(false);
+          setSelectedTicketForModal(null);
+          setModalDemand(null);
+          setDbMetrics(null);
+          setDbMetricsErr(null);
+        }}
         footer={null}
-        width={600}
+        width={720}
         styles={{
           root: { background: 'var(--panel2)', border: '1px solid var(--line)', color: 'var(--text)' },
-          body: { paddingTop: 8 },
+          body: { paddingTop: 8, maxHeight: 'min(82vh, 840px)', overflowY: 'auto' },
           header: { background: 'transparent' },
-          mask: { backdropFilter: 'blur(4px)' }
+          mask: { backdropFilter: 'blur(4px)' },
         }}
         closeIcon={<span className="text-muted-foreground hover:text-foreground">✕</span>}
       >
-        {selectedTicketForModal && (
-          <div className="space-y-6 pt-2">
-            <div>
-              <h2 className="mb-2 text-xl font-bold text-foreground">{selectedTicketForModal.title}</h2>
-              <div className="flex w-max items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5 font-mono text-sm text-muted-foreground">
-                <GitBranch className="h-4 w-4 text-primary" />
-                {selectedTicketForModal.branch}
-              </div>
-            </div>
+        {selectedTicketForModal && modalDemand && (
+            <div className="space-y-5 pt-1">
+              {showTicketModalPipelineLayers && (
+                <section className="rounded-xl border border-border/70 bg-muted/15 p-4">
+                  <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Activity className="h-4 w-4 text-primary" />
+                    {t('rdManageOrder.sectionSummary')}
+                  </h3>
+                  {dbMetricsLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t('rdManageOrder.loadingMetrics')}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
+                        <div className="text-[10px] uppercase text-muted-foreground">
+                          {t('rdManageOrder.processDuration')}
+                        </div>
+                        <div className="mt-0.5 font-mono text-sm font-medium text-foreground">
+                          {formatDurationSeconds(modalSummaryMetrics?.process_seconds ?? 0, t)}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
+                        <div className="text-[10px] uppercase text-muted-foreground">
+                          {t('rdManageOrder.totalTokens')}
+                        </div>
+                        <div className="mt-0.5 font-mono text-sm font-medium text-foreground">
+                          {(modalSummaryMetrics?.total_tokens ?? 0).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
+                        <div className="text-[10px] uppercase text-muted-foreground">
+                          {t('rdManageOrder.humanInterventions')}
+                        </div>
+                        <div className="mt-0.5 font-mono text-sm font-medium text-foreground">
+                          {modalSummaryMetrics?.human_interventions ?? 0}
+                        </div>
+                      </div>
+                      <div className="col-span-2 rounded-lg border border-border/50 bg-background/40 px-3 py-2 sm:col-span-4">
+                        <div className="text-[10px] uppercase text-muted-foreground">
+                          {t('rdManageOrder.artifacts')}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {(modalSummaryMetrics?.artifacts?.length ?? 0) === 0 ? (
+                            <span className="text-xs text-muted-foreground">{t('rdManageOrder.noArtifacts')}</span>
+                          ) : (
+                            (modalSummaryMetrics?.artifacts ?? []).map((a, i) => (
+                              <Tag key={`${a}-${i}`} className="m-0 max-w-full truncate border-border/60 text-xs">
+                                {a}
+                              </Tag>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {dbMetricsErr && !dbMetricsLoading ? (
+                    <p className="mt-2 text-xs text-destructive/90">{dbMetricsErr}</p>
+                  ) : null}
+                </section>
+              )}
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="rounded-xl border border-border bg-muted/25 p-4">
-                <div className="mb-1 text-xs text-muted-foreground">当前阶段</div>
-                <div className="font-medium text-primary">{SOP_STAGES[selectedTicketForModal.currentStage]?.name || '未知'}</div>
-              </div>
-              <div className="rounded-xl border border-border bg-muted/25 p-4">
-                <div className="mb-1 text-xs text-muted-foreground">状态</div>
-                <div className="font-medium">
-                  {selectedTicketForModal.status === 'human_intervention' ? <span className="text-destructive">需人工干预</span> :
-                   selectedTicketForModal.status === 'processing' ? <span className="text-primary">处理中</span> : 
-                   selectedTicketForModal.status === 'error' ? <span className="text-destructive">异常</span> : 
-                   selectedTicketForModal.status === 'completed' ? <span className="text-green-600 dark:text-green-400">已完成</span> : 
-                   <span className="text-muted-foreground">待处理</span>}
+              <section className="rounded-xl border border-border/70 bg-muted/15 p-4">
+                <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  <ClipboardList className="h-4 w-4 text-primary" />
+                  {t('rdManageOrder.sectionDemand')}
+                </h3>
+                <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="flex justify-between gap-2 text-xs sm:block">
+                    <span className="text-muted-foreground">{t('rdManageOrder.demandCreateTime')}</span>
+                    <span className="font-mono text-foreground/90">{modalDemand.demand_create_time || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-xs sm:block">
+                    <span className="text-muted-foreground">{t('rdManageOrder.demandStatus')}</span>
+                    <span className="text-foreground/90">{(modalDemand.demand_status || '—').trim() || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-xs sm:block">
+                    <span className="text-muted-foreground">{t('rdManageOrder.demandImpact')}</span>
+                    <span className="text-foreground/90">{(modalDemand.demand_impact || '—').trim() || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-xs sm:block">
+                    <span className="text-muted-foreground">{t('rdManageOrder.productVersion')}</span>
+                    <span className="font-mono text-foreground/90">
+                      {(modalDemand.product_version_code || '—').trim() || '—'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-xs sm:block">
+                    <span className="text-muted-foreground">{t('rdManageOrder.demandDealTime')}</span>
+                    <span className="font-mono text-foreground/90">
+                      {dbMetricsLoading && !modalDemandMetrics
+                        ? '…'
+                        : formatDurationSeconds(modalDemandMetrics?.deal_seconds ?? 0, t)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 text-xs sm:block">
+                    <span className="text-muted-foreground">{t('rdManageOrder.demandDealToken')}</span>
+                    <span className="font-mono text-foreground/90">
+                      {dbMetricsLoading && !modalDemandMetrics
+                        ? '…'
+                        : (modalDemandMetrics?.deal_tokens ?? 0).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+                <div className="mb-1 text-[10px] font-semibold uppercase text-muted-foreground">
+                  {t('rdManageOrder.demandDesc')}
+                </div>
+                <div className="max-h-72 overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-3 text-sm custom-scrollbar">
+                  {(modalDemand.demand_desc || '').trim() ? (
+                    <div className="leading-relaxed text-foreground/90 [&_a]:text-primary [&_code]:rounded [&_code]:bg-muted/50 [&_code]:px-1 [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-base [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-sm [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:my-2 [&_pre]:max-h-48 [&_pre]:overflow-auto [&_pre]:rounded-md [&_pre]:bg-muted/30 [&_pre]:p-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                          a: ({ ...props }) => (
+                            <a {...props} className="underline" target="_blank" rel="noopener noreferrer" />
+                          ),
+                        }}
+                      >
+                        {modalDemand.demand_desc || ''}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
+                  )}
+                </div>
+              </section>
+
+              {showTicketModalPipelineLayers && (modalDemand.owned_work_items || []).length > 0 ? (
+                <section className="rounded-xl border border-border/70 bg-muted/15 p-4">
+                  <h3 className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <Code className="h-4 w-4 text-primary" />
+                    {t('rdManageOrder.sectionTasks')}
+                  </h3>
+                  <div className="space-y-3">
+                    {(modalDemand.owned_work_items || []).map((wi) => {
+                      const tm = dbMetrics?.task_metrics?.[wi.task_no];
+                      return (
+                        <div
+                          key={wi.task_no}
+                          className="rounded-lg border border-l-4 border-border/60 border-l-primary/70 bg-background/30 p-3"
+                        >
+                          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                            <div className="font-mono text-xs text-muted-foreground">{wi.task_no}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {t('rdManageOrder.taskCreated')}: {wi.created_date || '—'}
+                            </div>
+                          </div>
+                          <div className="mb-2 text-sm font-medium text-foreground">{wi.task_title}</div>
+                          <div className="mb-2 grid grid-cols-1 gap-1.5 text-xs sm:grid-cols-2">
+                            <div>
+                              <span className="text-muted-foreground">{t('rdManageOrder.stageName')}: </span>
+                              <span>{(wi.stage_name || '—').trim() || '—'}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">{t('rdManageOrder.productModule')}: </span>
+                              {(wi.product_module_name || '').trim() ? (
+                                <button
+                                  type="button"
+                                  className="text-primary underline decoration-primary/40 underline-offset-2 hover:text-primary/90"
+                                  title={t('rdManageOrder.openProductModule')}
+                                  onClick={() => void openProductDetailForWorkItem(wi)}
+                                >
+                                  {wi.product_module_name}
+                                </button>
+                              ) : (
+                                '—'
+                              )}
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">{t('rdManageOrder.taskDealTime')}: </span>
+                              <span className="font-mono">
+                                {dbMetricsLoading && !tm
+                                  ? '…'
+                                  : formatDurationSeconds(tm?.deal_seconds ?? 0, t)}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">{t('rdManageOrder.taskDealToken')}: </span>
+                              <span className="font-mono">
+                                {dbMetricsLoading && !tm ? '…' : (tm?.deal_tokens ?? 0).toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-[10px] font-semibold uppercase text-muted-foreground">
+                            {t('rdManageOrder.taskDesc')}
+                          </div>
+                          <div className="mt-1 max-h-40 overflow-y-auto rounded-md border border-border/50 bg-muted/20 p-2 text-xs custom-scrollbar">
+                            {(wi.task_desc || '').trim() ? (
+                              <div className="leading-relaxed text-foreground/85 [&_a]:text-primary [&_code]:rounded [&_code]:bg-muted/50 [&_code]:px-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4">
+                                <ReactMarkdown
+                                  remarkPlugins={[remarkGfm]}
+                                  components={{
+                                    a: ({ ...props }) => (
+                                      <a {...props} className="underline" target="_blank" rel="noopener noreferrer" />
+                                    ),
+                                  }}
+                                >
+                                  {wi.task_desc}
+                                </ReactMarkdown>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">{t('rdManageOrder.markdownEmpty')}</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <span>{t('rdManageOrder.designer')}:</span>
+                  <Avatar size={16} className="bg-muted text-[10px] text-foreground">
+                    {(modalDemand.demand_designer || selectedTicketForModal.owner || '?').charAt(0)}
+                  </Avatar>
+                  <span className="text-foreground/80">
+                    {(modalDemand.demand_designer || selectedTicketForModal.owner || '—').trim()}
+                  </span>
                 </div>
               </div>
-              <div className="rounded-xl border border-border bg-muted/25 p-4">
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground"><Clock className="h-3.5 w-3.5"/> 运行时长</div>
-                <div className="font-medium text-foreground">{selectedTicketForModal.runTime}</div>
-              </div>
-              <div className="rounded-xl border border-border bg-muted/25 p-4">
-                <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground"><Coins className="h-3.5 w-3.5"/> 消耗 Token</div>
-                <div className="font-medium text-foreground">{selectedTicketForModal.tokens.toLocaleString()}</div>
-              </div>
             </div>
-
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">需求描述</div>
-              <div className="min-h-[100px] rounded-xl border border-border bg-background p-4 text-sm leading-relaxed text-foreground/90">
-                {selectedTicketForModal.description}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between border-t border-border pt-4 text-xs text-muted-foreground">
-              <div>创建时间: {selectedTicketForModal.createdAt}</div>
-              <div className="flex items-center gap-1.5">负责人: <Avatar size={16} className="bg-muted text-[10px] text-foreground">{selectedTicketForModal.owner.charAt(0)}</Avatar> {selectedTicketForModal.owner}</div>
-            </div>
-          </div>
-        )}
+          )}
       </Modal>
+
+      <ProductDetail
+        product={detailProduct}
+        open={detailOpen}
+        onClose={() => {
+          setDetailOpen(false);
+          setDetailProduct(null);
+        }}
+        synapseApiBase={synapseApiBase}
+        onProcessPayload={mergeProcessIntoProduct}
+        onPatchProductKnowledge={patchProductKnowledge}
+      />
 
     </ConfigProvider>
   );

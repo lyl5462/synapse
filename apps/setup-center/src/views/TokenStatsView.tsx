@@ -56,6 +56,20 @@ type SessionRow = {
   total_cost: number;
 };
 
+/** 与 SessionRow 字段一致，首列为 usage_scene */
+type SceneRow = {
+  usage_scene: string;
+  first_call: string;
+  last_call: string;
+  total_input: number;
+  total_output: number;
+  total_tokens: number;
+  request_count: number;
+  operation_types: string;
+  endpoints: string;
+  total_cost: number;
+};
+
 const PERIOD_KEYS: PeriodKey[] = ["1d", "3d", "1w", "1m", "6m", "1y"];
 const PERIOD_I18N: Record<PeriodKey, string> = {
   "1d": "tokenStats.period1d",
@@ -124,6 +138,7 @@ export function TokenStatsView({
   const [byEndpoint, setByEndpoint] = useState<SummaryRow[]>([]);
   const [byOp, setByOp] = useState<SummaryRow[]>([]);
   const [timeline, setTimeline] = useState<TimelineRow[]>([]);
+  const [scenes, setScenes] = useState<SceneRow[]>([]);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -139,6 +154,7 @@ export function TokenStatsView({
         safeFetch(`${base}/summary?period=${period}&group_by=endpoint_name`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
         safeFetch(`${base}/summary?period=${period}&group_by=operation_type`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
         safeFetch(`${base}/timeline?period=${period}&interval=${period === "1d" ? "hour" : "day"}`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
+        safeFetch(`${base}/scenes?period=${period}&limit=20`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
         safeFetch(`${base}/sessions?period=${period}&limit=20`, { signal: AbortSignal.timeout(5000) }).then(r => r.json()),
       ]);
       const val = (i: number) => results[i].status === "fulfilled" ? (results[i] as PromiseFulfilledResult<any>).value : null;
@@ -146,7 +162,8 @@ export function TokenStatsView({
       setByEndpoint(val(1)?.data || []);
       setByOp(val(2)?.data || []);
       setTimeline(val(3)?.data || []);
-      setSessions(val(4)?.data || []);
+      setScenes(val(4)?.data || []);
+      setSessions(val(5)?.data || []);
       if (results.every(r => r.status === "rejected")) setFetchError(true);
     } catch {
       setFetchError(true);
@@ -353,6 +370,45 @@ export function TokenStatsView({
               </CardContent>
             </Card>
           </div>
+
+          {/* ── By usage_scene table（与按会话同布局，在其上方） ── */}
+          {scenes.length > 0 && (
+            <Card className="p-0 gap-0 border-border/50 shadow-sm overflow-hidden">
+              <div className="px-5 py-3 border-b border-border/50">
+                <div className="text-sm font-semibold">{t("tokenStats.byUsageScene", "按操作场景")}</div>
+              </div>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader className="bg-muted/30">
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead className="text-xs h-10 px-5 font-medium">{t("tokenStats.usageScene", "场景")}</TableHead>
+                      <TableHead className="text-xs h-10 px-4 text-right font-medium">Input</TableHead>
+                      <TableHead className="text-xs h-10 px-4 text-right font-medium">Output</TableHead>
+                      <TableHead className="text-xs h-10 px-4 text-right font-medium">Total</TableHead>
+                      <TableHead className="text-xs h-10 px-4 text-right font-medium">Reqs</TableHead>
+                      <TableHead className="text-xs h-10 px-4 text-right font-medium">Cost</TableHead>
+                      <TableHead className="text-xs h-10 px-4 font-medium">Endpoints</TableHead>
+                      <TableHead className="text-xs h-10 px-5 font-medium">Last</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {scenes.map((row) => (
+                      <TableRow key={row.usage_scene} className="border-b-border/50 transition-colors hover:bg-muted/20">
+                        <TableCell className="px-5 py-3 font-mono text-xs max-w-[220px] truncate" title={row.usage_scene}>{row.usage_scene}</TableCell>
+                        <TableCell className="px-4 py-3 text-xs text-right font-mono text-muted-foreground">{fmtNum(row.total_input)}</TableCell>
+                        <TableCell className="px-4 py-3 text-xs text-right font-mono text-muted-foreground">{fmtNum(row.total_output)}</TableCell>
+                        <TableCell className="px-4 py-3 text-xs text-right font-mono font-semibold">{fmtNum(row.total_tokens)}</TableCell>
+                        <TableCell className="px-4 py-3 text-xs text-right font-mono text-muted-foreground">{row.request_count}</TableCell>
+                        <TableCell className="px-4 py-3 text-xs text-right font-mono text-amber-500">{fmtCost(row.total_cost)}</TableCell>
+                        <TableCell className="px-4 py-3 text-xs text-muted-foreground max-w-[150px] truncate" title={row.endpoints}>{row.endpoints}</TableCell>
+                        <TableCell className="px-5 py-3 text-xs text-muted-foreground whitespace-nowrap">{utcToLocal(row.last_call || "")}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
 
           {/* ── Sessions table ── */}
           {sessions.length > 0 && (

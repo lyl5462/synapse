@@ -9,6 +9,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 interface ProductCardProps {
   product: Product;
+  /** 与本地 userinfo.encryption 对应的 owner_info 一致时为 true（仅桌面端计算） */
+  isOwnedByCurrentUser?: boolean;
   onEdit: (product: Product) => void | Promise<void>;
   onDelete: (product: Product) => void;
   onView: (product: Product) => void;
@@ -124,6 +126,7 @@ function AnalysisStatusBadge({
 
 export function ProductCard({
   product,
+  isOwnedByCurrentUser = false,
   onEdit,
   onDelete,
   onView,
@@ -138,7 +141,7 @@ export function ProductCard({
 
   return (
     <Card 
-      className="group relative flex flex-col h-[420px] overflow-hidden border-border/80 bg-background/60 shadow-sm transition-all hover:shadow-md hover:border-primary/30"
+      className="group relative flex h-[420px] flex-col overflow-hidden border-border/80 bg-background/60 shadow-sm transition-all hover:shadow-md hover:border-primary/30"
       onClick={() => onView(product)}
       style={{ cursor: "pointer" }}
     >
@@ -210,46 +213,59 @@ export function ProductCard({
       </div>
 
       <CardContent className="flex h-full flex-col px-5 pb-5 pt-9">
-        <div className="mb-4 flex items-start gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/5">
-            <img src={product.icon} alt={product.name} className="h-8 w-8 rounded-md object-contain" />
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <div className="flex min-w-0 items-center gap-2">
-              <h3
-                className="min-w-0 flex-1 basis-0 truncate text-base font-semibold tracking-tight text-foreground"
-                title={product.name}
-              >
-                {product.name}
-              </h3>
+        <div className="mb-4 flex min-w-0 flex-col gap-2">
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-primary/20 bg-primary/5">
+              <img src={product.icon} alt={product.name} className="h-8 w-8 rounded-md object-contain" />
             </div>
-            {(product.module || product.version) ? (
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <div className="flex min-w-0 items-center gap-2">
-                {product.module ? (
-                  <Badge
-                    variant="secondary"
-                    className="max-w-[5.5rem] shrink-0 truncate font-normal text-[10px] px-1.5 py-0 sm:max-w-[7rem] bg-purple-500/10 text-purple-700 dark:text-purple-400"
-                    title={displayIdPipeName(product.module)}
-                  >
-                    {displayIdPipeName(product.module)}
-                  </Badge>
-                ) : null}
-                {product.version ? (
+                {isOwnedByCurrentUser ? (
                   <Badge
                     variant="outline"
-                    className="max-w-[10rem] shrink-0 truncate whitespace-nowrap border-teal-500/35 bg-teal-500/10 font-normal text-[10px] text-teal-800 dark:text-teal-300 sm:max-w-[14rem]"
-                    title={displayIdPipeName(product.version)}
+                    className="shrink-0 border-primary/40 bg-primary/10 px-1.5 py-0 text-[10px] font-medium text-primary"
+                    title={t("workbench.products.cardMineBadgeTooltip")}
                   >
-                    {displayIdPipeName(product.version)}
+                    {t("workbench.products.cardMineBadge")}
                   </Badge>
                 ) : null}
+                <h3
+                  className="min-w-0 flex-1 basis-0 truncate text-base font-semibold tracking-tight text-foreground"
+                  title={product.name}
+                >
+                  {product.name}
+                </h3>
               </div>
-            ) : null}
+              {(product.module || product.version) ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  {product.module ? (
+                    <Badge
+                      variant="secondary"
+                      className="max-w-[5.5rem] shrink-0 truncate font-normal text-[10px] px-1.5 py-0 sm:max-w-[7rem] bg-purple-500/10 text-purple-700 dark:text-purple-400"
+                      title={displayIdPipeName(product.module)}
+                    >
+                      {displayIdPipeName(product.module)}
+                    </Badge>
+                  ) : null}
+                  {product.version ? (
+                    <Badge
+                      variant="outline"
+                      className="max-w-[10rem] shrink-0 truncate whitespace-nowrap border-teal-500/35 bg-teal-500/10 font-normal text-[10px] text-teal-800 dark:text-teal-300 sm:max-w-[14rem]"
+                      title={displayIdPipeName(product.version)}
+                    >
+                      {displayIdPipeName(product.version)}
+                    </Badge>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div className="min-w-0">
             {product.description?.trim() ? (
               <Tooltip delayDuration={400}>
                 <TooltipTrigger asChild>
                   <p
-                    className="cursor-default truncate text-[13px] leading-5 text-muted-foreground"
+                    className="line-clamp-2 cursor-default break-words text-[13px] leading-5 text-muted-foreground"
                     onClick={(e) => e.stopPropagation()}
                   >
                     {product.description}
@@ -266,7 +282,7 @@ export function ProductCard({
                 </TooltipContent>
               </Tooltip>
             ) : (
-              <p className="truncate text-[13px] leading-5 text-muted-foreground/40">—</p>
+              <p className="line-clamp-2 text-[13px] leading-5 text-muted-foreground/40">—</p>
             )}
           </div>
         </div>

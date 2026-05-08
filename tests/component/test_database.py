@@ -109,6 +109,119 @@ class TestTaskCRUD:
         await db.update_task("t2", status="completed", result="Success")
 
 
+class TestWorkOrderDbMetrics:
+    @pytest.mark.asyncio
+    async def test_sop_metrics_empty_orders(self, db):
+        assert await db.get_sop_trajectory_metrics_by_order_ids([]) == {}
+        assert await db.get_sop_trajectory_artifacts_for_order_ids([]) == []
+        s = await db.get_sop_trajectory_summary_for_order_ids([])
+        assert s["process_seconds"] == 0
+        assert s["human_interventions"] == 0
+        assert s["artifacts"] == []
+
+    @pytest.mark.asyncio
+    async def test_sop_metrics_insert_and_aggregate(self, db):
+        await db._connection.execute(
+            """
+            INSERT INTO sop_trajectories (
+                order_id, sop_step_id, sop_node_id, sop_node_status,
+                sop_node_start_time, sop_node_end_time, sop_node_use_model,
+                sop_node_use_tokens, sop_node_output_list, sop_node_human_in_the_loop
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "D-100",
+                "s1",
+                "n1",
+                "done",
+                "2026-01-01 10:00:00",
+                "2026-01-01 10:00:30",
+                "gpt",
+                42,
+                '["artifact-a.md"]',
+                1,
+            ),
+        )
+        await db._connection.commit()
+        per = await db.get_sop_trajectory_metrics_by_order_ids(["D-100"])
+        assert per["D-100"]["deal_seconds"] == 30
+        assert per["D-100"]["deal_tokens"] == 42
+        assert per["D-100"]["human_interventions"] == 1
+        arts = await db.get_sop_trajectory_artifacts_for_order_ids(["D-100"])
+        assert "artifact-a.md" in arts
+        summary = await db.get_sop_trajectory_summary_for_order_ids(["D-100"])
+        assert summary["process_seconds"] == 30
+        assert summary["human_interventions"] == 1
+
+    @pytest.mark.asyncio
+    async def test_sop_human_in_loop_flags_by_order_ids(self, db):
+        assert await db.get_sop_human_in_loop_flags_by_order_ids([]) == {}
+        await db._connection.execute(
+            """
+            INSERT INTO sop_trajectories (
+                order_id, sop_step_id, sop_node_id, sop_node_status,
+                sop_node_start_time, sop_node_end_time, sop_node_use_model,
+                sop_node_use_tokens, sop_node_output_list, sop_node_human_in_the_loop
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "HITL-1",
+                "s1",
+                "n1",
+                "done",
+                "2026-01-01 10:00:00",
+                "2026-01-01 10:00:30",
+                "gpt",
+                10,
+                "[]",
+                1,
+            ),
+        )
+        await db._connection.execute(
+            """
+            INSERT INTO sop_trajectories (
+                order_id, sop_step_id, sop_node_id, sop_node_status,
+                sop_node_start_time, sop_node_end_time, sop_node_use_model,
+                sop_node_use_tokens, sop_node_output_list, sop_node_human_in_the_loop
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "NO-HITL",
+                "s1",
+                "n1",
+                "done",
+                "2026-01-01 10:00:00",
+                "2026-01-01 10:00:30",
+                "gpt",
+                5,
+                "[]",
+                0,
+            ),
+        )
+        await db._connection.commit()
+        flags = await db.get_sop_human_in_loop_flags_by_order_ids(["HITL-1", "NO-HITL", "MISSING"])
+        assert flags["HITL-1"] is True
+        assert flags["NO-HITL"] is False
+        assert flags["MISSING"] is False
+
+    @pytest.mark.asyncio
+    async def test_token_usage_total_for_scenes(self, db):
+        await db._connection.execute(
+            """
+            INSERT INTO token_usage (
+                session_id, endpoint_name, model, operation_type,
+                input_tokens, output_tokens, usage_scene
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("s1", "e1", "m1", "chat", 10, 20, "dev_whalecloud_sop_D-200"),
+        )
+        await db._connection.commit()
+        total = await db.get_token_usage_total_tokens_for_scenes(
+            ["dev_whalecloud_sop_D-200", "dev_whalecloud_sop_missing"]
+        )
+        assert total == 30
+
+
 class TestTokenUsage:
     @pytest.mark.asyncio
     async def test_get_total(self, db):
@@ -123,6 +236,15 @@ class TestTokenUsage:
     async def test_get_summary(self, db):
         now = datetime.now()
         result = await db.get_token_usage_summary(
+            start_time=now - timedelta(hours=1),
+            end_time=now,
+        )
+        assert isinstance(result, list)
+
+    @pytest.mark.asyncio
+    async def test_get_by_scene(self, db):
+        now = datetime.now()
+        result = await db.get_token_usage_by_scene(
             start_time=now - timedelta(hours=1),
             end_time=now,
         )

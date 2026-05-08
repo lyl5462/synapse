@@ -4,6 +4,7 @@ Token usage statistics API endpoints.
 GET  /api/stats/tokens/summary   — aggregated stats by dimension
 GET  /api/stats/tokens/timeline  — time series for charts
 GET  /api/stats/tokens/sessions  — per-session breakdown
+GET  /api/stats/tokens/scenes    — per usage_scene breakdown
 GET  /api/stats/tokens/total     — grand total
 GET  /api/stats/tokens/context   — current context size + limit
 """
@@ -167,6 +168,31 @@ async def sessions(
         )
     except Exception as e:
         logger.error(f"[TokenStats] sessions query failed: {e}")
+        await _reset_db()
+        return {"error": "query failed, connection reset"}
+    return {"start": start_str, "end": end_str, "data": rows}
+
+
+@router.get("/scenes")
+async def scenes(
+    request: Request,
+    period: str | None = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+):
+    """Token usage grouped by usage_scene (operation scenario)."""
+    db = await _get_db()
+    if db is None:
+        return {"error": "database not available"}
+    start_str, end_str = _parse_range(start, end, period)
+    try:
+        rows = await db.get_token_usage_by_scene(
+            start_time=start_str, end_time=end_str, limit=limit, offset=offset
+        )
+    except Exception as e:
+        logger.error(f"[TokenStats] scenes query failed: {e}")
         await _reset_db()
         return {"error": "query failed, connection reset"}
     return {"start": start_str, "end": end_str, "data": rows}

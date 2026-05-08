@@ -30,7 +30,7 @@ export interface DemandListItem {
   product_version_code: string;
   /** 当前 SOP 节点名或 id；待处理时必为「等待调度」；预备中/全人工时必为空串 */
   sop_node: string;
-  /** 预备中 | 待处理 | 处理中 | 全人工 等 */
+  /** 预备中 | 待处理 | 处理中 等（「全人工」不再用于映射人工介入态，见 sop_trajectories） */
   local_process_state: string;
   owned_work_items: OwnedWorkItem[];
 }
@@ -42,7 +42,7 @@ export interface RdManageDemandsPayload {
 
 /**
  * 前端 Mock：与真实接口 `data` 形状一致。
- * 规则：待处理 → sop_node 必为「等待调度」；预备中 / 全人工 → sop_node 必为空串。
+ * 规则：待处理 → sop_node 必为「等待调度」；预备中 → sop_node 必为空串。
  */
 export function getRdManageDemandsMockPayload(): RdManageDemandsPayload {
   return {
@@ -209,6 +209,31 @@ export function getRdManageDemandsMockPayload(): RdManageDemandsPayload {
 }
 
 const OWNER_ORDER_SNAPSHOT_PATH = "/api/dev/iwhalecloud/owner_order_snapshot";
+const GET_DEMAND_BY_USER_PATH = "/api/dev/iwhalecloud/get_demand_by_user";
+
+const WORK_ORDER_DB_METRICS_PATH = "/api/dev/work-order/db-metrics";
+const WORK_ORDER_HUMAN_IN_LOOP_FLAGS_PATH = "/api/dev/work-order/human-in-loop-flags";
+
+/** 与 Synapse POST /api/dev/work-order/db-metrics 返回的 data 一致 */
+export interface WorkOrderDbMetricsPayload {
+  summary: {
+    process_seconds: number;
+    total_tokens: number;
+    human_interventions: number;
+    artifacts: string[];
+  };
+  demand_metrics: {
+    deal_seconds: number;
+    deal_tokens: number;
+  };
+  task_metrics: Record<string, { deal_seconds: number; deal_tokens: number; human_interventions: number }>;
+}
+
+type SynapseWire = {
+  errorcode?: number;
+  message?: string;
+  data?: unknown;
+};
 
 /** 将快照 `data` 规范为看板可用的 {@link RdManageDemandsPayload} */
 function normalizeOwnerOrderSnapshotData(raw: unknown): RdManageDemandsPayload {
@@ -235,10 +260,9 @@ function normalizeOwnerOrderSnapshotData(raw: unknown): RdManageDemandsPayload {
   };
 }
 
-type SynapseWire = {
-  errorcode?: number;
-  message?: string;
-  data?: unknown;
+export type FetchRdManageDemandsOptions = {
+  /** 为 false 时网络或非 404 错误将抛出，便于刷新路径区分失败 */
+  allowMockFallback?: boolean;
 };
 
 /**
@@ -246,9 +270,13 @@ type SynapseWire = {
  *
  * - 成功：`GET /api/dev/iwhalecloud/owner_order_snapshot` → `data` 与 {@link RdManageDemandsPayload} 一致。
  * - 404（尚未调用 `get_demand_by_user` 生成快照）：返回空列表。
- * - 其它网络/服务端错误：回退前端 Mock，便于离线联调 UI。
+ * - 其它网络/服务端错误：默认回退前端 Mock；`allowMockFallback: false` 时抛出。
  */
-export async function fetchRdManageDemands(synapseApiBase: string): Promise<RdManageDemandsPayload> {
+export async function fetchRdManageDemands(
+  synapseApiBase: string,
+  options?: FetchRdManageDemandsOptions,
+): Promise<RdManageDemandsPayload> {
+  const allowMockFallback = options?.allowMockFallback !== false;
   const base = synapseApiBase.replace(/\/$/, "");
   try {
     const res = await fetch(`${base}${OWNER_ORDER_SNAPSHOT_PATH}`, {
@@ -262,7 +290,113 @@ export async function fetchRdManageDemands(synapseApiBase: string): Promise<RdMa
       throw new Error(j.message || "owner_order_snapshot_error");
     }
     return normalizeOwnerOrderSnapshotData(j.data);
-  } catch {
+  } catch (e) {
+    if (!allowMockFallback) throw e;
     return getRdManageDemandsMockPayload();
   }
+}
+
+/**
+ * 调用研发云同步接口后重新读取快照（用于工单管理页「刷新」）。
+ * 先取 `owner_info`（GET userinfo-for-unified-service），再 POST get_demand_by_user。
+ */
+export async function syncRdManageDemandsFromDevCloud(synapseApiBase: string): Promise<RdManageDemandsPayload> {
+  const base = synapseApiBase.replace(/\/$/, "");
+  const userRes = await fetch(`${base}/api/dev/userinfo-for-unified-service`, {
+    signal: AbortSignal.timeout(30_000),
+  });
+  const userJ = (await userRes.json()) as SynapseWire;
+  if (userJ.errorcode !== 0) {
+    throw new Error(userJ.message || "userinfo_for_unified_failed");
+  }
+  const userData = userJ.data as { owner_info?: string } | undefined;
+  const owner_info = typeof userData?.owner_info === "string" ? userData.owner_info.trim() : "";
+  if (!owner_info) {
+    throw new Error("owner_info_missing");
+  }
+  const syncRes = await fetch(`${base}${GET_DEMAND_BY_USER_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner_info }),
+    signal: AbortSignal.timeout(600_000),
+  });
+  const syncJ = (await syncRes.json()) as SynapseWire;
+  if (syncJ.errorcode !== 0) {
+    throw new Error(syncJ.message || "get_demand_by_user_failed");
+  }
+  return fetchRdManageDemands(synapseApiBase, { allowMockFallback: false });
+}
+
+/** 单次请求仅传一个 order_id；返回该工单是否存在人工介入节点。 */
+export async function fetchHumanInLoopFlag(
+  synapseApiBase: string,
+  orderId: string,
+): Promise<boolean> {
+  const base = synapseApiBase.replace(/\/$/, "");
+  const oid = String(orderId || "").trim();
+  if (!oid) return false;
+  const res = await fetch(`${base}${WORK_ORDER_HUMAN_IN_LOOP_FLAGS_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_id: oid }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const j = (await res.json()) as SynapseWire;
+  if (j.errorcode !== 0) {
+    throw new Error(j.message || "human_in_loop_flag_error");
+  }
+  const d = j.data as { human_in_the_loop?: boolean } | undefined;
+  return Boolean(d?.human_in_the_loop);
+}
+
+/**
+ * 批量查询人工介入（对每个 order_id 各调用一次接口，并行）。
+ * 仅应对「处理中」工单收集 ID；order_id 与列表展示维度一致（仅需求单用 demand_no；含研发单时用各 task_no）。
+ */
+export async function fetchHumanInLoopFlags(
+  synapseApiBase: string,
+  orderIds: string[],
+): Promise<Record<string, boolean>> {
+  const unique = Array.from(new Set(orderIds.map((x) => String(x).trim()).filter(Boolean)));
+  if (!unique.length) return {};
+  const settled = await Promise.allSettled(
+    unique.map(async (order_id) => {
+      const hit = await fetchHumanInLoopFlag(synapseApiBase, order_id);
+      return [order_id, hit] as const;
+    }),
+  );
+  const out: Record<string, boolean> = {};
+  for (const s of settled) {
+    if (s.status === "fulfilled") {
+      const [id, hit] = s.value;
+      out[id] = hit;
+    }
+  }
+  return out;
+}
+
+/** 工单详情：从本地库聚合 sop 轨迹与 token_usage（按需求单号 / 研发单号）。 */
+export async function fetchWorkOrderDbMetrics(
+  synapseApiBase: string,
+  body: { demand_no: string; task_nos: string[] },
+): Promise<WorkOrderDbMetricsPayload> {
+  const base = synapseApiBase.replace(/\/$/, "");
+  const res = await fetch(`${base}${WORK_ORDER_DB_METRICS_PATH}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      demand_no: body.demand_no,
+      task_nos: body.task_nos,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const j = (await res.json()) as SynapseWire;
+  if (j.errorcode !== 0) {
+    throw new Error(j.message || "work_order_db_metrics_error");
+  }
+  const d = j.data as WorkOrderDbMetricsPayload | undefined;
+  if (!d || typeof d !== "object") {
+    throw new Error("work_order_db_metrics_empty");
+  }
+  return d;
 }

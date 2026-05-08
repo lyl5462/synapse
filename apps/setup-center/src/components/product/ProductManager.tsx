@@ -46,6 +46,7 @@ import {
   insertProdInfo,
   updateProdInfo,
   fetchProjectList,
+  fetchUserinfoForUnifiedService,
   destroyProd,
 } from "@/api/rdUnifiedService";
 import type { ProdProcessDataPayload } from "@/api/rdUnifiedService";
@@ -62,6 +63,25 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
   const [listRefreshing, setListRefreshing] = useState(false);
   const [listAutoRefresh, setListAutoRefresh] = useState(false);
   const [projectSpaces, setProjectSpaces] = useState<{label: string, value: string}[] | null>(null);
+  /** Tauri：本地 owner_info 密文（trim）；失败或未启用桌面端为 null；成功但为空串表示无凭据 */
+  const [localOwnerInfo, setLocalOwnerInfo] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const row = await fetchUserinfoForUnifiedService(synapseApiBase);
+        if (cancelled) return;
+        setLocalOwnerInfo((row.owner_info ?? "").trim());
+      } catch {
+        if (!cancelled) setLocalOwnerInfo("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [synapseApiBase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -571,6 +591,12 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
                   <ProductCard
                   key={product.id}
                   product={product}
+                  isOwnedByCurrentUser={
+                    IS_TAURI &&
+                    localOwnerInfo != null &&
+                    localOwnerInfo.length > 0 &&
+                    localOwnerInfo === (product.ownerInfo ?? "").trim()
+                  }
                   onEdit={handleEdit}
                   onDelete={handleDeleteRequest}
                   onView={handleView}

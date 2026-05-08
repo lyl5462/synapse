@@ -55,6 +55,7 @@ from .routes import (
     upload,
     wechat_onboard,
     wecom_onboard,
+    work_order_metrics,
     workspace_io,
     yuque,
 )
@@ -398,6 +399,7 @@ def create_app(
     app.include_router(sessions.router, tags=["会话"])
     app.include_router(skills.router, tags=["技能"])
     app.include_router(token_stats.router, tags=["统计"])
+    app.include_router(work_order_metrics.router, tags=["工单库指标"])
     app.include_router(upload.router, tags=["文件"])
     app.include_router(workspace_io.router, tags=["工作区"])
     app.include_router(ws_routes.router, tags=["WebSocket"])

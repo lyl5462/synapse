@@ -84,6 +84,19 @@ const emptyFeatureRow = (): ProductFeatureRow => ({ title: "", description: "" }
 /** 功能名、描述中禁止的存盘分隔符 */
 const stripFeatureForbiddenChars = (v: string) => v.replace(/\|/g, "");
 
+/** Windows 文件名非法字符（控制字符 + \< > : " / \\ | ? *） */
+const WINDOWS_FILENAME_INVALID_RE = /[<>:"/\\|?*\x00-\x1f]/;
+const WINDOWS_FILENAME_INVALID_GLOBAL_RE = /[<>:"/\\|?*\x00-\x1f]/g;
+
+/** 供产品名称作为路径片段时使用：移除非法字符 */
+export function sanitizeProductNameForWindows(value: string): string {
+  return value.replace(WINDOWS_FILENAME_INVALID_GLOBAL_RE, "");
+}
+
+export function productNameViolatesWindowsFileRules(value: string): boolean {
+  return WINDOWS_FILENAME_INVALID_RE.test(value);
+}
+
 export function parseFeaturesFromStored(raw: string): ProductFeatureRow[] {
   const s = (raw ?? "").trim();
   if (!s) return [emptyFeatureRow()];
@@ -463,6 +476,10 @@ export function ProductModal({
       toast.error(t("workbench.products.modal.nameRequired") || "请输入产品名称");
       return;
     }
+    if (!isEdit && productNameViolatesWindowsFileRules(formState.name)) {
+      toast.error(t("workbench.products.modal.nameWindowsInvalid"));
+      return;
+    }
     if (!isEdit && (!formState.projectSpace || !formState.productVersion || !formState.appModule)) {
       toast.error(t("workbench.products.modal.spaceVersionModuleRequired"));
       return;
@@ -563,8 +580,16 @@ export function ProductModal({
                 maxLength={64}
                 disabled={isEdit}
                 value={formState.name}
-                onChange={(e) => setFormState((prev) => ({ ...prev, name: e.target.value }))}
+                onChange={(e) =>
+                  setFormState((prev) => ({
+                    ...prev,
+                    name: sanitizeProductNameForWindows(e.target.value),
+                  }))
+                }
               />
+              {!isEdit && (
+                <p className="text-xs text-muted-foreground">{t("workbench.products.modal.nameWindowsHint")}</p>
+              )}
             </div>
             <div className="col-span-4 space-y-2">
               <Label>{t("workbench.products.modal.icon")} <span className="text-destructive">*</span></Label>

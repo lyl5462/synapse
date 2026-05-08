@@ -2132,7 +2132,7 @@ async def _add_task_impact(body: AddTaskImpactRequest) -> dict:
     url = f"{DEV_IWHALECLOUD_BASE_URL}/portal/zcm-devspace/task/{task_id}/impact/detail"
     params = {"userId": body.userId}
     try:
-        csrf, ck = await _ensure_valid_creds_async()
+        csrf, ck = await _ensure_valid_creds_async(True)
     except ValueError as e:
         return error_response(400, str(e))
     headers = _build_add_task_impact_headers(csrf, ck)
@@ -3498,7 +3498,6 @@ def _page_list_row_to_demand_attrs(row: dict) -> dict:
             "demand_title": _safe_str(ad.get("taskTitle")),
             "demand_desc": _safe_str(ad.get("comments")),
             "demand_create_time": _safe_str(ad.get("createdDate")),
-            "demand_deal_time": _elapsed_since_created_date_str(ad.get("createdDate")),
             "demand_finish_time": _safe_str(ad.get("finishDate")),
             "demand_sccb_work_minutes": _safe_int(ad.get("sccbWorkMinutes")),
             "demand_status": _safe_str(stage_name),
@@ -3564,24 +3563,12 @@ class GetDemandByUserRequest(BaseModel):
     owner_info: str = Field(..., description="CryptHelper 密文；解密后为 employee_id、password、token、userId 等 JSON")
 
 
-@router.post("/api/dev/iwhalecloud/get_demand_by_user")
-async def get_demand_by_user(body: GetDemandByUserRequest) -> dict:
-    """按负责人用户查询需求（全项目 currentProjectId=null）；入参 owner_info 密文解密后取工号/密码/用户ID。
+async def sync_owner_orders_from_owner_info_cipher(raw_cipher: str) -> dict:
+    """按负责人同步需求快照并落盘 ``userwork.json``；供 HTTP 与计划任务共用。
 
-    转调 POST /portal/zcm-devspace/task/page-list。HTTP 响应**仅** ``total``，不返回需求列表；拉全量后的
-    列表（含与 graphiti_pipeline 一致的 Demand 字段、``product_version_id``/``product_version_code``、
-    以及 **owned_work_items**）会落盘到 ``synapse_home/work/userwork.json``，请用
-    ``GET /api/dev/iwhalecloud/owner_order_snapshot`` 读取。
-
-    每条需求在落盘数据中含 **owned_work_items**：该需求下研发单摘要列表（串行拉门户详情后映射），每项为扁平
-    snake_case 字段：``task_no``、``task_title``、``task_desc``（门户 adTask.comments）、``created_date``、
-    ``sccb_work_hours``（由分钟换算，空为 null）、``stage_name``、``product_module_id``、
-    ``product_module_name``、``repo_url``。
-    各需求单下研发单为**串行**拉取（先需求 A 再需求 B，单需求内 work-items 与详情亦顺序请求）。
-    拉取 work-items 需 ai-gateway **Bearer**：优先 owner_info 解密 JSON 的 ``token``，否则使用
-    ``data/userinfo.encryption`` 中的 Authorization；若皆不可用则 ``owned_work_items`` 为空数组。
+    返回 ``success_response`` / ``error_response`` 字典（含 errorcode）。
     """
-    raw_cipher = str(body.owner_info).strip()
+    raw_cipher = str(raw_cipher).strip()
     if not raw_cipher:
         return error_response(400, "owner_info 不能为空")
 
@@ -3723,6 +3710,43 @@ async def get_demand_by_user(body: GetDemandByUserRequest) -> dict:
         logger.exception("get_demand_by_user 落地 userwork.json 失败: %s", exc)
 
     return success_response()
+
+
+async def sync_owner_orders_from_local_userinfo() -> dict:
+    """使用 ``data/userinfo.encryption`` 原文作为 owner_info 同步快照；无文件时跳过（errorcode=0）。"""
+    path = _userinfo_encryption_path()
+    if not path.is_file():
+        logger.info("sync_owner_orders: skipped (no userinfo.encryption)")
+        return success_response({"skipped": True, "reason": "no_userinfo_file"})
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        logger.warning("sync_owner_orders: read userinfo failed: %s", exc)
+        return error_response(500, f"读取 userinfo 失败: {exc}")
+    if not raw:
+        logger.info("sync_owner_orders: skipped (empty userinfo.encryption)")
+        return success_response({"skipped": True, "reason": "empty_userinfo"})
+    return await sync_owner_orders_from_owner_info_cipher(raw)
+
+
+@router.post("/api/dev/iwhalecloud/get_demand_by_user")
+async def get_demand_by_user(body: GetDemandByUserRequest) -> dict:
+    """按负责人用户查询需求（全项目 currentProjectId=null）；入参 owner_info 密文解密后取工号/密码/用户ID。
+
+    转调 POST /portal/zcm-devspace/task/page-list。HTTP 响应**仅** ``total``，不返回需求列表；拉全量后的
+    列表（含与 graphiti_pipeline 一致的 Demand 字段、``product_version_id``/``product_version_code``、
+    以及 **owned_work_items**）会落盘到 ``synapse_home/work/userwork.json``，请用
+    ``GET /api/dev/iwhalecloud/owner_order_snapshot`` 读取。
+
+    每条需求在落盘数据中含 **owned_work_items**：该需求下研发单摘要列表（串行拉门户详情后映射），每项为扁平
+    snake_case 字段：``task_no``、``task_title``、``task_desc``（门户 adTask.comments）、``created_date``、
+    ``sccb_work_hours``（由分钟换算，空为 null）、``stage_name``、``product_module_id``、
+    ``product_module_name``、``repo_url``。
+    各需求单下研发单为**串行**拉取（先需求 A 再需求 B，单需求内 work-items 与详情亦顺序请求）。
+    拉取 work-items 需 ai-gateway **Bearer**：优先 owner_info 解密 JSON 的 ``token``，否则使用
+    ``data/userinfo.encryption`` 中的 Authorization；若皆不可用则 ``owned_work_items`` 为空数组。
+    """
+    return await sync_owner_orders_from_owner_info_cipher(body.owner_info)
 
 
 @router.get("/api/dev/iwhalecloud/owner_order_snapshot")
@@ -4284,8 +4308,8 @@ class UpdateOrderSopLocalProcessStateRequest(BaseModel):
     local_process_state: str | None = Field(None, description="需求单 local_process_state")
     owned_work_items: list[UpdateOrderWorkItemRequest] | None = Field(None, description="研发单列表")
 
-@router.post("/api/dev/iwhalecloud/update_order_sop_local_process_state")
-async def update_order_sop_local_process_state(body: UpdateOrderSopLocalProcessStateRequest) -> dict:
+@router.post("/api/dev/iwhalecloud/update_order_info")
+async def update_order_info(body: UpdateOrderSopLocalProcessStateRequest) -> dict:
     """
     功能：修改userwork.json的需求单sop_node信息和local_process_state，以及研发单的sop_node节点。
     """
