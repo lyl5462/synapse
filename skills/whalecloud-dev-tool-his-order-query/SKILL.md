@@ -1,6 +1,7 @@
 ---
 name: whalecloud-dev-tool-his-order-query
 description: 基于需求描述和功能影响范围，利用混合检索和图谱拓扑关联检索，精准查找到相似的历史工单并提供证明说明。使用时需提供 DEMAND_DESC、DEMAND_IMPACT、FEATURE 及 SERVER_URL。
+label: 历史工单分析工具
 ---
 
 # whalecloud-dev-tool_his_order_query
