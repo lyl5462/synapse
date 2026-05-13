@@ -418,6 +418,15 @@ export function ProductModal({
     });
   };
 
+  const handleRepoModuleChange = (index: number, v: string) => {
+    setFormState((prev) => {
+      const newRepos = prev.repositories.map((r, i) =>
+        i === index ? { ...r, repoModule: v, prodBranch: "", branch: "", url: "" } : r,
+      );
+      return { ...prev, repositories: newRepos };
+    });
+  };
+
   const patchRepositoryFields = (index: number, patch: Partial<Repository>) => {
     setFormState((prev) => {
       const newRepos = prev.repositories.map((r) => ({ ...r }));
@@ -567,11 +576,6 @@ export function ProductModal({
   const repoModuleSelectDisabled =
     isEdit ||
     parseProjectIdFromSpaceValue(formState.projectSpace) == null ||
-    parseCompositeLeadingId(formState.productVersion) == null;
-
-  const prodBranchSelectDisabled =
-    isEdit ||
-    !formState.productVersion ||
     parseCompositeLeadingId(formState.productVersion) == null;
 
   return (
@@ -821,8 +825,15 @@ export function ProductModal({
                   const pbVidKey = pbVid != null ? String(pbVid) : "";
                   const detailList = pbVid != null ? repoDetailByProdBranchVid[pbVidKey] ?? [] : [];
                   const repoBranchOpts = detailList.map(repoDetailRowToOption);
+                  const prodVersionId = parseCompositeLeadingId(formState.productVersion);
+                  const prodBranchDisabledForRow =
+                    isEdit ||
+                    prodVersionId == null ||
+                    !(repo.repoModule?.trim());
                   const rowRepoBranchDisabled =
-                    parseProjectIdFromSpaceValue(formState.projectSpace) == null || pbVid == null;
+                    parseProjectIdFromSpaceValue(formState.projectSpace) == null ||
+                    pbVid == null ||
+                    !(repo.repoModule?.trim());
 
                   return (
                     <div key={index} className="rounded-lg border border-border/80 bg-muted/10 overflow-hidden transition-all">
@@ -854,7 +865,7 @@ export function ProductModal({
                             <Label className="text-xs">{t("workbench.products.modal.appModule")} *</Label>
                             <SearchableVirtualSelect
                               value={repo.repoModule ?? ""}
-                              onValueChange={(v) => patchRepositoryFields(index, { repoModule: v })}
+                              onValueChange={(v) => handleRepoModuleChange(index, v)}
                               options={appModuleOptions}
                               placeholder={t("workbench.products.modal.appModulePlaceholder")}
                               searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
@@ -883,13 +894,15 @@ export function ProductModal({
                               placeholder={t("workbench.products.modal.prodBranchPlaceholder")}
                               searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
                               emptyText={
-                                prodBranchSelectDisabled
+                                prodVersionId == null
                                   ? t("workbench.products.modal.selectVersionFirst")
-                                  : branchesLoading
-                                    ? ""
-                                    : t("workbench.products.modal.prodBranchEmpty")
+                                  : !(repo.repoModule?.trim())
+                                    ? t("workbench.products.modal.selectAppModuleFirst")
+                                    : branchesLoading
+                                      ? ""
+                                      : t("workbench.products.modal.prodBranchEmpty")
                               }
-                              disabled={prodBranchSelectDisabled}
+                              disabled={prodBranchDisabledForRow}
                               isLoading={branchesLoading}
                             />
                           </div>

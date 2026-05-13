@@ -156,6 +156,7 @@
         "versionLoadFailed": "加载产品版本失败，请检查网络或研发云登录状态",
         "versionListEmpty": "暂无产品版本数据",
         "selectVersionFirst": "请先选择产品版本",
+        "selectAppModuleFirst": "请先选择应用模块",
         "prodBranch": "产品分支",
         "prodBranchPlaceholder": "请选择产品分支",
         "prodBranchEmpty": "暂无产品分支数据",

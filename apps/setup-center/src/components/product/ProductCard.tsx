@@ -236,15 +236,15 @@ export function ProductCard({
                   {product.name}
                 </h3>
               </div>
-              {(product.module || product.version) ? (
+              {(product.module?.trim() || product.version) ? (
                 <div className="flex min-w-0 items-center gap-2">
-                  {product.module ? (
+                  {product.module?.trim() ? (
                     <Badge
                       variant="secondary"
                       className="max-w-[5.5rem] shrink-0 truncate font-normal text-[10px] px-1.5 py-0 sm:max-w-[7rem] bg-purple-500/10 text-purple-700 dark:text-purple-400"
-                      title={t("workbench.products.cardProductTag")}
+                      title={product.module.trim()}
                     >
-                      {displayIdPipeName(product.module)}
+                      {product.module.trim()}
                     </Badge>
                   ) : null}
                   {product.version ? (

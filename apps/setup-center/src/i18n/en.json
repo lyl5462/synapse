@@ -156,6 +156,7 @@
         "versionLoadFailed": "Failed to load product versions. Check network or Dev Cloud login.",
         "versionListEmpty": "No product versions",
         "selectVersionFirst": "Select a product version first",
+        "selectAppModuleFirst": "Select an application module first",
         "prodBranch": "Product branch",
         "prodBranchPlaceholder": "Please select a product branch",
         "prodBranchEmpty": "No product branches",
