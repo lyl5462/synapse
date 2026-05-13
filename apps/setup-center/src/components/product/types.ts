@@ -1,6 +1,7 @@
 import type {
   ProdInfoWireItem,
   ProdProcessDataPayload,
+  RdModuleNameItem,
   RdRepoDetailRow,
   RdRepoInfo,
   RepoProcessWireItem,
@@ -244,6 +245,56 @@ export function prodWireMatchesWorkItemModuleName(
     if (displayIdPipeName(rm) === modName) return true;
   }
   return false;
+}
+
+/** 与模块下拉的 value 一致：productModuleId|moduleChName */
+export function rdModuleNameItemToCompositeValue(row: RdModuleNameItem): string {
+  const id = row.productModuleId ?? "";
+  const name = (row.moduleChName ?? "").trim() || String(id);
+  return `${id}|${name}`;
+}
+
+/**
+ * 由 get_module_name_list 行内的 branchVersionId、branchName 拼成与产品分支下拉一致的值；
+ * 无 branchVersionId 时不自动填充。
+ */
+export function defaultProdBranchCompositeFromModuleRow(
+  row: RdModuleNameItem | undefined,
+): string | null {
+  if (!row) return null;
+  const id = row.branchVersionId;
+  if (id == null || id === "") return null;
+  const prefix = typeof id === "number" ? String(id) : String(id).trim();
+  if (!prefix) return null;
+  const name = (row.branchName ?? "").trim() || prefix;
+  return `${prefix}|${name}`;
+}
+
+/** 选中应用模块后，用模块行自带的产品分支作为默认 prodBranch；未选模块则清空 */
+export function defaultProdBranchForAppModuleSelection(
+  moduleComposite: string,
+  moduleRows: RdModuleNameItem[],
+): string {
+  const t = moduleComposite.trim();
+  if (!t) return "";
+  const mod = moduleRows.find((r) => rdModuleNameItemToCompositeValue(r) === t);
+  return defaultProdBranchCompositeFromModuleRow(mod) ?? "";
+}
+
+/** 多仓库时应用模块下拉：排除其它行已选的 `value`（当前行已选保留可选） */
+export function filterAppModuleOptionsForRow(
+  options: SearchableOption[],
+  repos: { repoModule?: string }[],
+  rowIndex: number,
+  currentRepoModule: string,
+): SearchableOption[] {
+  const cur = currentRepoModule.trim();
+  const taken = new Set(
+    repos
+      .map((r, j) => (j !== rowIndex && r.repoModule?.trim() ? r.repoModule.trim() : null))
+      .filter((x): x is string => !!x),
+  );
+  return options.filter((o) => !taken.has(o.value) || o.value === cur);
 }
 
 /** 多仓库时产品分支下拉：排除其它行已选的 `value`（当前行已选保留可选） */

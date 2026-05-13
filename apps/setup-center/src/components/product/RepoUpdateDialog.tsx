@@ -5,6 +5,8 @@ import {
   Product,
   Repository,
   displayIdPipeName,
+  defaultProdBranchForAppModuleSelection,
+  filterAppModuleOptionsForRow,
   filterProdBranchOptionsForRow,
   filterRepoBranchOptionsForRow,
   findRepoUrlForDetailComposite,
@@ -114,6 +116,7 @@ export function RepoUpdateDialog({
   const [repoDetailLoadingVid, setRepoDetailLoadingVid] = useState<Record<string, boolean>>({});
   const repoDetailFetchStartedRef = useRef<Set<string>>(new Set());
   const [appModuleOptions, setAppModuleOptions] = useState<SearchableOption[]>([]);
+  const [appModuleRows, setAppModuleRows] = useState<RdModuleNameItem[]>([]);
   const [modulesLoading, setModulesLoading] = useState(false);
 
   useEffect(() => {
@@ -165,6 +168,7 @@ export function RepoUpdateDialog({
     const vid = parseCompositeLeadingId(product.version ?? "");
     if (pid == null || vid == null) {
       setAppModuleOptions([]);
+      setAppModuleRows([]);
       setModulesLoading(false);
       return;
     }
@@ -172,12 +176,16 @@ export function RepoUpdateDialog({
     setModulesLoading(true);
     fetchModuleNameList(synapseApiBase, pid, vid)
       .then((rows) => {
-        if (!cancelled) setAppModuleOptions(rows.map(moduleRowToOption));
+        if (!cancelled) {
+          setAppModuleRows(rows);
+          setAppModuleOptions(rows.map(moduleRowToOption));
+        }
       })
       .catch((e) => {
         if (cancelled) return;
         console.error(e);
         setAppModuleOptions([]);
+        setAppModuleRows([]);
         toast.error(t("workbench.products.modal.moduleLoadFailed"));
       })
       .finally(() => {
@@ -241,6 +249,11 @@ export function RepoUpdateDialog({
       }
       return next;
     });
+  };
+
+  const handleRepoModuleSelect = (index: number, v: string) => {
+    const defaultPb = defaultProdBranchForAppModuleSelection(v, appModuleRows);
+    updateRow(index, { repoModule: v, prodBranch: defaultPb, branch: "", url: "" });
   };
 
   const addRow = () => {
@@ -313,6 +326,11 @@ export function RepoUpdateDialog({
         .filter(Boolean);
       if (new Set(unlockedPb).size !== unlockedPb.length) {
         toast.error(t("workbench.products.modal.prodBranchDuplicate"));
+        return;
+      }
+      const rmVals = rows.map((r) => r.repoModule?.trim() ?? "").filter(Boolean);
+      if (new Set(rmVals).size !== rmVals.length) {
+        toast.error(t("workbench.products.modal.repoModuleDuplicate"));
         return;
       }
     }
@@ -418,8 +436,13 @@ export function RepoUpdateDialog({
                     ) : (
                       <SearchableVirtualSelect
                         value={repo.repoModule ?? ""}
-                        onValueChange={(v) => updateRow(index, { repoModule: v })}
-                        options={appModuleOptions}
+                        onValueChange={(v) => handleRepoModuleSelect(index, v)}
+                        options={filterAppModuleOptionsForRow(
+                          appModuleOptions,
+                          rows,
+                          index,
+                          repo.repoModule ?? "",
+                        )}
                         placeholder={t("workbench.products.modal.appModulePlaceholder")}
                         searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
                         emptyText={

@@ -6,6 +6,8 @@ import {
   Repository,
   DEFAULT_ICONS,
   displayIdPipeName,
+  defaultProdBranchForAppModuleSelection,
+  filterAppModuleOptionsForRow,
   filterProdBranchOptionsForRow,
   filterRepoBranchOptionsForRow,
   findRepoUrlForDetailComposite,
@@ -197,6 +199,7 @@ export function ProductModal({
   const [zcmAllRows, setZcmAllRows] = useState<RdZcmProductItem[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [appModuleOptions, setAppModuleOptions] = useState<SearchableOption[]>([]);
+  const [appModuleRows, setAppModuleRows] = useState<RdModuleNameItem[]>([]);
   const [modulesLoading, setModulesLoading] = useState(false);
   const [prodBranchRows, setProdBranchRows] = useState<RdProductBranchItem[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
@@ -248,6 +251,7 @@ export function ProductModal({
       });
       setIsEdit(false);
       setAppModuleOptions([]);
+      setAppModuleRows([]);
       setProdBranchRows([]);
     }
   }, [open, initialValues]);
@@ -290,6 +294,7 @@ export function ProductModal({
     const vid = parseCompositeLeadingId(formState.productVersion);
     if (pid == null || vid == null) {
       setAppModuleOptions([]);
+      setAppModuleRows([]);
       setModulesLoading(false);
       return;
     }
@@ -298,12 +303,14 @@ export function ProductModal({
     fetchModuleNameList(synapseApiBase, pid, vid)
       .then((rows) => {
         if (cancelled) return;
+        setAppModuleRows(rows);
         setAppModuleOptions(rows.map(moduleRowToOption));
       })
       .catch((e) => {
         if (cancelled) return;
         console.error(e);
         setAppModuleOptions([]);
+        setAppModuleRows([]);
         toast.error(t("workbench.products.modal.moduleLoadFailed"));
       })
       .finally(() => {
@@ -419,9 +426,10 @@ export function ProductModal({
   };
 
   const handleRepoModuleChange = (index: number, v: string) => {
+    const defaultPb = defaultProdBranchForAppModuleSelection(v, appModuleRows);
     setFormState((prev) => {
       const newRepos = prev.repositories.map((r, i) =>
-        i === index ? { ...r, repoModule: v, prodBranch: "", branch: "", url: "" } : r,
+        i === index ? { ...r, repoModule: v, prodBranch: defaultPb, branch: "", url: "" } : r,
       );
       return { ...prev, repositories: newRepos };
     });
@@ -522,6 +530,11 @@ export function ProductModal({
         });
         if (badRepoModule) {
           toast.error(t("workbench.products.modal.repoModuleRequired"));
+          return;
+        }
+        const rmVals = formState.repositories.map((r) => r.repoModule?.trim() ?? "").filter(Boolean);
+        if (new Set(rmVals).size !== rmVals.length) {
+          toast.error(t("workbench.products.modal.repoModuleDuplicate"));
           return;
         }
         const badPb = formState.repositories.some((r) => {
@@ -866,7 +879,12 @@ export function ProductModal({
                             <SearchableVirtualSelect
                               value={repo.repoModule ?? ""}
                               onValueChange={(v) => handleRepoModuleChange(index, v)}
-                              options={appModuleOptions}
+                              options={filterAppModuleOptionsForRow(
+                                appModuleOptions,
+                                formState.repositories,
+                                index,
+                                repo.repoModule ?? "",
+                              )}
                               placeholder={t("workbench.products.modal.appModulePlaceholder")}
                               searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
                               emptyText={

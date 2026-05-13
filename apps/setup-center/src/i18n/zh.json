@@ -146,6 +146,7 @@
         "productTagInvalid": "请填写合法产品标签：仅 a–z、A–Z、0–9、下划线，且不超过 32 字节",
         "spaceVersionRequired": "请先选择项目空间与产品版本",
         "repoModuleRequired": "请为每个仓库配置选择应用模块",
+        "repoModuleDuplicate": "各仓库的应用模块不能重复",
         "appModule": "应用模块",
         "appModuleRequired": "请选择应用模块",
         "appModulePlaceholder": "请选择应用模块",

@@ -1311,15 +1311,15 @@ export type RdRepoDetailRow = {
 };
 
 /**
- * 按产品分支版本 ID 拉取模块仓库与 Git 映射（POST /api/dev/iwhalecloud/get_repo_detail_by_prod_branch）。
- * 与 Synapse 本地路由对接，非 Tauri 亦可走 HTTP。
+ * 按产品分支版本 ID 拉取仓库明细（POST /api/dev/iwhalecloud/get_repo_detail_by_prod_branch）。
+ * data 为 `{ repositoryId, repoUrl, branchName, destBranchName }[]`。
  */
 export async function fetchRepoDetailByProdBranch(
   synapseApiBase: string,
   prodBranchVersionId: number,
   projectId: number,
 ): Promise<RdRepoDetailRow[]> {
-  const data = await fetchSynapseJson<RdRepoDetailRow[]>(
+  const data = await fetchSynapseJson<unknown>(
     synapseApiBase,
     "/api/dev/iwhalecloud/get_repo_detail_by_prod_branch",
     {
@@ -1328,7 +1328,33 @@ export async function fetchRepoDetailByProdBranch(
       body: JSON.stringify({ prod_branch: prodBranchVersionId, projectId }),
     },
   );
-  return Array.isArray(data) ? data : [];
+  return sanitizeRepoDetailListPayload(Array.isArray(data) ? data : []);
+}
+
+/** 仓库行：与 get_repo_detail_by_prod_branch 对齐；去重、去无效项，避免下拉重复 key 导致崩溃 */
+function sanitizeRepoDetailListPayload(data: unknown): RdRepoDetailRow[] {
+  if (!Array.isArray(data)) return [];
+  const seen = new Set<string>();
+  const out: RdRepoDetailRow[] = [];
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const rid = String(r.repositoryId ?? "").trim();
+    const dest =
+      String(r.destBranchName ?? "").trim() ||
+      String(r.branchName ?? "").trim();
+    if (!rid || !dest) continue;
+    const composite = `${rid}|${dest}`;
+    if (seen.has(composite)) continue;
+    seen.add(composite);
+    out.push({
+      repositoryId: r.repositoryId as RdRepoDetailRow["repositoryId"],
+      repoUrl: r.repoUrl != null ? String(r.repoUrl) : "",
+      branchName: String(r.branchName ?? dest).trim() || dest,
+      destBranchName: dest,
+    });
+  }
+  return out;
 }
 
 /**

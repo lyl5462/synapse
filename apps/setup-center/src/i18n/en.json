@@ -146,6 +146,7 @@
         "productTagInvalid": "Enter a valid product tag: only a–z, A–Z, 0–9, underscore; max 32 bytes",
         "spaceVersionRequired": "Select a project space and product version first",
         "repoModuleRequired": "Select an application module for each repository row",
+        "repoModuleDuplicate": "Each repository must use a different application module",
         "appModule": "Application module",
         "appModuleRequired": "Select a module",
         "appModulePlaceholder": "Select module",
