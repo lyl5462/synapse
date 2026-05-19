@@ -2726,6 +2726,10 @@
     "panelHitlTitle": "Human intervention",
     "panelHitlBody": "The agent cannot proceed at the current pipeline step and needs human intervention to continue.",
     "panelFullManualTitle": "Full manual (external)",
-    "panelFullManualBody": "This work order is handled outside the in-app intelligent pipeline. To use automation later, advance it to requirement design and eligible stages."
+    "panelFullManualBody": "This work order is handled outside the in-app intelligent pipeline. To use automation later, advance it to requirement design and eligible stages.",
+    "oneClickOpenMeeting": "Open meeting room",
+    "actNow": "Act now",
+    "openMeetingSuccess": "Meeting room opened",
+    "openMeetingFailed": "Failed to open meeting: {{message}}"
   }
 }

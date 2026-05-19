@@ -48,6 +48,7 @@ import {
   type RdManageDemandsPayload,
   type WorkOrderDbMetricsPayload,
 } from '../../api/rdManageService';
+import { openMeetingRoom } from '../../api/meetingRoomService';
 import { getProdInfo } from '@/api/rdUnifiedService';
 import type { ProdInfoWireItem, ProdProcessDataPayload } from '@/api/rdUnifiedService';
 import { IS_TAURI } from '@/platform';
@@ -512,6 +513,7 @@ export const OrderManagement: React.FC<{
   /** 看板数据是否已完成首次拉取（用于区分「加载中」与「快照为空」） */
   const [boardDataInitialized, setBoardDataInitialized] = useState(false);
   const [boardRefreshBusy, setBoardRefreshBusy] = useState(false);
+  const [openingMeetingKey, setOpeningMeetingKey] = useState<string | null>(null);
 
   const [collapsedStages, setCollapsedStages] = useState<Record<number, boolean>>({});
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -983,6 +985,34 @@ export const OrderManagement: React.FC<{
     }
   };
 
+  const handleOneClickOpenMeeting = useCallback(
+    async (e: React.MouseEvent, ticket: Ticket, workItemId?: string) => {
+      e.stopPropagation();
+      const scopeType = workItemId ? ('task' as const) : ('demand' as const);
+      const scopeId = (workItemId || ticket.id).trim();
+      if (!scopeId) return;
+      const busyKey = `${scopeType}:${scopeId}`;
+      setOpeningMeetingKey(busyKey);
+      try {
+        await openMeetingRoom(synapseApiBase, scopeType, scopeId);
+        setActiveTicketId(ticket.id);
+        setActiveWorkItemId(workItemId || '');
+        toast.success(t('rdManageOrder.openMeetingSuccess'));
+        if (onViewChange) {
+          onViewChange('workbench_meeting');
+        } else {
+          window.dispatchEvent(new CustomEvent('changeView', { detail: 'workbench_meeting' }));
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.error(t('rdManageOrder.openMeetingFailed', { message: msg }));
+      } finally {
+        setOpeningMeetingKey(null);
+      }
+    },
+    [synapseApiBase, t, onViewChange],
+  );
+
   // Render varied output based on node type/id
   const renderNodeOutput = (node: SOPNode, ticket: Ticket) => {
     const state = getNodeStateGlobal(ticket, node.id);
@@ -1311,6 +1341,10 @@ export const OrderManagement: React.FC<{
                 const rowHitl = !isWorkItem
                   ? ticket.sopAwaitingHuman
                   : Boolean((item as WorkItem).humanIntervention);
+                /** 待处理：一键开会；需人工介入：立即处理 */
+                const rowPendingOpen = !isWorkItem && ticket.status === 'pending';
+                const rowActionOverlay = rowPendingOpen || rowHitl;
+                const openMeetingBusyKey = `${isWorkItem ? 'task' : 'demand'}:${item.id}`;
                 const rowFullManual = !isWorkItem && ticket.status === 'full_manual';
                 /** 预备中 / 全人工不参与本流水线，卡片上不应展示「等待调度」等节点名 */
                 const hidePipelineNodeLabel =
@@ -1376,27 +1410,28 @@ export const OrderManagement: React.FC<{
                     {/* Left Status Line */}
                     <div className={`absolute bottom-0 left-0 top-0 w-1 ${statusBorderColor}`} />
 
-                    {/* 需人工介入（SOP 最新轨迹）：hover 显示「立即处理」；全人工不走此遮罩 */}
-                    {rowHitl && (
+                    {rowActionOverlay && (
                       <div className="absolute inset-0 z-30 flex items-center justify-center bg-background/40 opacity-0 backdrop-blur-[2px] transition-opacity duration-300 group-hover:opacity-100">
                         <Button
                           type="primary"
                           size="small"
-                          className="h-8 rounded-full border-none bg-destructive px-5 font-medium text-destructive-foreground shadow-lg hover:bg-destructive/90"
+                          loading={openingMeetingKey === openMeetingBusyKey}
+                          className={`h-8 rounded-full border-none px-5 font-medium shadow-lg ${
+                            rowPendingOpen
+                              ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                              : 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
+                          }`}
                           onClick={(e) => {
-                            e.stopPropagation();
-                            setActiveTicketId(ticket.id);
-                            setActiveWorkItemId(isWorkItem ? item.id : '');
+                            void handleOneClickOpenMeeting(e, ticket, isWorkItem ? item.id : undefined);
                           }}
                         >
-                          立即处理
+                          {rowPendingOpen ? t('rdManageOrder.oneClickOpenMeeting') : t('rdManageOrder.actNow')}
                         </Button>
                       </div>
                     )}
 
-                    {/* 需人工介入时遮罩 z-30，信息按钮抬到 z-40 */}
                     <div
-                      className={`absolute right-2 top-2 flex items-center gap-2 ${rowHitl ? 'z-40' : 'z-20'}`}
+                      className={`absolute right-2 top-2 flex items-center gap-2 ${rowActionOverlay ? 'z-40' : 'z-20'}`}
                     >
                       {ticketInfoButton}
                     </div>

@@ -195,13 +195,13 @@ def _apply_local_process_state_on_new_demand_insert(row: dict[str, Any]) -> dict
     """新有老无插入需求单时：指定阶段将 ``local_process_state`` 设为全人工。"""
     out = dict(row)
     st = _snapshot_norm_id(out.get("demand_status"))
-    if st in ("待处理", "需求评审", "To Creator"):
+    if st in ("待处理", "To Creator"):
         out["local_process_state"] = "预备中"
         out["sop_node"] = ""
-    elif st == "需求设计":
+    elif st == "需求评审":
         out["local_process_state"] = "待处理"
         out["sop_node"] = "等待调度"
-    elif st in ("需求开发", "需求测试"):
+    elif st in ("需求设计", "需求开发", "需求测试"):
         out["local_process_state"] = "全人工"
         out["sop_node"] = ""
     return out
@@ -211,7 +211,12 @@ def _merge_demand_record(old_d: dict[str, Any], new_d: dict[str, Any]) -> dict[s
     """需求单新老均有：以新数据为准更新，但保留老的 ``sop_node``、``local_process_state``。"""
     merged: dict[str, Any] = dict(new_d)
     merged["sop_node"] = old_d.get("sop_node")
-    merged["local_process_state"] = old_d.get("local_process_state")
+    if old_d.get("local_process_state") == "预备中" and new_d.get("demand_status") == "需求评审":
+        merged["local_process_state"] = "待处理"
+        merged["sop_node"] = "等待调度"
+    else:
+        merged["local_process_state"] = old_d.get("local_process_state")
+        merged["sop_node"] = old_d.get("sop_node")
     merged["owned_work_items"] = _merge_owned_work_items(
         old_d.get("owned_work_items"), new_d.get("owned_work_items")
     )

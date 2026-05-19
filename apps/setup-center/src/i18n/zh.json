@@ -2728,6 +2728,10 @@
     "panelHitlTitle": "人工介入",
     "panelHitlBody": "智能体在当前流水线节点无法继续执行，需要人工介入后继续。",
     "panelFullManualTitle": "全人工（外部处理）",
-    "panelFullManualBody": "该工单不在本系统智能研发流程内处理，由外部人工跟进；若后续纳入自动化范围，请将工单推进至需求设计等环节。"
+    "panelFullManualBody": "该工单不在本系统智能研发流程内处理，由外部人工跟进；若后续纳入自动化范围，请将工单推进至需求设计等环节。",
+    "oneClickOpenMeeting": "一键开会",
+    "actNow": "立即处理",
+    "openMeetingSuccess": "已开启研发会议室",
+    "openMeetingFailed": "开会失败：{{message}}"
   }
 }
