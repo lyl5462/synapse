@@ -8,11 +8,9 @@ import {
   displayIdPipeName,
   defaultProdBranchForAppModuleSelection,
   filterAppModuleOptionsForRow,
-  filterRepoBranchOptionsForRow,
-  findRepoUrlForDetailComposite,
   isValidProductTag,
   isValidRepoBranchComposite,
-  repoDetailRowToOption,
+  patchRepositoryRepoBranchFromModuleDetail,
   sanitizeProductTagInput,
 } from "./types";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -25,13 +23,12 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { SearchableVirtualSelect, type SearchableOption } from "./SearchableVirtualSelect";
+import { RepoBranchDerivedDisplay } from "./RepoBranchDerivedDisplay";
 import {
   fetchModuleNameList,
-  fetchProductBranchList,
   fetchRepoDetailByProdBranch,
   fetchZcmProductList,
   type RdModuleNameItem,
-  type RdProductBranchItem,
   type RdRepoDetailRow,
   type RdZcmProductItem,
 } from "@/api/rdUnifiedService";
@@ -69,13 +66,6 @@ function zcmRowsToOptions(rows: RdZcmProductItem[]): SearchableOption[] {
 function moduleRowToOption(row: RdModuleNameItem): SearchableOption {
   const id = row.productModuleId ?? "";
   const name = (row.moduleChName ?? "").trim() || String(id);
-  const value = `${id}|${name}`;
-  return { label: value, value };
-}
-
-function branchRowToOption(row: RdProductBranchItem): SearchableOption {
-  const id = row.branchVersionId ?? "";
-  const name = (row.branchName ?? "").trim() || String(id);
   const value = `${id}|${name}`;
   return { label: value, value };
 }
@@ -200,8 +190,6 @@ export function ProductModal({
   const [appModuleOptions, setAppModuleOptions] = useState<SearchableOption[]>([]);
   const [appModuleRows, setAppModuleRows] = useState<RdModuleNameItem[]>([]);
   const [modulesLoading, setModulesLoading] = useState(false);
-  const [prodBranchRows, setProdBranchRows] = useState<RdProductBranchItem[]>([]);
-  const [branchesLoading, setBranchesLoading] = useState(false);
   const [repoDetailByProdBranchVid, setRepoDetailByProdBranchVid] = useState<
     Record<string, RdRepoDetailRow[]>
   >({});
@@ -251,7 +239,6 @@ export function ProductModal({
       setIsEdit(false);
       setAppModuleOptions([]);
       setAppModuleRows([]);
-      setProdBranchRows([]);
     }
   }, [open, initialValues]);
 
@@ -321,35 +308,6 @@ export function ProductModal({
   }, [open, isEdit, formState.projectSpace, formState.productVersion, synapseApiBase, t]);
 
   useEffect(() => {
-    if (!open || isEdit) return;
-    const vid = parseCompositeLeadingId(formState.productVersion);
-    if (vid == null) {
-      setProdBranchRows([]);
-      setBranchesLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setBranchesLoading(true);
-    fetchProductBranchList(synapseApiBase, vid)
-      .then((rows) => {
-        if (cancelled) return;
-        setProdBranchRows(rows);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        console.error(e);
-        setProdBranchRows([]);
-        toast.error(t("workbench.products.modal.prodBranchLoadFailed"));
-      })
-      .finally(() => {
-        if (!cancelled) setBranchesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, isEdit, formState.productVersion, synapseApiBase, t]);
-
-  useEffect(() => {
     if (!open) {
       setRepoDetailByProdBranchVid({});
       setRepoDetailLoadingVid({});
@@ -392,10 +350,25 @@ export function ProductModal({
     }
   }, [open, isEdit, formState.repositories, formState.projectSpace, synapseApiBase, t]);
 
-  const prodBranchOptions = useMemo(
-    () => prodBranchRows.map(branchRowToOption),
-    [prodBranchRows],
-  );
+  /** 仓库明细返回后按 moduleName 自动填充仓库分支与 URL */
+  useEffect(() => {
+    if (!open || isEdit) return;
+    setFormState((prev) => {
+      let changed = false;
+      const newRepos = prev.repositories.map((repo) => {
+        const pbVid = parseCompositeLeadingId(repo.prodBranch ?? "");
+        if (pbVid == null) return repo;
+        const key = String(pbVid);
+        if (repoDetailLoadingVid[key]) return repo;
+        const list = repoDetailByProdBranchVid[key];
+        if (!list?.length) return repo;
+        const next = patchRepositoryRepoBranchFromModuleDetail(repo, list);
+        if (next !== repo) changed = true;
+        return next;
+      });
+      return changed ? { ...prev, repositories: newRepos } : prev;
+    });
+  }, [open, isEdit, repoDetailByProdBranchVid, repoDetailLoadingVid, formState.repositories]);
 
   const handleProjectSpaceChange = (v: string) => {
     setFormState((prev) => ({
@@ -413,15 +386,6 @@ export function ProductModal({
       productVersion: v,
       repositories: [],
     }));
-  };
-
-  const handleRepoProdBranchChange = (index: number, v: string) => {
-    setFormState((prev) => {
-      const newRepos = prev.repositories.map((r, i) =>
-        i === index ? { ...r, prodBranch: v, branch: "", url: "" } : r,
-      );
-      return { ...prev, repositories: newRepos };
-    });
   };
 
   const handleRepoModuleChange = (index: number, v: string) => {
@@ -830,17 +794,11 @@ export function ProductModal({
                   const isExpanded = expandedRepos.includes(idxStr);
                   const pbVid = parseCompositeLeadingId(repo.prodBranch ?? "");
                   const pbVidKey = pbVid != null ? String(pbVid) : "";
-                  const detailList = pbVid != null ? repoDetailByProdBranchVid[pbVidKey] ?? [] : [];
-                  const repoBranchOpts = detailList.map(repoDetailRowToOption);
-                  const prodVersionId = parseCompositeLeadingId(formState.productVersion);
-                  const prodBranchDisabledForRow =
-                    isEdit ||
-                    prodVersionId == null ||
-                    !(repo.repoModule?.trim());
-                  const rowRepoBranchDisabled =
-                    parseProjectIdFromSpaceValue(formState.projectSpace) == null ||
-                    pbVid == null ||
-                    !(repo.repoModule?.trim());
+                  const repoBranchLoading =
+                    !isEdit &&
+                    pbVid != null &&
+                    !!(repo.repoModule?.trim()) &&
+                    !!repoDetailLoadingVid[pbVidKey];
 
                   return (
                     <div key={index} className="rounded-lg border border-border/80 bg-muted/10 overflow-hidden transition-all">
@@ -868,7 +826,7 @@ export function ProductModal({
 
                       {isExpanded && (
                         <div className="p-4 pt-1 border-t border-border/50 grid grid-cols-12 gap-4 bg-background/50">
-                          <div className="col-span-12 sm:col-span-4 space-y-2">
+                          <div className="col-span-12 space-y-2">
                             <Label className="text-xs">{t("workbench.products.modal.appModule")} *</Label>
                             <SearchableVirtualSelect
                               value={repo.repoModule ?? ""}
@@ -892,54 +850,12 @@ export function ProductModal({
                               isLoading={modulesLoading}
                             />
                           </div>
-                          <div className="col-span-12 sm:col-span-4 space-y-2">
-                            <Label className="text-xs">{t("workbench.products.modal.prodBranch")} *</Label>
-                            <SearchableVirtualSelect
-                              value={repo.prodBranch ?? ""}
-                              onValueChange={(v) => handleRepoProdBranchChange(index, v)}
-                              options={prodBranchOptions}
-                              placeholder={t("workbench.products.modal.prodBranchPlaceholder")}
-                              searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
-                              emptyText={
-                                prodVersionId == null
-                                  ? t("workbench.products.modal.selectVersionFirst")
-                                  : !(repo.repoModule?.trim())
-                                    ? t("workbench.products.modal.selectAppModuleFirst")
-                                    : branchesLoading
-                                      ? ""
-                                      : t("workbench.products.modal.prodBranchEmpty")
-                              }
-                              disabled={prodBranchDisabledForRow}
-                              isLoading={branchesLoading}
-                            />
-                          </div>
-                          <div className="col-span-12 sm:col-span-4 space-y-2">
-                            <Label className="text-xs">{t("workbench.products.modal.branch")} *</Label>
-                            <SearchableVirtualSelect
-                              value={repo.branch}
-                              onValueChange={(v) => {
-                                const url = findRepoUrlForDetailComposite(detailList, v);
-                                patchRepositoryFields(index, { branch: v, url });
-                              }}
-                              options={filterRepoBranchOptionsForRow(
-                                repoBranchOpts,
-                                formState.repositories,
-                                index,
-                                repo.branch,
-                              )}
-                              placeholder={t("workbench.products.modal.branchPlaceholder")}
-                              searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
-                              emptyText={
-                                rowRepoBranchDisabled
-                                  ? t("workbench.products.modal.selectProdBranchForRepoBranch")
-                                  : pbVid != null && repoDetailLoadingVid[pbVidKey]
-                                    ? ""
-                                    : t("workbench.products.modal.repoBranchDetailEmpty")
-                              }
-                              disabled={rowRepoBranchDisabled}
-                              isLoading={pbVid != null && !!repoDetailLoadingVid[pbVidKey]}
-                            />
-                          </div>
+                          <RepoBranchDerivedDisplay
+                            prodBranch={repo.prodBranch}
+                            branch={repo.branch}
+                            repoModule={repo.repoModule}
+                            loading={repoBranchLoading}
+                          />
                           <div className="col-span-12 space-y-2">
                             <Label className="text-xs">{t("workbench.products.modal.url")} *</Label>
                             <Input

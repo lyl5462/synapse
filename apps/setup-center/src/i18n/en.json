@@ -166,6 +166,7 @@
         "prodBranchDuplicate": "Each repository must use a different product branch",
         "repoBranchDetailLoadFailed": "Failed to load repository branches. Check network or Dev Cloud login.",
         "repoBranchDetailEmpty": "No repository branches under this product branch",
+        "repoBranchLoading": "Matching repository branch…",
         "selectProdBranchForRepoBranch": "Select a product branch first",
         "repoBranchCompositeRequired": "Select a repository branch from the list for each repository (repositoryId|destBranchName)",
         "urlReadonlyPlaceholder": "Filled automatically after you select a repository branch",

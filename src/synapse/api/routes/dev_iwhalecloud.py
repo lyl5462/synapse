@@ -859,6 +859,7 @@ async def _get_repo_detail_by_prod_branch(body: GetRepoDetailByProdBranchRequest
         rid = row.get("repositoryId")
         repo_url = row.get("repoUrl")
         bname = row.get("branchName")
+        mname = row.get("moduleName")
         dest = _dest_branch_name_from_git_rows(second_rows, rid, bname)
         out.append(
             {
@@ -866,9 +867,10 @@ async def _get_repo_detail_by_prod_branch(body: GetRepoDetailByProdBranchRequest
                 "repoUrl": repo_url,
                 "branchName": bname,
                 "destBranchName": dest,
+                "moduleName": mname,
             }
         )
-
+    
     return success_response(out)
 
 
@@ -1137,6 +1139,7 @@ async def _get_product_branch_list(body: GetProductBranchListRequest) -> dict:
         }
         for it in page_data.get("list")
     ]
+
     return success_response({"total": page_data.get("total", 0), "list": simplified})
 
 
@@ -4659,7 +4662,7 @@ async def _ensure_valid_creds_async(force_refresh: bool = False) -> tuple[str, s
         if not username or not password:
             raise ValueError("userinfo.encryption 中缺少工号或密码，请重新引导")
 
-        logger.info("正在使用 Playwright 自动获取研发云 x-csrf-token 与 cookies...")
+        logger.debug("正在使用 Playwright 自动获取研发云 x-csrf-token 与 cookies...")
         token, cookies = await asyncio.to_thread(_fetch_token_and_cookies_sync, username, password)
         return token, cookies
 

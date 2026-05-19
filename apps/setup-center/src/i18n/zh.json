@@ -166,6 +166,7 @@
         "prodBranchDuplicate": "各仓库的产品分支不能重复",
         "repoBranchDetailLoadFailed": "加载仓库分支明细失败，请检查网络或研发云登录状态",
         "repoBranchDetailEmpty": "当前产品分支下无可用仓库分支",
+        "repoBranchLoading": "正在匹配仓库分支…",
         "selectProdBranchForRepoBranch": "请先选择产品分支",
         "repoBranchCompositeRequired": "请为每个仓库从列表选择仓库分支（仓库ID|目标分支名）",
         "urlReadonlyPlaceholder": "选择仓库分支后自动填充",

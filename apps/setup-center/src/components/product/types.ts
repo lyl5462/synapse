@@ -297,56 +297,56 @@ export function filterAppModuleOptionsForRow(
   return options.filter((o) => !taken.has(o.value) || o.value === cur);
 }
 
-/** 多仓库时产品分支下拉：排除其它行已选的 `value`（当前行已选保留可选） */
-export function filterProdBranchOptionsForRow(
-  options: SearchableOption[],
-  repos: { prodBranch?: string }[],
-  rowIndex: number,
-  currentProdBranch: string,
-): SearchableOption[] {
-  const cur = currentProdBranch.trim();
-  const taken = new Set(
-    repos
-      .map((r, j) => (j !== rowIndex && r.prodBranch?.trim() ? r.prodBranch.trim() : null))
-      .filter((x): x is string => !!x),
-  );
-  return options.filter((o) => !taken.has(o.value) || o.value === cur);
-}
-
-/** 多仓库时仓库分支下拉：排除其它行已选的 `value`（当前行已选保留可选） */
-export function filterRepoBranchOptionsForRow(
-  options: SearchableOption[],
-  repos: { branch?: string }[],
-  rowIndex: number,
-  currentBranch: string,
-): SearchableOption[] {
-  const cur = currentBranch.trim();
-  const taken = new Set(
-    repos
-      .map((r, j) => (j !== rowIndex && r.branch?.trim() ? r.branch.trim() : null))
-      .filter((x): x is string => !!x),
-  );
-  return options.filter((o) => !taken.has(o.value) || o.value === cur);
-}
-
 /** 展示/入库格式 repositoryId|destBranchName */
-export function repoDetailRowToOption(row: RdRepoDetailRow): SearchableOption {
+export function repoDetailComposite(row: RdRepoDetailRow): string {
   const rid = String(row.repositoryId ?? "").trim();
   const dest =
     String(row.destBranchName ?? "").trim() || String(row.branchName ?? "").trim() || rid;
-  const value = `${rid}|${dest}`;
-  return { label: value, value };
+  return `${rid}|${dest}`;
 }
 
-export function findRepoUrlForDetailComposite(rows: RdRepoDetailRow[], composite: string): string {
-  const t = composite.trim();
-  if (!t) return "";
-  for (const row of rows) {
-    if (repoDetailRowToOption(row).value === t) {
-      return String(row.repoUrl ?? "").trim();
-    }
-  }
-  return "";
+/** 应用模块 composite 后半段 moduleChName，用于与仓库明细 moduleName 对齐 */
+export function moduleChNameFromRepoModuleComposite(moduleComposite: string): string {
+  const s = moduleComposite.trim();
+  if (!s) return "";
+  const i = s.indexOf("|");
+  if (i < 0) return s;
+  return s.slice(i + 1).trim() || s.slice(0, i).trim();
+}
+
+/** 在 get_repo_detail_by_prod_branch 结果中按 moduleName 匹配应用模块 */
+export function findRepoDetailByModuleName(
+  list: RdRepoDetailRow[],
+  moduleComposite: string,
+): RdRepoDetailRow | undefined {
+  const target = moduleChNameFromRepoModuleComposite(moduleComposite);
+  if (!target) return undefined;
+  const exact = list.find((row) => String(row.moduleName ?? "").trim() === target);
+  if (exact) return exact;
+  const lower = target.toLowerCase();
+  return list.find((row) => String(row.moduleName ?? "").trim().toLowerCase() === lower);
+}
+
+/** 由模块名匹配得到仓库分支 composite 与 repoUrl */
+export function repoBranchFieldsFromModuleDetail(
+  list: RdRepoDetailRow[],
+  moduleComposite: string,
+): { branch: string; url: string } | null {
+  const row = findRepoDetailByModuleName(list, moduleComposite);
+  if (!row) return null;
+  return { branch: repoDetailComposite(row), url: String(row.repoUrl ?? "").trim() };
+}
+
+/** 按 moduleName 自动填充仓库行的 branch、url（无匹配则原样返回） */
+export function patchRepositoryRepoBranchFromModuleDetail<
+  R extends { repoModule?: string; branch?: string; url?: string },
+>(repo: R, detailList: RdRepoDetailRow[]): R {
+  const moduleComposite = repo.repoModule?.trim() ?? "";
+  if (!moduleComposite) return repo;
+  const fields = repoBranchFieldsFromModuleDetail(detailList, moduleComposite);
+  if (!fields) return repo;
+  if (repo.branch === fields.branch && repo.url === fields.url) return repo;
+  return { ...repo, branch: fields.branch, url: fields.url };
 }
 
 /** 校验仓库分支是否为 repositoryId|destBranchName（两段均非空） */

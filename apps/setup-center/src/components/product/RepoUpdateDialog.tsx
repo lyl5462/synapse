@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import {
@@ -7,14 +7,12 @@ import {
   displayIdPipeName,
   defaultProdBranchForAppModuleSelection,
   filterAppModuleOptionsForRow,
-  filterProdBranchOptionsForRow,
-  filterRepoBranchOptionsForRow,
-  findRepoUrlForDetailComposite,
   isValidRepoBranchComposite,
+  patchRepositoryRepoBranchFromModuleDetail,
   productRepositoriesToRdRepoInfo,
-  repoDetailRowToOption,
 } from "./types";
 import { SearchableVirtualSelect, type SearchableOption } from "./SearchableVirtualSelect";
+import { RepoBranchDerivedDisplay } from "./RepoBranchDerivedDisplay";
 import { parseCompositeLeadingId, parseProjectIdFromSpaceValue } from "./ProductModal";
 import {
   Dialog,
@@ -33,24 +31,15 @@ import { IS_TAURI } from "@/platform";
 import {
   changeRepoInfo,
   fetchModuleNameList,
-  fetchProductBranchList,
   fetchRepoDetailByProdBranch,
   getProdProcessInfo,
 } from "@/api/rdUnifiedService";
 import type {
   ProdProcessDataPayload,
   RdModuleNameItem,
-  RdProductBranchItem,
   RdRepoDetailRow,
 } from "@/api/rdUnifiedService";
 import { assertOwnerInfoMatchesProduct, toastOwnerInfoGuardError } from "@/utils/ownerInfoGuard";
-
-function branchRowToOption(row: RdProductBranchItem): SearchableOption {
-  const id = row.branchVersionId ?? "";
-  const name = (row.branchName ?? "").trim() || String(id);
-  const value = `${id}|${name}`;
-  return { label: value, value };
-}
 
 function moduleRowToOption(row: RdModuleNameItem): SearchableOption {
   const id = row.productModuleId ?? "";
@@ -108,8 +97,6 @@ export function RepoUpdateDialog({
   const { t } = useTranslation();
   const [rows, setRows] = useState<RepoEditRow[]>([]);
   const [saving, setSaving] = useState(false);
-  const [prodBranchRows, setProdBranchRows] = useState<RdProductBranchItem[]>([]);
-  const [branchesLoading, setBranchesLoading] = useState(false);
   const [repoDetailByProdBranchVid, setRepoDetailByProdBranchVid] = useState<
     Record<string, RdRepoDetailRow[]>
   >({});
@@ -132,35 +119,6 @@ export function RepoUpdateDialog({
       setRows(fromProductRepos(product.repositories));
     }
   }, [open, product]);
-
-  useEffect(() => {
-    if (!open || !product) return;
-    const vid = parseCompositeLeadingId(product.version ?? "");
-    if (vid == null) {
-      setProdBranchRows([]);
-      setBranchesLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setBranchesLoading(true);
-    fetchProductBranchList(synapseApiBase, vid)
-      .then((list) => {
-        if (cancelled) return;
-        setProdBranchRows(list);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        console.error(e);
-        setProdBranchRows([]);
-        toast.error(t("workbench.products.modal.prodBranchLoadFailed"));
-      })
-      .finally(() => {
-        if (!cancelled) setBranchesLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, product, product?.version, synapseApiBase, t]);
 
   useEffect(() => {
     if (!open || !product) return;
@@ -231,7 +189,26 @@ export function RepoUpdateDialog({
     }
   }, [open, product, rows, synapseApiBase, t]);
 
-  const prodBranchOptions = useMemo(() => prodBranchRows.map(branchRowToOption), [prodBranchRows]);
+  /** 仓库明细返回后按 moduleName 自动填充新行的仓库分支与 URL */
+  useEffect(() => {
+    if (!open || !product) return;
+    setRows((prev) => {
+      let changed = false;
+      const next = prev.map((repo) => {
+        if (repo.branchLocked) return repo;
+        const pbVid = parseCompositeLeadingId(repo.prodBranch ?? "");
+        if (pbVid == null) return repo;
+        const key = String(pbVid);
+        if (repoDetailLoadingVid[key]) return repo;
+        const list = repoDetailByProdBranchVid[key];
+        if (!list?.length) return repo;
+        const patched = patchRepositoryRepoBranchFromModuleDetail(repo, list);
+        if (patched !== repo) changed = true;
+        return patched;
+      });
+      return changed ? next : prev;
+    });
+  }, [open, product, repoDetailByProdBranchVid, repoDetailLoadingVid, rows]);
 
   const repoModuleSelectDisabled =
     parseProjectIdFromSpaceValue(product?.space ?? "") == null ||
@@ -320,14 +297,6 @@ export function RepoUpdateDialog({
         toast.error(t("workbench.products.repoUpdateDialog.incompleteRepo"));
         return;
       }
-      const unlockedPb = rows
-        .filter((r) => !r.branchLocked)
-        .map((r) => r.prodBranch?.trim() ?? "")
-        .filter(Boolean);
-      if (new Set(unlockedPb).size !== unlockedPb.length) {
-        toast.error(t("workbench.products.modal.prodBranchDuplicate"));
-        return;
-      }
       const rmVals = rows.map((r) => r.repoModule?.trim() ?? "").filter(Boolean);
       if (new Set(rmVals).size !== rmVals.length) {
         toast.error(t("workbench.products.modal.repoModuleDuplicate"));
@@ -388,8 +357,11 @@ export function RepoUpdateDialog({
             rows.map((repo, index) => {
               const rbVid = parseCompositeLeadingId(repo.prodBranch ?? "");
               const rbVidKey = rbVid != null ? String(rbVid) : "";
-              const detailList = rbVid != null ? repoDetailByProdBranchVid[rbVidKey] ?? [] : [];
-              const repoBranchOpts = detailList.map(repoDetailRowToOption);
+              const repoBranchLoading =
+                !repo.branchLocked &&
+                rbVid != null &&
+                !!(repo.repoModule?.trim()) &&
+                !!repoDetailLoadingVid[rbVidKey];
 
               return (
               <div
@@ -421,7 +393,7 @@ export function RepoUpdateDialog({
                 </div>
 
                 <div className="grid grid-cols-12 gap-3">
-                  <div className="col-span-12 space-y-1.5 sm:col-span-4">
+                  <div className="col-span-12 space-y-1.5">
                     <Label className="text-xs">
                       {t("workbench.products.modal.appModule")}
                       {!repo.branchLocked ? " *" : ""}
@@ -457,84 +429,14 @@ export function RepoUpdateDialog({
                       />
                     )}
                   </div>
-                  <div className="col-span-12 space-y-1.5 sm:col-span-4">
-                    <Label className="text-xs">
-                      {t("workbench.products.modal.prodBranch")}
-                      {!repo.branchLocked ? " *" : ""}
-                    </Label>
-                    {repo.branchLocked ? (
-                      <Input
-                        readOnly
-                        tabIndex={-1}
-                        className="h-9 text-xs bg-muted/50 cursor-default"
-                        value={repo.prodBranch?.trim() || "—"}
-                      />
-                    ) : (
-                      <SearchableVirtualSelect
-                        value={repo.prodBranch ?? ""}
-                        onValueChange={(v) => updateRow(index, { prodBranch: v, branch: "", url: "" })}
-                        options={filterProdBranchOptionsForRow(
-                          prodBranchOptions,
-                          rows,
-                          index,
-                          repo.prodBranch ?? "",
-                        )}
-                        placeholder={t("workbench.products.modal.prodBranchPlaceholder")}
-                        searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
-                        emptyText={
-                          parseCompositeLeadingId(product?.version ?? "") == null
-                            ? t("workbench.products.modal.selectVersionFirst")
-                            : branchesLoading
-                              ? ""
-                              : t("workbench.products.modal.prodBranchEmpty")
-                        }
-                        disabled={parseCompositeLeadingId(product?.version ?? "") == null}
-                        isLoading={branchesLoading}
-                      />
-                    )}
-                  </div>
-                  <div className="col-span-12 space-y-1.5 sm:col-span-4">
-                    <Label className="text-xs">{t("workbench.products.modal.branch")}</Label>
-                    {repo.branchLocked ? (
-                      <Input
-                        readOnly
-                        tabIndex={-1}
-                        value={repo.branch}
-                        className="h-9 text-xs bg-muted/50 cursor-default"
-                        placeholder={t("workbench.products.modal.branchPlaceholder")}
-                      />
-                    ) : (
-                      <SearchableVirtualSelect
-                        value={repo.branch}
-                        onValueChange={(v) => {
-                          const url = findRepoUrlForDetailComposite(detailList, v);
-                          updateRow(index, { branch: v, url });
-                        }}
-                        options={filterRepoBranchOptionsForRow(
-                          repoBranchOpts,
-                          rows,
-                          index,
-                          repo.branch,
-                        )}
-                        placeholder={t("workbench.products.modal.branchPlaceholder")}
-                        searchPlaceholder={t("workbench.products.modal.searchFilterPlaceholder")}
-                        emptyText={
-                          rbVid == null
-                            ? t("workbench.products.modal.selectProdBranchForRepoBranch")
-                            : repoDetailLoadingVid[rbVidKey]
-                              ? ""
-                              : t("workbench.products.modal.repoBranchDetailEmpty")
-                        }
-                        disabled={rbVid == null}
-                        isLoading={rbVid != null && !!repoDetailLoadingVid[rbVidKey]}
-                      />
-                    )}
-                    <p className="text-[11px] text-muted-foreground m-0">
-                      {repo.branchLocked
-                        ? t("workbench.products.repoUpdateDialog.branchHint")
-                        : t("workbench.products.repoUpdateDialog.branchSelectHint")}
-                    </p>
-                  </div>
+                  <RepoBranchDerivedDisplay
+                    prodBranch={repo.prodBranch}
+                    branch={repo.branch}
+                    repoModule={repo.repoModule}
+                    loading={repoBranchLoading}
+                    locked={repo.branchLocked}
+                    showRequired={!repo.branchLocked}
+                  />
                   <div className="col-span-12 space-y-1.5">
                     <Label className="text-xs">{t("workbench.products.modal.url")}</Label>
                     <Input

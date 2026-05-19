@@ -1310,6 +1310,7 @@ export type RdRepoDetailRow = {
   repoUrl?: string | null;
   branchName?: string | null;
   destBranchName?: string | null;
+  moduleName?: string | null;
 };
 
 /**
@@ -1354,6 +1355,7 @@ function sanitizeRepoDetailListPayload(data: unknown): RdRepoDetailRow[] {
       repoUrl: r.repoUrl != null ? String(r.repoUrl) : "",
       branchName: String(r.branchName ?? dest).trim() || dest,
       destBranchName: dest,
+      moduleName: r.moduleName != null ? String(r.moduleName).trim() : undefined,
     });
   }
   return out;
