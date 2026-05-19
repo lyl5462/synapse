@@ -195,7 +195,7 @@ export function RequirementAnalysisPanel({
           {record.type === 'bug'
             ? <AlertCircle size={11} color="#ef4444" />
             : <GitMerge size={11} color="#3b82f6" />}
-          <Link style={{ color: '#94a3b8', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{id}</Link>
+          <Link style={{ color: 'var(--muted)', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{id}</Link>
         </Space>
       ),
     },
@@ -209,12 +209,12 @@ export function RequirementAnalysisPanel({
             onClick={() => toggleExpand(record.key)}
           >
             <Text style={{
-              fontSize: 12, color: expanded ? '#c4b5fd' : '#94a3b8', flex: 1,
+              fontSize: 12, color: expanded ? 'var(--primary)' : 'var(--muted)', flex: 1,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', transition: 'color 0.15s',
             }}>
               {title}
             </Text>
-            <span style={{ flexShrink: 0, color: expanded ? '#a78bfa' : '#475569', transition: 'color 0.15s' }}>
+            <span style={{ flexShrink: 0, color: expanded ? 'var(--primary)' : 'var(--muted2)', transition: 'color 0.15s' }}>
               {expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
             </span>
           </div>
@@ -223,7 +223,7 @@ export function RequirementAnalysisPanel({
     },
     {
       title: '产品', dataIndex: 'product', key: 'product', width: 80,
-      render: (v: string) => <Text style={{ color: '#94a3b8', fontSize: 11 }}>{v}</Text>,
+      render: (v: string) => <Text style={{ color: 'var(--muted)', fontSize: 11 }}>{v}</Text>,
     },
     {
       title: '模块', dataIndex: 'modules', key: 'modules', width: 130,
@@ -256,7 +256,7 @@ export function RequirementAnalysisPanel({
           </div>
           <Progress
             percent={rate} showInfo={false} size={[40, 3]}
-            strokeColor={getMatchColor(rate)} railColor="rgba(51,65,85,0.4)"
+            strokeColor={getMatchColor(rate)} railColor="var(--line)"
             style={{ marginBottom: 0 }}
           />
         </div>
@@ -264,7 +264,7 @@ export function RequirementAnalysisPanel({
     },
     {
       title: '工作量', dataIndex: 'effort', key: 'effort', width: 66,
-      render: (v: string) => <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>{v}</Text>,
+      render: (v: string) => <Text style={{ color: 'var(--text)', fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>{v}</Text>,
     },
     {
       title: '研发单', dataIndex: 'devTickets', key: 'devTickets', width: 60,
@@ -296,10 +296,10 @@ export function RequirementAnalysisPanel({
       title: '负责人', dataIndex: 'assignee', key: 'assignee', width: 82,
       render: (name: string) => (
         <Space size={6} align="center">
-          <Avatar size={18} style={{ background: '#1e293b', fontSize: 10, fontWeight: 600, border: '1px solid rgba(51,65,85,0.6)', color: '#94a3b8' }}>
+          <Avatar size={18} style={{ background: 'var(--bg-subtle)', fontSize: 10, fontWeight: 600, border: '1px solid var(--line)', color: 'var(--muted)' }}>
             {name.charAt(0)}
           </Avatar>
-          <Text style={{ color: '#94a3b8', fontSize: 11 }}>{name}</Text>
+          <Text style={{ color: 'var(--muted)', fontSize: 11 }}>{name}</Text>
         </Space>
       ),
     },
@@ -310,12 +310,12 @@ export function RequirementAnalysisPanel({
 
       {/* ── 70%: 搜集的产品信息及任务产出物 ── */}
       <div
-        style={{ height: '70%', overflowY: 'auto', borderBottom: '1px solid rgba(51,65,85,0.5)' }}
+        style={{ height: '70%', overflowY: 'auto', borderBottom: '1px solid var(--line)' }}
         className="custom-scrollbar"
       >
         <div className="p-5">
           {/* Section header */}
-          <h4 className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+          <h4 className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-2">
             <FileText className="w-3.5 h-3.5 text-indigo-400" /> 搜集的产品信息及任务产出物
           </h4>
 
@@ -331,25 +331,25 @@ export function RequirementAnalysisPanel({
                 children: (
                   <div className="pt-3 space-y-4">
                     {/* Node desc card */}
-                    <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4 shadow-inner">
-                      <h5 className="text-[10px] font-semibold text-slate-500 mb-2 uppercase tracking-wider flex items-center gap-1.5">
+                    <div className="bg-muted/50 border border-border rounded-xl p-4 shadow-inner">
+                      <h5 className="text-[10px] font-semibold text-muted-foreground mb-2 uppercase tracking-wider flex items-center gap-1.5">
                         <Info className="w-3 h-3" /> 节点说明 / 会议目标
                       </h5>
-                      <p className="text-slate-300 leading-relaxed text-sm">{nodeDesc}</p>
-                      <div className="mt-3 pt-2.5 border-t border-slate-800/60 flex items-center gap-5 text-xs">
+                      <p className="text-foreground/90 leading-relaxed text-sm">{nodeDesc}</p>
+                      <div className="mt-3 pt-2.5 border-t border-border/60 flex items-center gap-5 text-xs">
                         <div className="flex items-center gap-1.5">
-                          <span className="text-slate-600">主要动作：</span>
+                          <span className="text-muted-foreground/80">主要动作：</span>
                           <span className={nodeTypeColor}>{nodeTypeLabel}</span>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <span className="text-slate-600">所属阶段：</span>
-                          <span className="text-slate-400">{stageName}</span>
+                          <span className="text-muted-foreground/80">所属阶段：</span>
+                          <span className="text-muted-foreground">{stageName}</span>
                         </div>
                       </div>
                     </div>
                     {/* Output area */}
                     <div>
-                      <h5 className="text-[10px] font-semibold text-slate-500 mb-3 uppercase tracking-wider flex items-center gap-1.5">
+                      <h5 className="text-[10px] font-semibold text-muted-foreground mb-3 uppercase tracking-wider flex items-center gap-1.5">
                         <Activity className="w-3 h-3" /> 执行产物 / 交互区
                       </h5>
                       {nodeOutput}
@@ -367,9 +367,9 @@ export function RequirementAnalysisPanel({
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-900/40 border border-blue-700/40 text-blue-400">历史相似工单 (RAG)</span>
                         <span className="text-xs text-indigo-400 font-semibold font-mono">匹配度 92%</span>
                       </div>
-                      <div className="text-sm font-medium text-slate-200 mb-1.5">FIX: 订单金额总计与实际支付出现 0.01 误差</div>
-                      <p className="text-xs text-slate-500 leading-relaxed">
-                        引用路径：<code className="text-slate-400 bg-slate-800/60 px-1 rounded">docs/engineering/finance/precision-loss.md</code>
+                      <div className="text-sm font-medium text-foreground mb-1.5">FIX: 订单金额总计与实际支付出现 0.01 误差</div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        引用路径：<code className="text-muted-foreground bg-muted/60 px-1 rounded">docs/engineering/finance/precision-loss.md</code>
                         {' '}· 核心结论：浮点数计算导致的资金安全风险，必须强制使用 BigDecimal 并指定 RoundingMode。
                       </p>
                     </div>
@@ -378,9 +378,9 @@ export function RequirementAnalysisPanel({
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-700/40 text-emerald-400">研发规范库</span>
                         <span className="text-xs text-emerald-400 font-semibold font-mono">置信度 100%</span>
                       </div>
-                      <div className="text-sm font-medium text-slate-200 mb-1.5">Java 后端编码规范 § 4.2</div>
-                      <p className="text-xs text-slate-500 leading-relaxed">
-                        命中条目：严禁使用 <code className="text-slate-400 bg-slate-800/60 px-1 rounded">Double/Float</code> 进行金额计算。所有 DTO 和 Entity 必须使用 Decimal 类型。
+                      <div className="text-sm font-medium text-foreground mb-1.5">Java 后端编码规范 § 4.2</div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        命中条目：严禁使用 <code className="text-muted-foreground bg-muted/60 px-1 rounded">Double/Float</code> 进行金额计算。所有 DTO 和 Entity 必须使用 Decimal 类型。
                       </p>
                     </div>
                     <div className="p-3 bg-purple-950/20 rounded-xl border border-purple-900/30">
@@ -388,8 +388,8 @@ export function RequirementAnalysisPanel({
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-purple-900/40 border border-purple-700/40 text-purple-400">产品文档 (RAG)</span>
                         <span className="text-xs text-purple-400 font-semibold font-mono">匹配度 76%</span>
                       </div>
-                      <div className="text-sm font-medium text-slate-200 mb-1.5">AI 工单路由系统 · 产品需求规格说明书 v2.1</div>
-                      <p className="text-xs text-slate-500 leading-relaxed">
+                      <div className="text-sm font-medium text-foreground mb-1.5">AI 工单路由系统 · 产品需求规格说明书 v2.1</div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
                         引用章节：§ 3.2 智能分发逻辑 · 确认路由策略需支持规则引擎 + ML 双轨，延迟 SLA &lt; 200ms，吞吐量 ≥ 5000 TPS。
                       </p>
                     </div>
@@ -401,10 +401,10 @@ export function RequirementAnalysisPanel({
                 label: <span className="flex items-center gap-1.5 text-xs"><Network className="w-3 h-3" />知识图谱</span>,
                 children: (
                   <div className="pt-3">
-                    <div className="bg-slate-900/30 border border-slate-800/50 rounded-xl p-4 space-y-4">
+                    <div className="bg-muted/30 border border-border/50 rounded-xl p-4 space-y-4">
                       <div className="flex items-center gap-3">
                         <div className="w-2 h-2 rounded-full bg-indigo-500 shadow-[0_0_6px_rgba(99,102,241,0.8)]" />
-                        <span className="text-sm text-slate-300">正在构建需求实体关联拓扑...</span>
+                        <span className="text-sm text-foreground/90">正在构建需求实体关联拓扑...</span>
                       </div>
                       <div className="grid grid-cols-3 gap-2">
                         {[
@@ -412,15 +412,15 @@ export function RequirementAnalysisPanel({
                           { label: '影响模块', value: 'TicketFlow' },
                           { label: '涉及数据', value: 'PriorityQueue' },
                         ].map(item => (
-                          <div key={item.label} className="bg-[#161925] p-3 rounded-lg border border-slate-800">
-                            <div className="text-[10px] text-slate-500 mb-1">{item.label}</div>
+                          <div key={item.label} className="bg-muted p-3 rounded-lg border border-border">
+                            <div className="text-[10px] text-muted-foreground mb-1">{item.label}</div>
                             <div className="text-sm font-semibold text-white">{item.value}</div>
                           </div>
                         ))}
                       </div>
                       <div className="border-l-2 border-dashed border-indigo-900/40 ml-1 pl-4 space-y-2">
                         <p className="text-xs text-indigo-400">推理路径: Requirement → TicketEntity → PriorityType → MLRouter</p>
-                        <p className="text-xs text-slate-500">检测到隐性依赖: 分发引擎(DispatchEngine) 依赖当前路由结果，建议同步检查。</p>
+                        <p className="text-xs text-muted-foreground">检测到隐性依赖: 分发引擎(DispatchEngine) 依赖当前路由结果，建议同步检查。</p>
                       </div>
                     </div>
                   </div>
@@ -430,31 +430,24 @@ export function RequirementAnalysisPanel({
           />
         </div>
 
-        <style>{`
-          .req-analysis-tabs .ant-tabs-nav { margin-bottom: 0 !important; }
-          .req-analysis-tabs .ant-tabs-tab { padding: 8px 12px !important; }
-          .req-analysis-tabs .ant-tabs-tab-active .ant-tabs-tab-btn { color: #3b82f6 !important; }
-          .req-analysis-tabs .ant-tabs-ink-bar { background: #3b82f6 !important; height: 2px !important; }
-          .req-analysis-tabs .ant-tabs-nav::before { border-bottom: 1px solid rgba(51,65,85,0.4) !important; }
-        `}</style>
       </div>
 
       {/* ── 30%: 历史相似工单及明细 ── */}
       <div
-        style={{ height: '30%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#12141e' }}
+        style={{ height: '30%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--panel)' }}
       >
         {/* Section header with stats */}
         <div style={{
           padding: '10px 16px 0',
-          borderBottom: '1px solid rgba(51,65,85,0.4)',
+          borderBottom: '1px solid var(--line)',
           flexShrink: 0,
-          background: '#161822',
+          background: 'var(--panel2)',
         }}>
           {/* Title row */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 8, paddingLeft: 4, paddingRight: 4 }}>
             <Space size={8} align="center">
               <Ticket size={14} color="#818cf8" />
-              <Text style={{ color: '#e2e8f0', fontWeight: 600, fontSize: 13 }}>历史相似工单及明细</Text>
+              <Text style={{ color: 'var(--text)', fontWeight: 600, fontSize: 13 }}>历史相似工单及明细</Text>
             </Space>
             <Button
               type="link" size="small"
@@ -475,7 +468,7 @@ export function RequirementAnalysisPanel({
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   {s.icon}
-                  <Text style={{ fontSize: 10, color: '#64748b' }}>{s.label}</Text>
+                  <Text style={{ fontSize: 10, color: 'var(--muted)' }}>{s.label}</Text>
                 </div>
                 <Text style={{ fontSize: 12, color: s.color, fontWeight: 600, fontFamily: 'ui-monospace, monospace' }}>
                   {s.value}
@@ -486,7 +479,7 @@ export function RequirementAnalysisPanel({
         </div>
 
         {/* Table */}
-        <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', background: '#161822' }} className="custom-scrollbar">
+        <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', background: 'var(--panel2)' }} className="custom-scrollbar rdMeetingSimilarTable">
           <Table<TicketRecord>
             dataSource={sortedTickets}
             columns={columns}

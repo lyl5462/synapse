@@ -36,6 +36,7 @@ from .routes import (
     chat_models,
     config,
     dev_iwhalecloud,
+    meeting_rooms,
     feishu_onboard,
     files,
     gitnexus,
@@ -411,6 +412,7 @@ def create_app(
     app.include_router(yuque.router, tags=["语雀"])
     app.include_router(gitnexus.router, tags=["GitNexus"])
     app.include_router(dev_iwhalecloud.router, tags=["研发云"])
+    app.include_router(meeting_rooms.router, tags=["研发会议室"])
 
     if plugins_routes is not None:
         app.include_router(plugins_routes.router)

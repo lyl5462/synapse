@@ -61,24 +61,19 @@ import {
   type ProductKnowledgePatch,
 } from '@/components/product/types';
 import { ViewId } from '../../types';
+import {
+  SOP_STAGES,
+  ALL_NODES,
+  LAST_PIPELINE_STAGE_ID,
+  LAST_PIPELINE_NODE_ID,
+  resolveSopRawToNodeId,
+  stageIdForNodeId,
+  type NodeType,
+  type SOPNode,
+  type SOPStage,
+} from '../../rd-sop/constants';
 
 // --- Types & Data ---
-
-type NodeType = 'ai' | 'human' | 'human_start' | 'ai_exception' | 'ai_human' | 'system' | 'human_multi';
-
-interface SOPNode {
-  id: string;
-  name: string;
-  type: NodeType;
-  desc: string;
-  stageId?: number;
-}
-
-interface SOPStage {
-  id: number;
-  name: string;
-  nodes: SOPNode[];
-}
 
 export interface WorkItem {
   id: string;
@@ -116,79 +111,6 @@ export interface Ticket {
   createdAt: string;
   workItems: WorkItem[];
 }
-
-const SOP_STAGES: SOPStage[] = [
-  {
-    id: 0,
-    name: '待处理',
-    nodes: [
-      { id: 'pending', name: '等待调度', type: 'system', desc: '工单刚创建，等待进入智能研发流程' }
-    ]
-  },
-  {
-    id: 1,
-    name: '需求分析',
-    nodes: [
-      { id: 'req_clarify', name: '需求澄清', type: 'human', desc: '识别需求模糊点和歧义，自动交互式推进完善' },
-      { id: 'boundary', name: '边界确认', type: 'ai', desc: '识别跨产品场景，确保单个需求只处理一个产品' },
-      { id: 'module_func', name: '模块功能', type: 'ai', desc: '对需求进行功能模块拆分，为设计做准备' },
-      { id: 'acceptance', name: '验收标准', type: 'ai', desc: '针对拆分出的功能模块完成验收要求设定' },
-      { id: 'req_risk', name: '需求风险', type: 'human', desc: '高风险需求需人工介入，评估影响和工作量' }
-    ]
-  },
-  {
-    id: 2,
-    name: '需求设计',
-    nodes: [
-      { id: 'func_assign', name: '功能点分派', type: 'ai', desc: '按需求拆分功能点，分派给不同智能体并行处理' },
-      { id: 'history_solution', name: '历史方案', type: 'ai', desc: '检索历史方案，与当前要求进行映射供参考' },
-      { id: 'module_confirm', name: '模块确认', type: 'ai', desc: '确认具体改造的代码模块范围' },
-      { id: 'func_solution', name: '函数级方案', type: 'ai', desc: '将功能方案定位到函数级别，严控改造范围' },
-      { id: 'entropy_gen', name: '控熵生成', type: 'ai', desc: '提取并生成 agent.md, rule.md 等控熵文件' },
-      { id: 'solution_review', name: '方案评审', type: 'ai_human', desc: '发起评审，设计助手答辩，可调用沙箱验证可行性' }
-    ]
-  },
-  {
-    id: 3,
-    name: '需求研发',
-    nodes: [
-      { id: 'auto_split', name: '自动拆单', type: 'ai', desc: '根据需求单和方案完成研发子单自动拆分分配' },
-      { id: 'sandbox_build', name: '沙箱构建', type: 'ai', desc: '针对研发单构造无冗余信息的基础沙箱环境' },
-      { id: 'env_pregen', name: '环境预生成', type: 'ai', desc: '下载代码、控熵文件，完成开发环境预生成' }
-    ]
-  },
-  {
-    id: 4,
-    name: '开发中',
-    nodes: [
-      { id: 'task_exec', name: '任务执行', type: 'human_start', desc: '人工确认启动，研发助手关联沙箱执行（禁改Prompt）' },
-      { id: 'exception_check', name: '异常检查', type: 'ai', desc: '发现无法解决的问题时，降级为人工介入处理' },
-      { id: 'task_feedback', name: '任务反馈', type: 'system', desc: '实时反馈执行情况，供人工观察智能体状态' },
-      { id: 'diff_analysis', name: '差异分析', type: 'human', desc: '强制要求研发人员对完成的代码进行差异分析' },
-      { id: 'env_start', name: '环境启动', type: 'system', desc: '自动进行环境启动并编译运行代码（或远端编译）' },
-      { id: 'unit_test', name: '单元自测', type: 'ai', desc: '根据验收标准生成测试用例，自测通过后自动提交试飞' }
-    ]
-  },
-  {
-    id: 5,
-    name: '代码走查',
-    nodes: [
-      { id: 'dev_process_review', name: '开发流程评审', type: 'ai', desc: '检查开发耗时、token消耗、冲突情况等是否合规' },
-      { id: 'solution_consistency', name: '方案一致性', type: 'ai', desc: '二次核对涉及的文件/模块/功能是否严遵方案' },
-      { id: 'risk_review', name: '风险评审', type: 'ai', desc: '综合评定开发中的情况及测试充分率是否存在风险' },
-      { id: 'entropy_review', name: '控熵评审', type: 'ai', desc: '双向校验控熵文件内容与代码改造差异点的各类结构' },
-      { id: 'leader_review', name: '研发组长评审', type: 'human_multi', desc: '全员线上评审通过后，方可继续转单发布' }
-    ]
-  }
-];
-
-// Flatten nodes for easy index calculation
-const ALL_NODES = SOP_STAGES.flatMap(s => s.nodes.map(n => ({ ...n, stageId: s.id })));
-
-/** 流水线最后一阶段（代码走查）：不参与折叠合并 */
-const LAST_PIPELINE_STAGE_ID = SOP_STAGES[SOP_STAGES.length - 1]?.id ?? 5;
-/** 工单已全部完成时，焦点落在最后一个 SOP 节点（研发组长评审） */
-const LAST_PIPELINE_NODE_ID = ALL_NODES[ALL_NODES.length - 1]?.id ?? 'leader_review';
 
 function focusNodeIdForTicket(ticket: Ticket): string {
   if (ticket.status === 'completed') return LAST_PIPELINE_NODE_ID;
@@ -265,19 +187,8 @@ const JsonOutput = ({ data }: { data: any }) => (
   </div>
 );
 
-/** 将接口 sop_node 文案或 id 解析为流水线节点 id；空串无法解析时返回 null */
-function resolveSopRawToNodeId(sopRaw: string): string | null {
-  const sop = (sopRaw || "").trim();
-  if (!sop) return null;
-  return ALL_NODES.find((n) => n.name === sop || n.id === sop)?.id ?? null;
-}
-
-function stageIdForNodeId(nodeId: string): number {
-  const stage = SOP_STAGES.find((s) => s.nodes.some((n) => n.id === nodeId));
-  return stage ? stage.id : 0;
-}
-
 /**
+
  * 仅「处理中」工单需要查轨迹人工介入；order_id 与左侧展示维度一致：
  * - 仅有需求单（无研发子单）→ 传 demand_no
  * - 有研发子单（按子单展示）→ 只传各 task_no，不传 demand_no
@@ -395,6 +306,29 @@ function mapDemandListItemToTicket(d: DemandListItem, flags: Record<string, bool
     currentStage: 0,
     workItems,
   };
+}
+
+/** demand_impact：JSON 数组时仅展示各条 impactDesc，否则原样返回 */
+function formatDemandImpactDisplay(raw: string): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return '';
+  if (!trimmed.startsWith('[')) return trimmed;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!Array.isArray(parsed)) return trimmed;
+    const descs = parsed
+      .map((item) => {
+        if (item && typeof item === 'object' && 'impactDesc' in item) {
+          const desc = (item as { impactDesc?: unknown }).impactDesc;
+          return typeof desc === 'string' ? desc.trim() : '';
+        }
+        return '';
+      })
+      .filter(Boolean);
+    return descs.length > 0 ? descs.join('\n') : trimmed;
+  } catch {
+    return trimmed;
+  }
 }
 
 /** 秒 → 可读时长（优先小时/分钟） */
@@ -2145,7 +2079,9 @@ export const OrderManagement: React.FC<{
                           <span className="text-xs text-muted-foreground">
                             {t('rdManageOrder.labelColon', { label: t('rdManageOrder.demandImpact') })}
                           </span>
-                          <span className="text-foreground/90">{(modalDemand.demand_impact || '—').trim() || '—'}</span>
+                          <span className="whitespace-pre-line text-foreground/90">
+                            {formatDemandImpactDisplay(modalDemand.demand_impact || '') || '—'}
+                          </span>
                         </div>
                         <div className="flex items-center justify-between text-sm sm:block">
                           <span className="text-xs text-muted-foreground">

@@ -9,7 +9,7 @@ export function MeetingRoomView({
 }) {
   return (
     <div className="rdOrdersRoot">
-      <MeetingRoomBoard />
+      <MeetingRoomBoard synapseApiBase={synapseApiBase} />
     </div>
   );
 }

@@ -16,3 +16,62 @@
   height: 100%;
   min-width: 0;
 }
+
+/* 研发会议室：与工单管理同样全幅铺满，并跟随 data-theme */
+.content:has(.rdMeetingRoot) {
+  padding: 0 !important;
+  overflow: hidden !important;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.rdMeetingRoot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  background: var(--bg-app);
+  color: var(--text);
+}
+
+.rdMeetingRoot .req-analysis-tabs .ant-tabs-nav {
+  margin-bottom: 0 !important;
+}
+
+.rdMeetingRoot .req-analysis-tabs .ant-tabs-tab {
+  padding: 8px 12px !important;
+}
+
+.rdMeetingRoot .req-analysis-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--primary) !important;
+}
+
+.rdMeetingRoot .req-analysis-tabs .ant-tabs-ink-bar {
+  background: var(--primary) !important;
+  height: 2px !important;
+}
+
+.rdMeetingRoot .req-analysis-tabs .ant-tabs-nav::before {
+  border-bottom: 1px solid var(--line) !important;
+}
+
+.rdMeetingRoot .rdMeetingSimilarTable .ant-table,
+.rdMeetingRoot .rdMeetingSimilarTable .ant-table-thead > tr > th,
+.rdMeetingRoot .rdMeetingSimilarTable .ant-table-tbody > tr > td {
+  background: transparent !important;
+  color: var(--text);
+  border-color: var(--line) !important;
+}
+
+.rdMeetingRoot .rdMeetingSimilarTable .ant-table-thead > tr > th {
+  color: var(--muted) !important;
+  font-size: 11px;
+}
+
+.rdMeetingRoot .rdMeetingSimilarTable .ant-table-tbody > tr:hover > td {
+  background: var(--nav-hover) !important;
+}
