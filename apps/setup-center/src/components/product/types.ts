@@ -557,16 +557,26 @@ function pickLatestTimeString(candidates: (string | null | undefined)[]): string
   return xs.slice().sort()[xs.length - 1];
 }
 
+/**
+ * 文档完成时间：只取 architecture（产品架构）和 manual（产品手册）两类
+ * 两者都 done 时返回最晚完成时间，否则返回 undefined。
+ */
 function documentAggregatedCompletedTime(
-  doc_process?: { doc_process_state: string; doc_process_time?: string | null }[] | null,
+  doc_process?: { doc_type?: string; doc_process_state: string; doc_process_time?: string | null }[] | null,
 ): string | undefined {
   if (!doc_process?.length) return undefined;
+  const keyDocs = doc_process.filter(
+    (d) =>
+      docTypeMatchesKnowledge(String(d?.doc_type ?? ""), "architecture") ||
+      docTypeMatchesKnowledge(String(d?.doc_type ?? ""), "manual"),
+  );
+  if (!keyDocs.length) return undefined;
   const docWorst = pickWorstUnifiedState(
-    doc_process.map((d) => normalizeWireProcessState(d?.doc_process_state)),
+    keyDocs.map((d) => normalizeWireProcessState(d?.doc_process_state)),
   );
   if (docWorst !== "done") return undefined;
   return pickLatestTimeString(
-    doc_process
+    keyDocs
       .filter((d) => normalizeWireProcessState(d.doc_process_state) === "done")
       .map((d) => d.doc_process_time),
   );
@@ -621,9 +631,15 @@ export function buildAnalysisFieldsFromProcessPayload(
         data.repo_process.map((r) => normalizeWireProcessState(r?.repo_process_state)),
       )
     : "new";
-  const docWorst = data.doc_process?.length
+  // 文档状态只看 architecture（产品架构）和 manual（产品手册）两类
+  const keyDocRows = (data.doc_process ?? []).filter(
+    (d) =>
+      docTypeMatchesKnowledge(String(d?.doc_type ?? ""), "architecture") ||
+      docTypeMatchesKnowledge(String(d?.doc_type ?? ""), "manual"),
+  );
+  const docWorst = keyDocRows.length
     ? pickWorstUnifiedState(
-        data.doc_process.map((d) => normalizeWireProcessState(d?.doc_process_state)),
+        keyDocRows.map((d) => normalizeWireProcessState(d?.doc_process_state)),
       )
     : "new";
   const ticketUnified = normalizeWireProcessState(data.order_process);
