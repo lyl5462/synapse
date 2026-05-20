@@ -1,12 +1,25 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ConfigProvider, theme, Avatar, Modal, Button, Input, Tag, Badge, Tooltip, Progress } from 'antd';
-import { fetchMeetingRooms, type MeetingRoomListItem } from '../../../api/meetingRoomService';
+import {
+  approveAndResumeMeetingNode,
+  fetchMeetingRoomDetail,
+  fetchMeetingRooms,
+  interveneMeetingRoom,
+  runMeetingRoomNode,
+  type MeetingRoomChatLogWire,
+  type MeetingRoomDetail,
+  type MeetingRoomListItem,
+} from '../../../api/meetingRoomService';
+import { consumeMeetingRoomFocus } from '../../../rd-meeting/focus';
+import { MeetingRoomConfigDrawer } from './MeetingRoomConfigDrawer';
+import { MeetingHitlForm, type HitlFormSchema } from './MeetingHitlForm';
+import { toast } from 'sonner';
 import { SOP_STAGES, ALL_NODES, type SOPNode, type SOPStage } from '../../../rd-sop/constants';
 import { RequirementAnalysisPanel } from './panels/RequirementAnalysisPanel';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Bot, Cpu, FileText, TerminalSquare, AlertTriangle, ShieldAlert, Sparkles, 
-  Users, MessageSquare, CheckCircle2, ChevronRight, Hash, Activity, Send, Zap, 
+  Users, MessageSquare, CheckCircle2, ChevronRight, Hash, Activity, Send, Zap, Settings2, PlayCircle,
   Globe, Clock, Coins, BrainCircuit, Coffee, MoreHorizontal, CircleDashed, 
   Terminal, Code2, GitBranch, FileCode2, Play, User, Info, Network, Code, 
   TestTube, CheckSquare, Flame, TrendingUp, Loader2, AlertCircle, MessageSquareText
@@ -73,10 +86,34 @@ interface MeetingRoom {
   agents: RoomAgent[];
   logs: LogEntry[];
   brief: string;
+  hitlFormSchema?: HitlFormSchema | null;
 }
 
-function mapListItemToRoom(item: MeetingRoomListItem): MeetingRoom {
+function mapChatWireToLog(w: MeetingRoomChatLogWire): LogEntry {
+  return {
+    id: w.id,
+    agentId: w.agentId,
+    text: w.text,
+    timestamp: w.timestamp,
+    type: w.type,
+  };
+}
+
+function mapDetailToRoom(item: MeetingRoomDetail): MeetingRoom {
   const timeStr = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const chatLogs = (item.chat_logs || []).map(mapChatWireToLog);
+  const logs =
+    chatLogs.length > 0
+      ? chatLogs
+      : [
+          {
+            id: 'boot',
+            agentId: 'system',
+            text: `工单 ${item.scope_id} · ${item.stage_name} / ${item.current_node_name}（${item.local_process_state}）`,
+            timestamp: timeStr,
+            type: 'info' as const,
+          },
+        ];
   return {
     id: item.room_id || `${item.scope_type}-${item.scope_id}`,
     ticketId: item.ticket_id || item.scope_id,
@@ -87,21 +124,18 @@ function mapListItemToRoom(item: MeetingRoomListItem): MeetingRoom {
     currentNode: item.current_node_id || 'pending',
     totalStages: SOP_STAGES.length,
     status: item.status,
-    stageDuration: '—',
-    tokenConsumed: 0,
-    tokenBudget: 150000,
+    stageDuration: item.stageDuration || '—',
+    tokenConsumed: item.tokenConsumed ?? 0,
+    tokenBudget: item.tokenBudget ?? 150000,
     agents: [],
-    logs: [
-      {
-        id: 'boot',
-        agentId: 'system',
-        text: `工单 ${item.scope_id} · ${item.stage_name} / ${item.current_node_name}（${item.local_process_state}）`,
-        timestamp: timeStr,
-        type: 'info',
-      },
-    ],
+    logs,
     brief: `${item.local_process_state} · ${item.current_node_name || item.current_node_id}`,
+    hitlFormSchema: (item.room_state?.hitl_form_schema as HitlFormSchema | undefined) ?? null,
   };
+}
+
+function mapListItemToRoom(item: MeetingRoomListItem): MeetingRoom {
+  return mapDetailToRoom(item as MeetingRoomDetail);
 }
 
 const getNodeStateGlobal = (room: MeetingRoom, nodeId: string): 'completed' | 'processing' | 'error' | 'human_intervention' | 'pending' => {
@@ -582,12 +616,20 @@ const InterventionDialog = ({
   room, 
   open, 
   onClose,
-  onIntervene
+  onIntervene,
+  onRunNode,
+  onApprovePass,
+  runNodeBusy,
+  approveBusy,
 }: { 
   room: MeetingRoom | null; 
   open: boolean; 
   onClose: () => void;
   onIntervene: (text: string) => void;
+  onRunNode?: () => void;
+  onApprovePass?: () => void;
+  runNodeBusy?: boolean;
+  approveBusy?: boolean;
 }) => {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -676,6 +718,21 @@ const InterventionDialog = ({
             <p className="text-[10px] text-muted-foreground/80 mt-1 ml-4">
               共 {stageNodes.length} 个议题节点 · 点击查看产物
             </p>
+            {onRunNode ? (
+              <Button
+                size="small"
+                type="primary"
+                className="mt-3 ml-4"
+                icon={<PlayCircle className="h-3.5 w-3.5" />}
+                loading={runNodeBusy}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRunNode();
+                }}
+              >
+                执行当前节点
+              </Button>
+            ) : null}
           </div>
 
           {/* Agenda Items - only current stage nodes */}
@@ -917,6 +974,20 @@ const InterventionDialog = ({
 
           {/* Input Area */}
           <div className="p-4 bg-[color:var(--panel2)] border-t border-border shrink-0">
+            {room.status === 'human_intervention' && room.hitlFormSchema ? (
+              <div className="mb-3">
+                <MeetingHitlForm
+                  schema={room.hitlFormSchema}
+                  submitLabel="提交确认并推进"
+                  onSubmit={(values) => {
+                    const summary = Object.entries(values)
+                      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(',') : String(v)}`)
+                      .join('\n');
+                    onIntervene(`[人工确认表单]\n${summary}`);
+                  }}
+                />
+              </div>
+            ) : null}
             <div className="flex items-end gap-2.5 bg-[color:var(--panel)] border border-border p-2 rounded-xl focus-within:border-blue-500/50 focus-within:ring-1 focus-within:ring-blue-500/20 transition-all">
               <Input.TextArea
                 value={inputText}
@@ -941,7 +1012,16 @@ const InterventionDialog = ({
             </div>
             <div className="mt-2.5 flex items-center justify-between text-[11px] text-muted-foreground px-1">
               <div className="flex items-center gap-3">
-                <button className="hover:text-blue-400 transition-colors flex items-center gap-1"><Zap className="w-3 h-3" /> 一键通过</button>
+                {onApprovePass ? (
+                  <button
+                    type="button"
+                    disabled={approveBusy}
+                    className="flex items-center gap-1 transition-colors hover:text-blue-400 disabled:opacity-50"
+                    onClick={() => onApprovePass()}
+                  >
+                    <Zap className="h-3 w-3" /> 一键通过
+                  </button>
+                ) : null}
               </div>
               <span>Enter 发送</span>
             </div>
@@ -960,6 +1040,9 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
   const [loading, setLoading] = useState(false);
   const [activeRoom, setActiveRoom] = useState<MeetingRoom | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [runNodeBusy, setRunNodeBusy] = useState(false);
+  const [approveBusy, setApproveBusy] = useState(false);
 
   const reloadRooms = useCallback(async () => {
     const base = (synapseApiBase || '').trim();
@@ -985,66 +1068,112 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
     void reloadRooms();
   }, [reloadRooms]);
 
+  useEffect(() => {
+    const focus = consumeMeetingRoomFocus();
+    if (!focus?.roomId) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    void fetchMeetingRoomDetail(base, focus.roomId)
+      .then((detail) => {
+        const merged = mapDetailToRoom(detail);
+        setActiveRoom(merged);
+        setDialogOpen(true);
+        setRooms((prev) => {
+          const exists = prev.some((r) => r.id === merged.id);
+          return exists ? prev.map((r) => (r.id === merged.id ? merged : r)) : [merged, ...prev];
+        });
+      })
+      .catch(() => {
+        /* 列表刷新后用户可手动点开 */
+      });
+  }, [synapseApiBase]);
+
   const humanCount = rooms.filter((r) => r.status === 'human_intervention').length;
   const processingCount = rooms.filter((r) => r.status === 'processing').length;
 
   const handleOpenRoom = (room: MeetingRoom) => {
+    const base = (synapseApiBase || '').trim();
     setActiveRoom(room);
     setDialogOpen(true);
+    if (!base || !room.id) return;
+    void fetchMeetingRoomDetail(base, room.id)
+      .then((detail) => {
+        const merged = mapDetailToRoom(detail);
+        setActiveRoom(merged);
+        setRooms((prev) => prev.map((r) => (r.id === merged.id ? merged : r)));
+      })
+      .catch(() => {
+        /* 保留列表态数据 */
+      });
+  };
+
+  const handleRunCurrentNode = () => {
+    if (!activeRoom) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    setRunNodeBusy(true);
+    void runMeetingRoomNode(base, activeRoom.id, { sync: true })
+      .then((data) => {
+        const room = data.room ? mapDetailToRoom(data.room) : activeRoom;
+        setActiveRoom(room);
+        setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
+        toast.success('当前节点已执行');
+        void reloadRooms();
+      })
+      .catch((e) => {
+        toast.error(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setRunNodeBusy(false));
+  };
+
+  const handleApprovePass = () => {
+    if (!activeRoom) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    setApproveBusy(true);
+    void approveAndResumeMeetingNode(base, activeRoom.id)
+      .then((detail) => {
+        const updatedRoom = mapDetailToRoom(detail);
+        setActiveRoom(updatedRoom);
+        setRooms((prev) => prev.map((r) => (r.id === updatedRoom.id ? updatedRoom : r)));
+        toast.success('已确认通过并继续执行');
+        void reloadRooms();
+      })
+      .catch((e) => {
+        toast.error(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setApproveBusy(false));
   };
 
   const handleIntervene = (text: string) => {
     if (!activeRoom) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
 
-    const newLog: LogEntry = {
-      id: Date.now().toString(),
-      agentId: 'user',
-      text,
-      timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-      type: 'user'
-    };
-
-    // Update Alpha agent to processing state
-    const updatedAgents = activeRoom.agents.map(a => 
-      a.id === 'alpha' ? { ...a, status: 'processing' as const, currentAction: '解析人类指令...' } : a
-    );
-
-    const updatedRoom = {
-      ...activeRoom,
-      logs: [...activeRoom.logs, newLog],
-      status: 'processing' as const, // Automatically transitions the entire modal UI back to processing!
-      agents: updatedAgents,
-      brief: '人类专家已介入并下发指令，正在重新评估状态...'
-    };
-
-    setActiveRoom(updatedRoom);
-    setRooms(rooms.map(r => r.id === updatedRoom.id ? updatedRoom : r));
-
-    // Simulate Agent response after 1.5s
-    setTimeout(() => {
-      const responseLog: LogEntry = {
-        id: (Date.now() + 1).toString(),
-        agentId: updatedAgents[0].id,
-        text: '收到指令，已确认排查策略，正在尝试恢复沙箱环境流转...',
-        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-        type: 'info'
-      };
-      
-      const finalAgents = updatedAgents.map(a => 
-        a.id === 'alpha' ? { ...a, status: 'processing' as const, currentAction: '执行恢复脚本中...' } :
-        a.status === 'error' ? { ...a, status: 'idle' as const, currentAction: '等待上游结果' } : a
-      );
-
-      const respondedRoom = {
-        ...updatedRoom,
-        agents: finalAgents,
-        logs: [...updatedRoom.logs, responseLog],
-        brief: '正在执行恢复脚本，沙箱环境启动中...'
-      };
-      
-      setActiveRoom(respondedRoom);
-      setRooms(rooms => rooms.map(r => r.id === respondedRoom.id ? respondedRoom : r));
-    }, 1500);
+    void interveneMeetingRoom(base, activeRoom.id, text, 'instruction')
+      .then((detail) => {
+        const updatedRoom = mapDetailToRoom(detail);
+        updatedRoom.brief = '人类专家已介入并下发指令，正在重新评估状态...';
+        setActiveRoom(updatedRoom);
+        setRooms((prev) => prev.map((r) => (r.id === updatedRoom.id ? updatedRoom : r)));
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        const fallback: MeetingRoom = {
+          ...activeRoom,
+          logs: [
+            ...activeRoom.logs,
+            {
+              id: Date.now().toString(),
+              agentId: 'user',
+              text,
+              timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+              type: 'user',
+            },
+          ],
+        };
+        setActiveRoom(fallback);
+      });
   };
 
   return (
@@ -1071,6 +1200,9 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
               <span className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
               <span className="text-xs text-blue-700 dark:text-blue-200 font-medium">{processingCount} 会议进行中</span>
             </div>
+            <Button size="small" icon={<Settings2 className="h-3.5 w-3.5" />} onClick={() => setConfigOpen(true)}>
+              阵容配置
+            </Button>
             <Button size="small" onClick={() => void reloadRooms()} loading={loading}>
               刷新
             </Button>
@@ -1107,6 +1239,16 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
           open={dialogOpen}
           onClose={() => setDialogOpen(false)}
           onIntervene={handleIntervene}
+          onRunNode={handleRunCurrentNode}
+          onApprovePass={handleApprovePass}
+          runNodeBusy={runNodeBusy}
+          approveBusy={approveBusy}
+        />
+
+        <MeetingRoomConfigDrawer
+          open={configOpen}
+          onClose={() => setConfigOpen(false)}
+          synapseApiBase={synapseApiBase || ''}
         />
         
       </div>

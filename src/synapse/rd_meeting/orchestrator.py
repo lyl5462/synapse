@@ -1,0 +1,737 @@
+"""会议室节点编排：执行、归档、推进（Phase 2）。"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from synapse.rd_meeting.binding import resolve_node_binding
+from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
+from synapse.rd_meeting.hitl_form import format_hitl_schema_for_prompt
+from synapse.rd_meeting.notifications import schedule_human_intervention_notify
+from synapse.rd_meeting.paths import archive_root, scope_dir
+from synapse.rd_meeting.room_runtime import (
+    append_history_event,
+    load_room_state,
+    save_room_state,
+)
+from synapse.rd_meeting.room_skill import (
+    DEFAULT_LLM_ENDPOINT_KEY,
+    build_room_skill_prompt,
+    load_meeting_skill_body,
+    make_context,
+)
+from synapse.rd_meeting.userwork_sync import patch_userwork_summary
+from synapse.rd_meeting.validation import validate_node_output
+from synapse.rd_sop.manifest import (
+    get_node_manifest_entry,
+    is_human_gate_node,
+    is_human_only_node,
+    next_node_id,
+)
+from synapse.rd_sop.nodes import ALL_NODES, node_display_name, stage_id_for_node_id
+
+_MAX_SKIP_CHAIN = len(ALL_NODES) + 2
+
+logger = logging.getLogger(__name__)
+
+_running_tasks: dict[str, asyncio.Task[None]] = {}
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _dry_run_enabled() -> bool:
+    return os.environ.get("SYNAPSE_MEETING_ROOM_DRY_RUN", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _resolve_profile(profile_id: str):
+    from synapse.agents.presets import SYSTEM_PRESETS
+    from synapse.agents.profile import get_profile_store
+
+    pid = (profile_id or "").strip() or "default"
+    store = get_profile_store()
+    loaded = store.get(pid)
+    if loaded:
+        return loaded
+    for sp in SYSTEM_PRESETS:
+        if sp.id == pid:
+            return sp
+    for sp in SYSTEM_PRESETS:
+        if sp.id == "default":
+            return sp
+    return SYSTEM_PRESETS[0] if SYSTEM_PRESETS else None
+
+
+def build_node_prompt(
+    *,
+    scope_type: str,
+    scope_id: str,
+    node_id: str,
+    binding: dict[str, Any],
+    ticket_title: str = "",
+) -> str:
+    """构建给小鲸（Host）的本节点 user prompt。
+
+    SKILL 主体通过 ``_custom_prompt_suffix`` 注入到系统提示，这里只放
+    "本节点议程要点 + Worker 阵容"，避免双倍注入。
+    """
+    name = node_display_name(node_id)
+    node_intent = str(binding.get("node_intent") or binding.get("intent") or "")
+    supplement = str(binding.get("prompt_supplement") or "").strip()
+    workers = [w for w in (binding.get("worker_profile_ids") or []) if str(w).strip()]
+    parts = [
+        f"# 研发会议室议程：{name}",
+        f"- scope: {scope_type} / {scope_id}",
+        f"- node_id: {node_id}",
+    ]
+    if ticket_title:
+        parts.append(f"- 工单标题: {ticket_title}")
+    if workers:
+        parts.append("- 可分派的协作智能体: " + ", ".join(workers))
+    if node_intent:
+        parts.append(f"\n## 会议目标\n{node_intent}")
+    if binding.get("human_confirm"):
+        schema_txt = format_hitl_schema_for_prompt(binding.get("hitl_form_schema"))
+        if schema_txt:
+            parts.append(f"\n## 人工确认表单（完成后需用户填写）\n{schema_txt}")
+    if supplement:
+        parts.append(f"\n## 运营补充\n{supplement}")
+    parts.append(
+        "\n请按"
+        "「拆分目标 → delegate Worker → 检查反馈契合度/真实性/准确性 → 多轮迭代 → 综合输出」"
+        "的循环完成本节点。"
+        "\n最终交付物以 Markdown 形式归档（包含一级标题与「结论/完成/交付」字样）。"
+    )
+    return "\n".join(parts)
+
+
+def _skip_node_report_body(node_id: str) -> str:
+    name = node_display_name(node_id)
+    return (
+        f"# {name} — 节点已跳过\n\n"
+        "本节点在会议室配置中已关闭（`enabled: false`），未执行智能体处理。\n"
+        "系统已自动推进至下一议程。\n\n"
+        "结论：本节点按配置跳过，交付完成。\n"
+    )
+
+
+def write_archive_artifact(
+    scope_id: str,
+    stage_id: int,
+    node_id: str,
+    *,
+    filename: str,
+    content: str,
+) -> Path:
+    dest_dir = archive_root(scope_id) / str(stage_id) / node_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = dest_dir / filename
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+class MeetingRoomOrchestrator:
+    """节点执行与状态推进（可 dry-run，不依赖 LLM）。"""
+
+    async def _prewarm_meeting_room(
+        self,
+        *,
+        agent_pool: Any,
+        room_id: str,
+        scope_type: str,
+        scope_id: str,
+        ticket_title: str,
+        binding: dict[str, Any],
+        host_profile_id: str,
+    ) -> None:
+        """为本会议室预先创建所有 Worker 实例并注入会议室 SKILL / 端点。
+
+        预热的好处：
+        - 小鲸通过 ``delegate_to_agent`` 委派时，pool 已有正确端点 + SKILL；
+        - Worker 之间可直接 ``send_agent_message`` 协作（pool 内可见）。
+        """
+        worker_ids = [
+            str(w).strip()
+            for w in binding.get("worker_profile_ids") or []
+            if str(w).strip() and str(w).strip() != host_profile_id
+        ]
+        if not worker_ids:
+            return
+        skill_body = load_meeting_skill_body(
+            str(binding.get("meeting_skill_id") or "whalecloud-dev-tool-meeting-room")
+        )
+        for wid in worker_ids:
+            profile = _resolve_profile(wid)
+            if profile is None:
+                logger.warning("worker profile %s not found, skip prewarm", wid)
+                continue
+            try:
+                worker_agent = await agent_pool.get_or_create(
+                    session_id=f"rd_meeting:{room_id}:{wid}",
+                    profile=profile,
+                )
+            except Exception as exc:
+                logger.warning("prewarm worker %s failed: %s", wid, exc)
+                continue
+            self._configure_meeting_agent(
+                worker_agent,
+                role="worker",
+                binding=binding,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                ticket_title=ticket_title,
+                scope_path=str(scope_dir(scope_id)),
+                skill_body=skill_body,
+                self_profile_id=wid,
+            )
+
+    @staticmethod
+    def _configure_meeting_agent(
+        agent: Any,
+        *,
+        role: str,
+        binding: dict[str, Any],
+        scope_type: str,
+        scope_id: str,
+        ticket_title: str,
+        scope_path: str,
+        skill_body: str | None = None,
+        self_profile_id: str | None = None,
+    ) -> None:
+        """覆盖 agent 实例的 cwd / preferred_endpoint / prompt suffix。
+
+        会议室 SKILL 渲染后写入 ``_custom_prompt_suffix``，并强制重建 system
+        prompt 让新内容生效。Worker 视角会把同事的能力卡片暴露给它，方便互
+        相协作。
+        """
+        agent.default_cwd = scope_path
+        shell_tool = getattr(agent, "shell_tool", None)
+        if shell_tool is not None:
+            try:
+                shell_tool.default_cwd = scope_path  # type: ignore[union-attr]
+            except Exception as exc:
+                logger.debug("set shell_tool.default_cwd failed: %s", exc)
+
+        endpoint_key = (
+            str(binding.get("host_llm_endpoint_key") or DEFAULT_LLM_ENDPOINT_KEY)
+            if role == "host"
+            else str(binding.get("worker_llm_endpoint_key") or DEFAULT_LLM_ENDPOINT_KEY)
+        )
+        if endpoint_key:
+            agent._preferred_endpoint = endpoint_key
+
+        ctx = make_context(
+            role=role,  # type: ignore[arg-type]
+            binding=binding,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            ticket_title=ticket_title,
+            archive_dir=str(
+                archive_root(scope_id) / str(binding.get("stage_id") or 0) / str(binding.get("node_id") or "")
+            ),
+        )
+        if self_profile_id:
+            ctx.worker_profile_ids = [self_profile_id] + [
+                w for w in ctx.worker_profile_ids if w != self_profile_id
+            ]
+        suffix = build_room_skill_prompt(ctx, skill_body=skill_body)
+        agent._custom_prompt_suffix = suffix
+        agent_ctx = getattr(agent, "_context", None)
+        if agent_ctx is not None and hasattr(agent, "_build_system_prompt"):
+            try:
+                agent_ctx.system = agent._build_system_prompt()
+            except Exception as exc:
+                logger.debug("rebuild system prompt failed for role=%s: %s", role, exc)
+
+    def on_node_complete(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        node_id: str,
+        artifacts: list[dict[str, Any]] | None = None,
+        tokens_used: int = 0,
+        duration_seconds: int = 0,
+        sync_userwork: bool = True,
+        advance: bool = True,
+        ticket_title: str = "",
+    ) -> dict[str, Any]:
+        sid = scope_id.strip()
+        dev = load_dev_status(sid)
+        if dev is None:
+            raise ValueError("dev_status_not_found")
+
+        now = _now_iso()
+
+        room_state = load_room_state(sid) or {}
+        room_state = dict(room_state)
+        node_metrics = room_state.get("node_metrics")
+        if not isinstance(node_metrics, dict):
+            node_metrics = {}
+        prev = node_metrics.get(node_id) if isinstance(node_metrics.get(node_id), dict) else {}
+        started = str(prev.get("started_at") or now)
+        node_metrics[node_id] = {
+            "started_at": started,
+            "completed_at": now,
+            "seconds": max(int(duration_seconds), int(prev.get("seconds") or 0)),
+            "tokens": max(int(tokens_used), int(prev.get("tokens") or 0)),
+        }
+        room_state["node_metrics"] = node_metrics
+
+        metrics = room_state.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["tokens"] = int(metrics.get("tokens") or 0) + int(tokens_used)
+        metrics["stage_seconds"] = int(metrics.get("stage_seconds") or 0) + int(duration_seconds)
+        room_state["metrics"] = metrics
+        room_state["agents_active"] = []
+        room_state["status"] = "processing"
+
+        next_id: str | None = None
+        if advance:
+            next_id = next_node_id(node_id)
+            if next_id:
+                dev["current_node_id"] = next_id
+                dev["stage_id"] = stage_id_for_node_id(next_id)
+                dev["sop_node_display"] = node_display_name(next_id)
+                room_state["current_node_id"] = next_id
+                room_state["stage_id"] = dev["stage_id"]
+                if is_human_gate_node(next_id):
+                    room_state["status"] = "human_intervention"
+                    schedule_human_intervention_notify(
+                        scope_id=sid,
+                        room_id=room_id,
+                        node_id=next_id,
+                        ticket_title=ticket_title,
+                        reason=f"节点 {node_display_name(next_id)} 待人工确认",
+                    )
+            else:
+                dev["local_process_state"] = "已完成"
+                room_state["status"] = "completed"
+        else:
+            room_state["current_node_id"] = node_id
+
+        save_dev_status(sid, dev)
+        save_room_state(sid, room_state)
+
+        append_history_event(
+            sid,
+            {
+                "event": "node_completed",
+                "room_id": room_id,
+                "node_id": node_id,
+                "artifacts": artifacts or [],
+                "tokens_used": tokens_used,
+                "duration_seconds": duration_seconds,
+                "next_node_id": next_id,
+            },
+        )
+
+        if sync_userwork:
+            patch_userwork_summary(
+                scope_type=scope_type,  # type: ignore[arg-type]
+                scope_id=sid,
+                sop_node=str(dev.get("sop_node_display") or node_display_name(str(dev.get("current_node_id")))),
+                local_process_state=str(dev.get("local_process_state") or "").strip() or None,
+            )
+
+        return {"dev_status": dev, "room_state": room_state, "next_node_id": next_id}
+
+    def on_node_skipped(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        node_id: str,
+        ticket_title: str = "",
+        sync_userwork: bool = True,
+    ) -> dict[str, Any]:
+        """配置关闭的节点：不写 LLM，归档跳过说明并立即推进。"""
+        sid = scope_id.strip()
+        body = _skip_node_report_body(node_id)
+        stage_id = stage_id_for_node_id(node_id)
+        artifact_path = write_archive_artifact(
+            sid,
+            stage_id,
+            node_id,
+            filename="skipped.md",
+            content=body,
+        )
+        append_history_event(
+            sid,
+            {
+                "event": "node_skipped",
+                "room_id": room_id,
+                "node_id": node_id,
+                "reason": "disabled_in_config",
+            },
+        )
+        artifacts = [
+            {
+                "name": artifact_path.name,
+                "relative_path": artifact_path.relative_to(scope_dir(sid)).as_posix(),
+            }
+        ]
+        return self.on_node_complete(
+            scope_type=scope_type,
+            scope_id=sid,
+            room_id=room_id,
+            node_id=node_id,
+            artifacts=artifacts,
+            tokens_used=0,
+            duration_seconds=0,
+            sync_userwork=sync_userwork,
+            advance=True,
+            ticket_title=ticket_title,
+        )
+
+    def mark_human_gate(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        node_id: str,
+        reason: str = "",
+        ticket_title: str = "",
+        hitl_form_schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        sid = scope_id.strip()
+        room_state = load_room_state(sid) or {}
+        room_state = dict(room_state)
+        room_state["status"] = "human_intervention"
+        room_state["current_node_id"] = node_id
+        if hitl_form_schema:
+            room_state["hitl_form_schema"] = hitl_form_schema
+        save_room_state(sid, room_state)
+
+        msg = reason or f"节点 {node_display_name(node_id)} 需人工处理"
+        append_history_event(
+            sid,
+            {
+                "event": "human_gate",
+                "room_id": room_id,
+                "node_id": node_id,
+                "text": msg,
+                "log_type": "warning",
+                "agent_id": "system",
+            },
+        )
+        schedule_human_intervention_notify(
+            scope_id=sid,
+            room_id=room_id,
+            node_id=node_id,
+            ticket_title=ticket_title,
+            reason=msg,
+        )
+        return room_state
+
+    async def run_current_node(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        ticket_title: str = "",
+        agent_pool: Any | None = None,
+        dry_run: bool | None = None,
+    ) -> dict[str, Any]:
+        sid = scope_id.strip()
+        dev = load_dev_status(sid)
+        if dev is None:
+            raise ValueError("dev_status_not_found")
+
+        node_id = str(dev.get("current_node_id") or "pending")
+        if node_id == "pending":
+            raise ValueError("invalid_current_node")
+
+        skipped_nodes: list[str] = []
+        for _ in range(_MAX_SKIP_CHAIN):
+            binding = resolve_node_binding(
+                node_id,
+                scope_type=scope_type,
+                scope_id=sid,
+                ticket_title=ticket_title,
+            )
+            if binding.get("enabled", True):
+                break
+            skipped_nodes.append(node_id)
+            skip_out = self.on_node_skipped(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                ticket_title=ticket_title,
+                sync_userwork=True,
+            )
+            next_id = skip_out.get("next_node_id")
+            if not next_id:
+                return {
+                    "status": "completed",
+                    "skipped_nodes": skipped_nodes,
+                    "skipped_llm": True,
+                }
+            node_id = str(next_id)
+            dev = load_dev_status(sid)
+            if dev is None:
+                raise ValueError("dev_status_not_found")
+
+        binding = resolve_node_binding(
+            node_id,
+            scope_type=scope_type,
+            scope_id=sid,
+            ticket_title=ticket_title,
+        )
+        entry = get_node_manifest_entry(node_id)
+
+        append_history_event(
+            sid,
+            {
+                "event": "node_started",
+                "room_id": room_id,
+                "node_id": node_id,
+                "binding": {
+                    "enabled": binding.get("enabled", True),
+                    "host_profile_id": binding.get("host_profile_id"),
+                    "worker_profile_ids": binding.get("worker_profile_ids"),
+                },
+            },
+        )
+
+        room_state = load_room_state(sid) or {}
+        room_state = dict(room_state)
+        room_state["status"] = "processing"
+        room_state["current_node_id"] = node_id
+        workers = binding.get("worker_profile_ids") or []
+        host = str(binding.get("host_profile_id") or "default")
+        room_state["agents_active"] = [
+            {"profile_id": host, "role": "host"},
+            *[{"profile_id": w, "role": "worker"} for w in workers if w],
+        ]
+        nm = room_state.get("node_metrics")
+        if not isinstance(nm, dict):
+            nm = {}
+        if node_id not in nm or not isinstance(nm.get(node_id), dict):
+            nm[node_id] = {"started_at": _now_iso(), "seconds": 0, "tokens": 0}
+        room_state["node_metrics"] = nm
+        save_room_state(sid, room_state)
+
+        if is_human_only_node(node_id):
+            self.mark_human_gate(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                reason=f"{entry.get('name') if entry else node_id} 需人工处理",
+                ticket_title=ticket_title,
+                hitl_form_schema=binding.get("hitl_form_schema"),
+            )
+            return {"status": "human_intervention", "node_id": node_id, "skipped_llm": True}
+
+        use_dry = _dry_run_enabled() if dry_run is None else dry_run
+        started = time.monotonic()
+        tokens_used = 0
+        report_body = ""
+
+        if use_dry:
+            report_body = (
+                f"# {node_display_name(node_id)} 交付结论（dry-run）\n\n"
+                f"scope: {scope_type}/{sid}\n\n"
+                f"本节点模拟执行完成，交付物已归档。完成时间：{_now_iso()}。\n"
+            )
+            tokens_used = 128
+        else:
+            host_profile_id = str(binding.get("host_profile_id") or host or "default")
+            host_profile = _resolve_profile(host_profile_id)
+            if host_profile is None or agent_pool is None:
+                report_body = (
+                    f"# {node_display_name(node_id)} 交付结论（stub）\n\n"
+                    "Agent 池不可用或未找到主控画像（host）；已写入占位产物，待后续重试。\n"
+                )
+                tokens_used = 64
+                use_dry = True
+            else:
+                scope_dir(sid).mkdir(parents=True, exist_ok=True)
+
+                await self._prewarm_meeting_room(
+                    agent_pool=agent_pool,
+                    room_id=room_id,
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    ticket_title=ticket_title,
+                    binding=binding,
+                    host_profile_id=host_profile_id,
+                )
+
+                host_session_id = f"rd_meeting:{room_id}:host"
+                host_agent = await agent_pool.get_or_create(
+                    session_id=host_session_id,
+                    profile=host_profile,
+                )
+                self._configure_meeting_agent(
+                    host_agent,
+                    role="host",
+                    binding=binding,
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    ticket_title=ticket_title,
+                    scope_path=str(scope_dir(sid)),
+                )
+
+                prompt = build_node_prompt(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    node_id=node_id,
+                    binding=binding,
+                    ticket_title=ticket_title,
+                )
+                result = await host_agent.execute_task_from_message(
+                    prompt,
+                    usage_scene=f"rd_meeting_{sid}_{node_id}",
+                )
+                if result.success:
+                    report_body = str(result.data or result.error or "完成")
+                else:
+                    append_history_event(
+                        sid,
+                        {
+                            "event": "node_failed",
+                            "room_id": room_id,
+                            "node_id": node_id,
+                            "error": str(result.error or "unknown"),
+                        },
+                    )
+                    rs = load_room_state(sid) or {}
+                    rs = dict(rs)
+                    rs["status"] = "failed"
+                    save_room_state(sid, rs)
+                    raise RuntimeError(str(result.error or "node_execution_failed"))
+
+                usage = getattr(host_agent, "last_usage", None) or {}
+                tokens_used = int(usage.get("total_tokens") or usage.get("tokens") or 256)
+
+        validation = validate_node_output(node_id, report_body)
+        if not validation.ok:
+            append_history_event(
+                sid,
+                {
+                    "event": "node_validation_failed",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "errors": validation.errors,
+                },
+            )
+            raise ValueError("node_output_validation_failed: " + "; ".join(validation.errors))
+
+        stage_id = int(dev.get("stage_id") or stage_id_for_node_id(node_id))
+        artifact_path = write_archive_artifact(
+            sid,
+            stage_id,
+            node_id,
+            filename="result.md",
+            content=report_body,
+        )
+        duration = max(1, int(time.monotonic() - started))
+        artifacts = [
+            {
+                "name": artifact_path.name,
+                "relative_path": artifact_path.relative_to(scope_dir(sid)).as_posix(),
+            }
+        ]
+
+        need_human_confirm = bool(binding.get("human_confirm"))
+        out = self.on_node_complete(
+            scope_type=scope_type,
+            scope_id=sid,
+            room_id=room_id,
+            node_id=node_id,
+            artifacts=artifacts,
+            tokens_used=tokens_used,
+            duration_seconds=duration,
+            advance=not need_human_confirm,
+            ticket_title=ticket_title,
+        )
+        if need_human_confirm:
+            gate = self.mark_human_gate(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                reason=f"{node_display_name(node_id)} 已完成，待人工确认后推进",
+                ticket_title=ticket_title,
+                hitl_form_schema=binding.get("hitl_form_schema"),
+            )
+            return {
+                "status": "human_intervention",
+                "node_id": node_id,
+                "skipped_nodes": skipped_nodes or None,
+                **gate,
+            }
+        if skipped_nodes:
+            out["skipped_nodes"] = skipped_nodes
+        return out
+
+
+def schedule_run_node(
+    *,
+    scope_type: str,
+    scope_id: str,
+    room_id: str,
+    ticket_title: str = "",
+    agent_pool: Any | None = None,
+    dry_run: bool | None = None,
+) -> str:
+    """后台执行当前节点，返回 task key。"""
+    key = room_id.strip() or scope_id.strip()
+    existing = _running_tasks.get(key)
+    if existing and not existing.done():
+        return key
+
+    orch = MeetingRoomOrchestrator()
+
+    async def _runner() -> None:
+        try:
+            await orch.run_current_node(
+                scope_type=scope_type,
+                scope_id=scope_id,
+                room_id=room_id,
+                ticket_title=ticket_title,
+                agent_pool=agent_pool,
+                dry_run=dry_run,
+            )
+        except Exception as exc:
+            logger.exception("meeting room run_node failed room=%s: %s", room_id, exc)
+            append_history_event(
+                scope_id.strip(),
+                {
+                    "event": "node_failed",
+                    "room_id": room_id,
+                    "error": str(exc),
+                    "id": uuid.uuid4().hex[:12],
+                },
+            )
+        finally:
+            _running_tasks.pop(key, None)
+
+    task = asyncio.create_task(_runner())
+    _running_tasks[key] = task
+    return key
+
+
+def is_room_run_in_progress(room_id: str) -> bool:
+    t = _running_tasks.get(room_id.strip())
+    return t is not None and not t.done()

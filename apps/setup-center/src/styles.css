@@ -945,7 +945,7 @@ textarea:not([data-slot]):focus {
 
 /* (legacy btnSmall override removed; see status section) */
 
-button:not([data-slot]):not(.winNativeTitlebarBtn) {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch) {
   border: 0;
   cursor: pointer;
   border-radius: 14px;
@@ -958,12 +958,12 @@ button:not([data-slot]):not(.winNativeTitlebarBtn) {
   transition: background 0.15s, border-color 0.15s;
 }
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):not(.btnPrimary):not(.btnDanger):not(.btnApplyRestart):hover {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.btnPrimary):not(.btnDanger):not(.btnApplyRestart):hover {
   background: var(--bg-app);
   border-color: var(--muted2);
 }
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):disabled {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -5440,4 +5440,39 @@ body > div[id*="sm-" i] {
   overflow: hidden;
   border: 1px solid var(--line);
   background: #000;
+}
+
+/* 研发会议室配置 Switch：须在全局 button 规则之后，避免被 styles.css 默认按钮样式覆盖 */
+.rd-meeting-config-drawer .rd-meeting-config-switch,
+button.rd-meeting-config-switch {
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 9999px !important;
+  font-weight: normal !important;
+  letter-spacing: normal !important;
+  color: inherit !important;
+}
+.rd-meeting-config-drawer .rd-meeting-config-switch--off,
+button.rd-meeting-config-switch--off {
+  background: #94a3b8 !important;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12) !important;
+}
+.rd-meeting-config-drawer .rd-meeting-config-switch--off .rd-meeting-config-switch__thumb,
+button.rd-meeting-config-switch--off .rd-meeting-config-switch__thumb {
+  background: #f8fafc !important;
+}
+.rd-meeting-config-drawer .rd-meeting-config-switch--on,
+button.rd-meeting-config-switch--on {
+  background: #2563eb !important;
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.35),
+    0 2px 10px rgba(37, 99, 235, 0.4) !important;
+}
+.rd-meeting-config-drawer .rd-meeting-config-switch--on:hover,
+button.rd-meeting-config-switch--on:hover {
+  background: #3b82f6 !important;
+}
+.rd-meeting-config-drawer .rd-meeting-config-switch--off:hover,
+button.rd-meeting-config-switch--off:hover {
+  background: #64748b !important;
 }

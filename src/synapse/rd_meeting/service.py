@@ -1,10 +1,17 @@
-"""研发会议室 Phase 0：扫描 work/<scope_id>/ 与 dev.status。"""
+"""研发会议室：work/<scope_id>/ 流水线与会议运行时（Phase 0/1）。"""
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Any, Literal
 
+from synapse.rd_meeting.binding import list_resolved_bindings, resolve_node_binding
+from synapse.rd_meeting.config_store import (
+    DEFAULT_MEETING_SKILL_ID,
+    load_meeting_room_config,
+    save_meeting_room_config,
+)
 from synapse.rd_meeting.dev_status import (
     ensure_room_id,
     load_dev_status,
@@ -13,8 +20,25 @@ from synapse.rd_meeting.dev_status import (
     save_dev_status,
     should_list_in_meeting_rooms,
 )
+from synapse.rd_meeting.orchestrator import (
+    MeetingRoomOrchestrator,
+    is_room_run_in_progress,
+    schedule_run_node,
+)
 from synapse.rd_meeting.paths import iter_work_order_directories, scope_dir
+from synapse.rd_meeting.room_runtime import (
+    append_history_event,
+    build_meeting_summary_nodes,
+    history_to_chat_logs,
+    list_archive_index,
+    load_room_state,
+    read_history,
+    save_room_state,
+    sync_room_state_from_dev,
+)
+from synapse.rd_meeting.room_skill import meeting_skill_preview
 from synapse.rd_meeting.userwork_sync import build_title_index, patch_userwork_summary
+from synapse.rd_sop.manifest import list_manifest_stages
 from synapse.rd_sop.nodes import (
     node_display_name,
     resolve_sop_raw_to_node_id,
@@ -28,6 +52,124 @@ ScopeType = Literal["demand", "task"]
 
 
 class MeetingRoomService:
+    def get_meeting_room_config(self) -> dict[str, Any]:
+        cfg = load_meeting_room_config()
+        skill_id = str(cfg.get("meeting_skill_id") or DEFAULT_MEETING_SKILL_ID)
+        return {
+            **cfg,
+            "manifest_version": "1.0.0",
+            "stages": list_manifest_stages(),
+            "bindings": list_resolved_bindings(),
+            "meeting_skill": meeting_skill_preview(skill_id),
+        }
+
+    def put_meeting_room_config(self, body: dict[str, Any]) -> dict[str, Any]:
+        allowed: dict[str, Any] = {}
+        if "version" in body:
+            allowed["version"] = body["version"]
+        for key in (
+            "host_llm_endpoint_key",
+            "worker_llm_endpoint_key",
+            "meeting_skill_id",
+        ):
+            if key in body:
+                value = body.get(key)
+                if value is None:
+                    continue
+                if not isinstance(value, str):
+                    raise ValueError(f"{key} must be string")
+                value = value.strip()
+                if not value:
+                    continue
+                allowed[key] = value
+        if "node_overrides" in body:
+            overrides = body["node_overrides"]
+            if not isinstance(overrides, dict):
+                raise ValueError("node_overrides must be object")
+            cleaned: dict[str, Any] = {}
+            for node_id, ov in overrides.items():
+                if not isinstance(ov, dict):
+                    continue
+                entry: dict[str, Any] = {}
+                for key in (
+                    "enabled",
+                    "human_confirm",
+                    "prompt_supplement",
+                    "host_profile_id",
+                    "worker_profile_ids",
+                    "skill_ids",
+                    "llm_endpoint_key",
+                    "node_intent",
+                    "hitl_form_schema",
+                ):
+                    if key in ov:
+                        entry[key] = ov[key]
+                if entry:
+                    cleaned[str(node_id)] = entry
+            allowed["node_overrides"] = cleaned
+        if allowed:
+            save_meeting_room_config(allowed)
+        return self.get_meeting_room_config()
+
+    def resolve_binding(self, node_id: str) -> dict[str, Any]:
+        return resolve_node_binding(node_id)
+
+    def start_run_current_node(
+        self,
+        room_id: str,
+        *,
+        agent_pool: Any | None = None,
+        dry_run: bool | None = None,
+    ) -> dict[str, Any]:
+        ctx = self._room_context(room_id)
+        if ctx is None:
+            raise ValueError("meeting_room_not_found")
+        if is_room_run_in_progress(room_id):
+            return {**ctx, "run_status": "already_running"}
+
+        schedule_run_node(
+            scope_type=ctx["scope_type"],
+            scope_id=ctx["scope_id"],
+            room_id=room_id,
+            ticket_title=str(ctx.get("ticket_title") or ""),
+            agent_pool=agent_pool,
+            dry_run=dry_run,
+        )
+        return {**ctx, "run_status": "started"}
+
+    async def run_current_node_sync(
+        self,
+        room_id: str,
+        *,
+        agent_pool: Any | None = None,
+        dry_run: bool | None = None,
+    ) -> dict[str, Any]:
+        ctx = self._room_context(room_id)
+        if ctx is None:
+            raise ValueError("meeting_room_not_found")
+        orch = MeetingRoomOrchestrator()
+        result = await orch.run_current_node(
+            scope_type=ctx["scope_type"],
+            scope_id=ctx["scope_id"],
+            room_id=room_id,
+            ticket_title=str(ctx.get("ticket_title") or ""),
+            agent_pool=agent_pool,
+            dry_run=dry_run,
+        )
+        detail = self.get_room_detail(room_id)
+        return {"result": result, "room": detail}
+
+    def _room_context(self, room_id: str) -> dict[str, Any] | None:
+        detail = self.get_room_detail(room_id)
+        if detail is None:
+            return None
+        return {
+            "room_id": room_id,
+            "scope_type": detail.get("scope_type"),
+            "scope_id": detail.get("scope_id"),
+            "ticket_title": detail.get("ticket_title"),
+        }
+
     def list_meeting_rooms(self) -> list[dict[str, Any]]:
         titles = build_title_index()
         items: list[dict[str, Any]] = []
@@ -41,17 +183,21 @@ class MeetingRoomService:
         return items
 
     def get_by_room_id(self, room_id: str) -> dict[str, Any] | None:
+        return self.get_room_detail(room_id)
+
+    def get_room_detail(self, room_id: str) -> dict[str, Any] | None:
         rid = (room_id or "").strip()
         if not rid:
             return None
         for order_dir in iter_work_order_directories():
+            scope_id = order_dir.name
             data = read_dev_status_file(order_dir / "dev.status")
             if not data:
                 continue
             data = ensure_room_id(data)
             mr = data.get("meeting_room")
             if isinstance(mr, dict) and str(mr.get("room_id") or "").strip() == rid:
-                return self._to_list_item(data, order_dir.name, build_title_index())
+                return self._room_detail_payload(data, scope_id, build_title_index())
         return None
 
     def get_dev_status(self, scope_type: ScopeType, scope_id: str) -> dict[str, Any] | None:
@@ -104,7 +250,36 @@ class MeetingRoomService:
         if sync_userwork:
             self._sync_userwork_from_dev_status(scope_type, sid, merged)
 
+        room_id = str(merged.get("meeting_room", {}).get("room_id") or "")
+        if room_id and isinstance(merged.get("meeting_room"), dict) and merged["meeting_room"].get("active"):
+            sync_room_state_from_dev(
+                sid,
+                room_id=room_id,
+                scope_type=scope_type,
+                stage_id=int(merged.get("stage_id") or 0),
+                current_node_id=str(merged.get("current_node_id") or "pending"),
+                local_process_state=str(merged.get("local_process_state") or ""),
+            )
+
         return merged
+
+    def list_pending_human_intervention(self) -> list[dict[str, Any]]:
+        """扫描 room_state.status=human_intervention 的会议室（Phase 3 通知看板）。"""
+        pending: list[dict[str, Any]] = []
+        titles = build_title_index()
+        for order_dir in iter_work_order_directories():
+            scope_id = order_dir.name
+            rs = load_room_state(scope_id)
+            if not rs or str(rs.get("status") or "") != "human_intervention":
+                continue
+            dev = read_dev_status_file(order_dir / "dev.status")
+            if dev is None:
+                continue
+            item = self._to_list_item(dev, scope_id, titles)
+            item["status"] = "human_intervention"
+            pending.append(item)
+        pending.sort(key=lambda x: (x.get("updated_at") or ""), reverse=True)
+        return pending
 
     def open_meeting(
         self,
@@ -112,6 +287,8 @@ class MeetingRoomService:
         scope_id: str,
         *,
         sync_userwork: bool = True,
+        promote_to_processing: bool = True,
+        auto_run_first_node: bool = False,
     ) -> dict[str, Any]:
         sid = (scope_id or "").strip()
         if not sid:
@@ -133,17 +310,32 @@ class MeetingRoomService:
                 stage_id = stage_id_for_node_id(node_id)
             local = str(snap.get("local_process_state") or local).strip() or local
 
-        data = load_or_create_dev_status(
-            sid,
-            scope_type=scope_type,
-            local_process_state=local,
-            stage_id=stage_id,
-            current_node_id=node_id,
-            sop_node_display=sop_display or node_display_name(node_id),
-            pipeline_enabled=local in {"处理中"},
-        )
+        if promote_to_processing:
+            if local in ("待处理", "", "预备中") or stage_id <= 0 or node_id in ("pending", ""):
+                local = "处理中"
+            if stage_id <= 0 or node_id in ("pending", ""):
+                node_id = "req_clarify"
+                stage_id = stage_id_for_node_id(node_id)
+                sop_display = sop_display or node_display_name(node_id)
+
+        existing = load_dev_status(sid)
+        if existing is not None:
+            data = dict(existing)
+        else:
+            data = load_or_create_dev_status(
+                sid,
+                scope_type=scope_type,
+                local_process_state=local,
+                stage_id=stage_id,
+                current_node_id=node_id,
+                sop_node_display=sop_display or node_display_name(node_id),
+                pipeline_enabled=local in {"处理中"},
+            )
         data["local_process_state"] = local
         data["pipeline_enabled"] = local in {"处理中"}
+        data["stage_id"] = stage_id
+        data["current_node_id"] = node_id
+        data["sop_node_display"] = sop_display or node_display_name(node_id)
         mr = data.get("meeting_room")
         if not isinstance(mr, dict):
             mr = {}
@@ -152,22 +344,179 @@ class MeetingRoomService:
         save_dev_status(sid, data)
         scope_dir(sid).mkdir(parents=True, exist_ok=True)
 
+        room_id = str(data["meeting_room"].get("room_id") or "")
+        room_state = sync_room_state_from_dev(
+            sid,
+            room_id=room_id,
+            scope_type=scope_type,
+            stage_id=int(data.get("stage_id") or 0),
+            current_node_id=str(data.get("current_node_id") or "pending"),
+            local_process_state=local,
+        )
+        append_history_event(
+            sid,
+            {
+                "event": "room_opened",
+                "room_id": room_id,
+                "scope_type": scope_type,
+                "scope_id": sid,
+                "stage_id": data.get("stage_id"),
+                "current_node_id": data.get("current_node_id"),
+            },
+        )
+
         if sync_userwork:
             self._sync_userwork_from_dev_status(scope_type, sid, data)
 
-        return self._to_list_item(data, sid, titles)
+        detail = self._room_detail_payload(data, sid, titles)
+        detail["room_state"] = room_state
+
+        if auto_run_first_node and str(data.get("current_node_id") or "") not in ("pending", ""):
+            schedule_run_node(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                ticket_title=str(detail.get("ticket_title") or ""),
+                agent_pool=None,
+                dry_run=None,
+            )
+            detail["auto_run_started"] = True
+
+        return detail
+
+    def intervene(
+        self,
+        room_id: str,
+        *,
+        text: str,
+        message_type: str = "instruction",
+        resume_run: bool = False,
+        agent_pool: Any | None = None,
+    ) -> dict[str, Any]:
+        rid = (room_id or "").strip()
+        text = (text or "").strip()
+        if not rid:
+            raise ValueError("room_id required")
+        if not text:
+            raise ValueError("text required")
+
+        detail = self.get_room_detail(rid)
+        if detail is None:
+            raise ValueError("meeting_room_not_found")
+
+        scope_id = str(detail.get("scope_id") or "")
+        append_history_event(
+            scope_id,
+            {
+                "event": "human_intervene",
+                "room_id": rid,
+                "text": text,
+                "message_type": message_type,
+                "log_type": "user",
+                "agent_id": "user",
+                "id": uuid.uuid4().hex[:12],
+            },
+        )
+
+        room_state = load_room_state(scope_id)
+        if room_state and message_type == "instruction":
+            room_state = dict(room_state)
+            room_state["status"] = "processing"
+            save_room_state(scope_id, room_state)
+
+        out = self.get_room_detail(rid) or detail
+        if resume_run and message_type == "instruction":
+            schedule_run_node(
+                scope_type=str(out.get("scope_type") or "demand"),
+                scope_id=scope_id,
+                room_id=rid,
+                ticket_title=str(out.get("ticket_title") or ""),
+                agent_pool=agent_pool,
+            )
+            out["resume_run_started"] = True
+        return out
 
     def meeting_summary(self, scope_type: ScopeType, scope_id: str) -> dict[str, Any]:
-        """工单侧只读聚合（Phase 0：dev.status + 占位节点列表）。"""
+        """工单侧只读聚合：dev.status + room_state + archive + 节点 metrics。"""
         sid = (scope_id or "").strip()
-        data = load_dev_status(sid)
+        dev = load_dev_status(sid)
+        room_state = load_room_state(sid)
+        history = read_history(sid, limit=100)
+        archive_index = list_archive_index(sid)
+        nodes = build_meeting_summary_nodes(dev, room_state)
+
+        metrics = room_state.get("metrics") if isinstance(room_state, dict) else {}
+        if not isinstance(metrics, dict):
+            metrics = {}
+
         return {
             "scope_type": scope_type,
             "scope_id": sid,
-            "dev_status": data,
-            "nodes": [],
-            "note": "Phase 0: room_history/archive 未接入，节点 metrics 为空",
+            "dev_status": dev,
+            "room_state": room_state,
+            "room_id": self._extract_room_id(dev, room_state),
+            "summary_metrics": {
+                "stage_seconds": int(metrics.get("stage_seconds") or 0),
+                "tokens": int(metrics.get("tokens") or 0),
+                "token_budget": int(metrics.get("token_budget") or 150_000),
+                "human_interventions": sum(
+                    1 for h in history if str(h.get("event") or "") == "human_intervene"
+                ),
+            },
+            "nodes": nodes,
+            "archive_index": archive_index,
+            "recent_history": history[-20:],
+            "recent_chat": history_to_chat_logs(history),
         }
+
+    @staticmethod
+    def _extract_room_id(
+        dev: dict[str, Any] | None,
+        room_state: dict[str, Any] | None,
+    ) -> str:
+        if isinstance(dev, dict):
+            mr = dev.get("meeting_room")
+            if isinstance(mr, dict):
+                rid = str(mr.get("room_id") or "").strip()
+                if rid:
+                    return rid
+        if isinstance(room_state, dict):
+            return str(room_state.get("room_id") or "").strip()
+        return ""
+
+    def _room_detail_payload(
+        self,
+        data: dict[str, Any],
+        scope_id: str,
+        titles: dict[str, dict[str, str]],
+    ) -> dict[str, Any]:
+        item = self._to_list_item(data, scope_id, titles)
+        room_state = load_room_state(scope_id)
+        history = read_history(scope_id, limit=500)
+        archive_index = list_archive_index(scope_id)
+
+        if room_state and isinstance(room_state.get("metrics"), dict):
+            m = room_state["metrics"]
+            item["stageDuration"] = self._format_duration(int(m.get("stage_seconds") or 0))
+            item["tokenConsumed"] = int(m.get("tokens") or 0)
+            item["tokenBudget"] = int(m.get("token_budget") or 150_000)
+            rs = str(room_state.get("status") or "")
+            if rs in ("processing", "human_intervention", "completed"):
+                item["status"] = rs
+
+        item["room_state"] = room_state
+        item["history"] = history
+        item["archive_index"] = archive_index
+        item["chat_logs"] = history_to_chat_logs(history)
+        return item
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds}s"
+        if seconds < 3600:
+            return f"{seconds // 60}m"
+        return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
 
     def _userwork_row_for_scope(self, scope_type: ScopeType, scope_id: str) -> dict[str, Any] | None:
         from synapse.api.routes.dev_iwhalecloud import _snapshot_norm_id
@@ -214,9 +563,27 @@ class MeetingRoomService:
         mr = data.get("meeting_room") if isinstance(data.get("meeting_room"), dict) else {}
         meta = titles.get(scope_id, {})
         local = str(data.get("local_process_state") or "")
-        ui_status = "processing"
-        if local not in ("处理中",):
+
+        room_state = load_room_state(scope_id)
+        ui_status: str = "processing"
+        if room_state and str(room_state.get("status") or "") in (
+            "processing",
+            "human_intervention",
+            "completed",
+            "failed",
+        ):
+            ui_status = str(room_state["status"])
+        elif local not in ("处理中",):
             ui_status = "completed" if local == "已完成" else "human_intervention"
+
+        token_consumed = 0
+        token_budget = 150_000
+        stage_duration = "—"
+        if room_state and isinstance(room_state.get("metrics"), dict):
+            m = room_state["metrics"]
+            token_consumed = int(m.get("tokens") or 0)
+            token_budget = int(m.get("token_budget") or 150_000)
+            stage_duration = self._format_duration(int(m.get("stage_seconds") or 0))
 
         return {
             "room_id": str(mr.get("room_id") or ""),
@@ -235,4 +602,7 @@ class MeetingRoomService:
             "meeting_room_active": bool(mr.get("active")),
             "updated_at": data.get("updated_at"),
             "dev_status": data,
+            "tokenConsumed": token_consumed,
+            "tokenBudget": token_budget,
+            "stageDuration": stage_duration,
         }

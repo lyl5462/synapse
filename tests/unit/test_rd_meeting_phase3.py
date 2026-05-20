@@ -1,0 +1,120 @@
+"""Phase 3：开会推进、人工通知列表、产物校验。"""
+
+from __future__ import annotations
+
+import pytest
+
+from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
+from synapse.rd_meeting.orchestrator import MeetingRoomOrchestrator
+from synapse.rd_meeting.room_runtime import load_room_state
+from synapse.rd_meeting.service import MeetingRoomService
+from synapse.rd_meeting.validation import validate_node_output
+
+
+@pytest.fixture
+def synapse_work_home(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg_dir = work / "_rd_meeting_cfg"
+    cfg_dir.mkdir(parents=True)
+
+    def _work_root():
+        return work
+
+    def _rd_cfg_dir():
+        return cfg_dir
+
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", _work_root)
+    monkeypatch.setattr("synapse.rd_meeting.config_store.rd_meeting_config_dir", _rd_cfg_dir)
+    return work
+
+
+def test_open_meeting_promote_to_processing(synapse_work_home):
+    from synapse.rd_meeting.dev_status import load_or_create_dev_status
+
+    scope_id = "21883300"
+    svc = MeetingRoomService()
+    dev_before = load_or_create_dev_status(
+        scope_id,
+        scope_type="demand",
+        local_process_state="待处理",
+        stage_id=0,
+        current_node_id="pending",
+    )
+    dev_before["local_process_state"] = "待处理"
+    dev_before["current_node_id"] = "pending"
+    dev_before["stage_id"] = 0
+    save_dev_status(scope_id, dev_before)
+
+    detail = svc.open_meeting(
+        "demand",
+        scope_id,
+        sync_userwork=False,
+        promote_to_processing=True,
+    )
+    assert detail["local_process_state"] == "处理中"
+    dev = load_dev_status(scope_id)
+    assert dev is not None
+    assert dev["local_process_state"] == "处理中"
+    assert dev["current_node_id"] not in ("pending", "")
+
+
+def test_list_pending_human_intervention(synapse_work_home):
+    scope_id = "21883301"
+    svc = MeetingRoomService()
+    opened = svc.open_meeting("demand", scope_id, sync_userwork=False)
+    room_id = opened["room_id"]
+
+    dev = load_dev_status(scope_id)
+    assert dev is not None
+    dev["current_node_id"] = "req_clarify"
+    dev["stage_id"] = 1
+    save_dev_status(scope_id, dev)
+
+    orch = MeetingRoomOrchestrator()
+    orch.mark_human_gate(
+        scope_type="demand",
+        scope_id=scope_id,
+        room_id=room_id,
+        node_id="req_clarify",
+    )
+
+    pending = svc.list_pending_human_intervention()
+    assert any(p["scope_id"] == scope_id for p in pending)
+
+
+def test_validate_node_output_rejects_short_body():
+    bad = validate_node_output("boundary", "too short")
+    assert not bad.ok
+
+    good = validate_node_output(
+        "boundary",
+        "# 边界确认结论\n\n"
+        "本节点已完成交付，结论如下：模块边界清晰，无跨产品影响。\n" * 3,
+    )
+    assert good.ok
+
+
+@pytest.mark.asyncio
+async def test_dry_run_passes_validation(synapse_work_home):
+    scope_id = "21883302"
+    svc = MeetingRoomService()
+    opened = svc.open_meeting("demand", scope_id, sync_userwork=False)
+    room_id = opened["room_id"]
+
+    dev = load_dev_status(scope_id)
+    assert dev is not None
+    dev["current_node_id"] = "boundary"
+    dev["stage_id"] = 1
+    save_dev_status(scope_id, dev)
+
+    orch = MeetingRoomOrchestrator()
+    result = await orch.run_current_node(
+        scope_type="demand",
+        scope_id=scope_id,
+        room_id=room_id,
+        dry_run=True,
+    )
+    assert result.get("next_node_id")
+    rs = load_room_state(scope_id)
+    assert rs is not None

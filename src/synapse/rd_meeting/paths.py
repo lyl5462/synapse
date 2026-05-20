@@ -48,6 +48,22 @@ def dev_status_lock_path(scope_id: str) -> Path:
     return scope_dir(scope_id) / "dev.status.lock"
 
 
+def room_state_path(scope_id: str) -> Path:
+    return scope_dir(scope_id) / "room_state.json"
+
+
+def room_state_lock_path(scope_id: str) -> Path:
+    return scope_dir(scope_id) / "room_state.lock"
+
+
+def room_history_path(scope_id: str) -> Path:
+    return scope_dir(scope_id) / "room_history.jsonl"
+
+
+def archive_root(scope_id: str) -> Path:
+    return scope_dir(scope_id) / "archive"
+
+
 def is_work_order_directory(path: Path, *, work: Path | None = None) -> bool:
     root = work or work_root()
     if not path.is_dir():

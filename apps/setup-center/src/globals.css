@@ -176,3 +176,99 @@
   opacity: 1;
   visibility: visible;
 }
+
+/* 研发会议室阵容配置：协作智能体多选（Ant Design Select）暗色可读性 */
+.rd-meeting-config-drawer .rd-meeting-agent-select.ant-select .ant-select-selector,
+.rd-meeting-agent-select.ant-select .ant-select-selector {
+  background: color-mix(in srgb, var(--bg-app) 92%, transparent) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+.rd-meeting-config-drawer .rd-meeting-agent-select .ant-select-selection-item,
+.rd-meeting-config-drawer .rd-meeting-agent-select .ant-select-selection-placeholder,
+.rd-meeting-config-drawer .rd-meeting-agent-select .ant-select-content-value,
+.rd-meeting-config-drawer .rd-meeting-agent-select .ant-select-content,
+.rd-meeting-agent-select .ant-select-selection-item,
+.rd-meeting-agent-select .ant-select-selection-placeholder,
+.rd-meeting-agent-select .ant-select-content-value,
+.rd-meeting-agent-select .ant-select-content {
+  color: var(--text) !important;
+  -webkit-text-fill-color: var(--text) !important;
+  opacity: 1 !important;
+}
+
+.rd-meeting-config-drawer .rd-meeting-agent-select.ant-select-multiple .ant-select-selection-overflow-item {
+  max-width: 100%;
+}
+
+.rd-meeting-config-drawer .rd-meeting-agent-tag {
+  color: var(--text);
+}
+
+.rd-meeting-agent-select-dropdown .ant-select-item-option-content {
+  color: var(--text) !important;
+}
+
+.rd-meeting-config-drawer .rd-meeting-host-readonly {
+  color: var(--text);
+}
+
+/* 研发会议室配置：自定义开关（替代 Ant Switch，避免圆点偏移） */
+.rd-meeting-config-switch {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  width: 2.75rem;
+  height: 1.5rem;
+  padding: 0;
+  border: none;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+.rd-meeting-config-switch:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary, #3b82f6) 55%, transparent);
+  outline-offset: 2px;
+}
+.rd-meeting-config-switch__thumb {
+  position: absolute;
+  top: 50%;
+  left: 0.125rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  transform: translateY(-50%);
+  transition: left 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.rd-meeting-config-switch--on .rd-meeting-config-switch__thumb {
+  left: calc(100% - 1.25rem - 0.125rem);
+}
+/* 开启：蓝色；关闭：灰色（两种 tone 一致，仅语义区分） */
+.rd-meeting-config-switch--off {
+  background: #94a3b8;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+.rd-meeting-config-switch--off .rd-meeting-config-switch__thumb {
+  background: #f8fafc;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
+}
+.rd-meeting-config-switch--on {
+  background: #2563eb;
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.35),
+    0 2px 10px rgba(37, 99, 235, 0.4);
+}
+.rd-meeting-config-switch--on .rd-meeting-config-switch__thumb {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(30, 64, 175, 0.35);
+}
+.rd-meeting-config-switch--tone-emerald.rd-meeting-config-switch--on {
+  background: #2563eb;
+  box-shadow:
+    0 0 0 1px rgba(37, 99, 235, 0.35),
+    0 2px 10px rgba(37, 99, 235, 0.4);
+}

@@ -48,7 +48,13 @@ import {
   type RdManageDemandsPayload,
   type WorkOrderDbMetricsPayload,
 } from '../../api/rdManageService';
-import { openMeetingRoom } from '../../api/meetingRoomService';
+import {
+  fetchMeetingSummary,
+  openMeetingRoom,
+  type MeetingRoomArchiveEntry,
+  type MeetingSummaryPayload,
+} from '../../api/meetingRoomService';
+import { setMeetingRoomFocus } from '../../rd-meeting/focus';
 import { getProdInfo } from '@/api/rdUnifiedService';
 import type { ProdInfoWireItem, ProdProcessDataPayload } from '@/api/rdUnifiedService';
 import { IS_TAURI } from '@/platform';
@@ -344,6 +350,12 @@ function formatDurationSeconds(totalSec: number, tFormat: (k: string, o?: Record
   return tFormat('rdManageOrder.hoursMinutes', { hours: h, minutes: remM });
 }
 
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`;
+  return String(tokens);
+}
+
 function demandItemFallbackFromTicket(ticket: Ticket): DemandListItem {
   const items: OwnedWorkItem[] = (ticket.workItems || []).map((w) => ({
     task_no: w.id,
@@ -514,6 +526,9 @@ export const OrderManagement: React.FC<{
   const [boardDataInitialized, setBoardDataInitialized] = useState(false);
   const [boardRefreshBusy, setBoardRefreshBusy] = useState(false);
   const [openingMeetingKey, setOpeningMeetingKey] = useState<string | null>(null);
+  const [meetingSummary, setMeetingSummary] = useState<MeetingSummaryPayload | null>(null);
+  const [meetingSummaryLoading, setMeetingSummaryLoading] = useState(false);
+  const [meetingSummaryErr, setMeetingSummaryErr] = useState<string | null>(null);
 
   const [collapsedStages, setCollapsedStages] = useState<Record<number, boolean>>({});
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -553,6 +568,60 @@ export const OrderManagement: React.FC<{
       cancelled = true;
     };
   }, [ticketModalOpen, modalDemand, synapseApiBase, t]);
+
+  const sopMeetingScope = useMemo(() => {
+    if (!activeTicketId.trim()) return null;
+    const taskId = activeWorkItemId.trim();
+    if (taskId) {
+      return { scopeType: 'task' as const, scopeId: taskId };
+    }
+    return { scopeType: 'demand' as const, scopeId: activeTicketId.trim() };
+  }, [activeTicketId, activeWorkItemId]);
+
+  useEffect(() => {
+    if (!sopMeetingScope?.scopeId) {
+      setMeetingSummary(null);
+      setMeetingSummaryErr(null);
+      return;
+    }
+    let cancelled = false;
+    setMeetingSummaryLoading(true);
+    setMeetingSummaryErr(null);
+    void fetchMeetingSummary(synapseApiBase, sopMeetingScope.scopeType, sopMeetingScope.scopeId)
+      .then((data) => {
+        if (!cancelled) setMeetingSummary(data);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setMeetingSummaryErr(msg);
+          setMeetingSummary(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setMeetingSummaryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sopMeetingScope, synapseApiBase]);
+
+  const meetingNodeMetricsById = useMemo(() => {
+    const m = new Map<string, { deal_seconds: number; tokens: number }>();
+    for (const n of meetingSummary?.nodes ?? []) {
+      m.set(n.node_id, n.metrics);
+    }
+    return m;
+  }, [meetingSummary]);
+
+  const meetingArchiveByNodeId = useMemo(() => {
+    const m = new Map<string, MeetingRoomArchiveEntry['files']>();
+    for (const entry of meetingSummary?.archive_index ?? []) {
+      const prev = m.get(entry.node_id) ?? [];
+      m.set(entry.node_id, [...prev, ...entry.files]);
+    }
+    return m;
+  }, [meetingSummary]);
 
   const mergeProcessIntoProduct = useCallback((productId: string, payload: ProdProcessDataPayload) => {
     setDetailProduct((p) => (p && p.id === productId ? applyProcessPayloadToProduct(p, payload) : p));
@@ -977,7 +1046,10 @@ export const OrderManagement: React.FC<{
     setTicketModalOpen(true);
   };
 
-  const handleJumpToMeeting = () => {
+  const handleJumpToMeeting = (roomId?: string, scopeType?: 'demand' | 'task', scopeId?: string) => {
+    if (roomId) {
+      setMeetingRoomFocus({ roomId, scopeType, scopeId });
+    }
     if (onViewChange) {
       onViewChange("workbench_meeting");
     } else {
@@ -994,7 +1066,14 @@ export const OrderManagement: React.FC<{
       const busyKey = `${scopeType}:${scopeId}`;
       setOpeningMeetingKey(busyKey);
       try {
-        await openMeetingRoom(synapseApiBase, scopeType, scopeId);
+        const detail = await openMeetingRoom(synapseApiBase, scopeType, scopeId, {
+          promoteToProcessing: true,
+        });
+        setMeetingRoomFocus({
+          roomId: detail.room_id,
+          scopeType,
+          scopeId,
+        });
         setActiveTicketId(ticket.id);
         setActiveWorkItemId(workItemId || '');
         toast.success(t('rdManageOrder.openMeetingSuccess'));
@@ -1013,17 +1092,50 @@ export const OrderManagement: React.FC<{
     [synapseApiBase, t, onViewChange],
   );
 
+  const renderMeetingArchiveOutput = (nodeId: string) => {
+    const files = meetingArchiveByNodeId.get(nodeId);
+    if (!files?.length) return null;
+    return (
+      <div className="space-y-3">
+        <h4 className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+          <FileText className="h-4 w-4" />
+          {t('rdManageOrder.nodeArchiveTitle', { defaultValue: '归档产物' })}
+        </h4>
+        <motion.div className="grid grid-cols-1 gap-2">
+          {files.map((f) => (
+            <div
+              key={`${f.relative_path}-${f.name}`}
+              className="flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/30 p-3"
+            >
+              <div className="flex min-w-0 items-center gap-3">
+                <FileCode2 className="h-5 w-5 shrink-0 text-primary" />
+                <span className="truncate font-mono text-sm text-foreground">{f.name}</span>
+              </div>
+              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                {(f.size / 1024).toFixed(1)} KB
+              </span>
+            </div>
+          ))}
+        </motion.div>
+        <p className="font-mono text-[10px] text-muted-foreground">{files[0]?.relative_path}</p>
+      </div>
+    );
+  };
+
   // Render varied output based on node type/id
   const renderNodeOutput = (node: SOPNode, ticket: Ticket) => {
     const state = getNodeStateGlobal(ticket, node.id);
     if (state === 'pending') {
       return (
-        <div className="flex flex-col items-center justify-center h-40 text-slate-500">
-          <CircleDashed className="w-10 h-10 mb-3 opacity-50" />
+        <div className="flex h-40 flex-col items-center justify-center text-muted-foreground">
+          <CircleDashed className="mb-3 h-10 w-10 opacity-50" />
           <p>节点未开始执行，暂无输出产物</p>
         </div>
       );
     }
+
+    const archiveUi = renderMeetingArchiveOutput(node.id);
+    if (archiveUi) return archiveUi;
 
     switch (node.id) {
       case 'req_clarify':
@@ -1538,11 +1650,23 @@ export const OrderManagement: React.FC<{
               </div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5 shrink-0" /> 持续运行: <span className="font-mono text-foreground/90">{displayTicket.runTime}</span></span>
-                <span className="flex items-center gap-1.5"><Coins className="h-3.5 w-3.5 shrink-0 text-amber-500/80" /> 消耗 Token: <span className="font-mono text-foreground/90">{displayTicket.tokens.toLocaleString()}</span></span>
+                <span className="flex items-center gap-1.5">
+                  <Coins className="h-3.5 w-3.5 shrink-0 text-amber-500/80" /> 消耗 Token:{' '}
+                  <span className="font-mono text-foreground/90">
+                    {meetingSummaryLoading
+                      ? '…'
+                      : (meetingSummary?.summary_metrics?.tokens ?? displayTicket.tokens).toLocaleString()}
+                  </span>
+                </span>
+                {meetingSummaryErr && (
+                  <span className="text-[10px] text-destructive/80" title={meetingSummaryErr}>
+                    {t('rdManageOrder.meetingMetricsUnavailable', { defaultValue: '会议室指标暂不可用' })}
+                  </span>
+                )}
               </div>
             </div>
             
-            <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <motion.div className="flex shrink-0 flex-wrap items-center gap-2">
               {displayTicket.status === 'full_manual' && (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
@@ -1563,7 +1687,7 @@ export const OrderManagement: React.FC<{
                   {t('rdManageOrder.badgeHitl')}
                 </motion.div>
               )}
-            </div>
+            </motion.div>
           </div>
 
           <div 
@@ -1676,11 +1800,24 @@ export const OrderManagement: React.FC<{
                         // Group AI nodes highly compressed (-mr-12 for horizontal overlapping), separate human intervention/wait nodes heavily (mr-32)
                         const marginClass = nIdx === stage.nodes.length - 1 ? 'mr-16' : (isHuman || isNextHuman ? 'mr-32' : '-mr-12');
                         
-                        // Generate processing stats based on node type
                         const nodeHash = node.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-                        const timeStr = isHuman ? `${(nodeHash % 4) + 1}h ${nodeHash % 60}m` : `${((nodeHash % 50) / 10 + 0.5).toFixed(1)}s`;
+                        const liveMetrics = meetingNodeMetricsById.get(node.id);
+                        const useLiveMetrics =
+                          liveMetrics != null &&
+                          (state === 'completed' || state === 'processing') &&
+                          (liveMetrics.deal_seconds > 0 || liveMetrics.tokens > 0);
+                        const timeStr = useLiveMetrics
+                          ? formatDurationSeconds(liveMetrics.deal_seconds, t)
+                          : isHuman
+                            ? `${(nodeHash % 4) + 1}h ${nodeHash % 60}m`
+                            : `${((nodeHash % 50) / 10 + 0.5).toFixed(1)}s`;
                         const modelStr = isHuman ? '人工处理' : ['Claude-3.5', 'GPT-4o', 'Gemini-1.5'][nodeHash % 3];
-                        const tokenStr = isHuman ? '--' : `${((nodeHash % 50 + 10) / 10).toFixed(1)}k`;
+                        const tokenStr =
+                          useLiveMetrics && !isHuman
+                            ? formatTokenCount(liveMetrics.tokens)
+                            : isHuman
+                              ? '--'
+                              : `${((nodeHash % 50 + 10) / 10).toFixed(1)}k`;
                         
                         let cardClass = "min-h-[7.5rem] border-border bg-card/60 text-muted-foreground";
                         let iconClass = "text-muted-foreground";

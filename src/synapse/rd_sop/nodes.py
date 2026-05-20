@@ -73,6 +73,8 @@ _ALL_NODES: list[dict] = [
     for n in s["nodes"]
 ]
 
+ALL_NODES = _ALL_NODES
+
 
 def resolve_sop_raw_to_node_id(sop_raw: str) -> str | None:
     sop = (sop_raw or "").strip()
