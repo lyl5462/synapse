@@ -9,7 +9,14 @@ from unittest.mock import patch
 import pytest
 
 from synapse.rd_meeting.artifacts import validate_archive_outputs, write_node_deliverables
-from synapse.rd_meeting.hitl_form import fallback_exception_hitl_schema, normalize_hitl_schema
+from synapse.rd_meeting.hitl_form import (
+    default_hitl_form_schema,
+    default_interactive_hitl_form_schema,
+    fallback_exception_hitl_schema,
+    normalize_hitl_schema,
+    resolve_hitl_schema_for_gate,
+)
+from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.live import parse_rd_meeting_session, record_delegation_started
 from synapse.rd_meeting.phase import get_phase, set_phase
 from synapse.rd_meeting.room_runtime import history_to_chat_logs
@@ -117,6 +124,46 @@ def test_record_delegation_started_appends_history(
             reason="澄清需求",
         )
         mock_append.assert_called_once()
+
+
+def test_req_clarify_non_final_uses_clarify_questions_not_quality_gate() -> None:
+    from synapse.rd_meeting.orchestrator import _looks_like_final_delivery
+
+    assert not _looks_like_final_delivery("req_clarify", "还在整理需求，请稍候")
+    schema = default_hitl_form_schema("req_clarify")
+    qids = {q["id"] for q in schema.get("questions", [])}
+    assert "quality_check" not in qids
+    assert "biz_background" in qids or "open_questions" in qids
+
+
+def test_interactive_vs_result_confirm_schema() -> None:
+    binding = {"node_id": "req_clarify", "human_confirm": True}
+    interactive = resolve_hitl_schema_for_gate(
+        binding, dynamic_schema=None, intervention_kind="interactive"
+    )
+    diff_binding = {"node_id": "diff_analysis", "human_confirm": True}
+    result = resolve_hitl_schema_for_gate(
+        diff_binding, dynamic_schema=None, intervention_kind="result_confirm"
+    )
+    assert interactive and result
+    assert interactive.get("title", "").find("会中") >= 0 or "澄清" in interactive.get("title", "")
+    assert "decision" in {q["id"] for q in (result.get("questions") or [])}
+    iq = {q["id"] for q in (interactive.get("questions") or [])}
+    rq = {q["id"] for q in (result.get("questions") or [])}
+    assert "biz_background" in iq or "open_questions" in iq
+    assert "decision" in rq and "quality_check" in rq
+
+
+def test_build_meeting_participants_dedupes_host() -> None:
+    rows = build_meeting_participants(
+        {
+            "host_profile_id": "default",
+            "worker_profile_ids": ["default", "rd-expert"],
+        }
+    )
+    ids = [r["profile_id"] for r in rows]
+    assert ids.count("default") == 1
+    assert "rd-expert" in ids
 
 
 def test_get_room_live_not_found() -> None:

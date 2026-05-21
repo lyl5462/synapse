@@ -33,11 +33,19 @@ export interface MeetingRoomChatLogWire {
   type: 'info' | 'error' | 'success' | 'warning' | 'user';
 }
 
+export interface MeetingRoomParticipantWire {
+  profile_id: string;
+  role: 'host' | 'worker' | string;
+  display_name: string;
+}
+
 export interface MeetingRoomDetail extends MeetingRoomListItem {
   room_state?: Record<string, unknown> | null;
   history?: Record<string, unknown>[];
   archive_index?: MeetingRoomArchiveEntry[];
   chat_logs?: MeetingRoomChatLogWire[];
+  participants?: MeetingRoomParticipantWire[];
+  current_node_binding?: Record<string, unknown>;
 }
 
 export interface MeetingRoomArchiveEntry {
@@ -274,6 +282,7 @@ export interface MeetingRoomLivePayload {
   }[];
   recent_history?: Record<string, unknown>[];
   recent_chat?: MeetingRoomChatLogWire[];
+  participants?: MeetingRoomParticipantWire[];
   intervention_kind?: string;
   hitl_form_schema?: HitlFormSchema;
   pending_delivery?: { report_body?: string; await_confirm?: boolean };

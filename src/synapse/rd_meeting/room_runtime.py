@@ -292,12 +292,16 @@ def history_to_chat_logs(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "human_intervene",
             "room_opened",
             "system",
+            "node_started",
+            "node_init",
+            "human_gate",
             "delegation_started",
             "delegation_finished",
             "node_failed",
             "hitl_approved",
             "hitl_rejected",
             "node_pending_confirm",
+            "node_pending_clarify",
         ):
             text = str(ev.get("text") or ev.get("message") or "").strip()
             if not text and et == "room_opened":

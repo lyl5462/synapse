@@ -7,6 +7,8 @@ import uuid
 from typing import Any, Literal
 
 from synapse.rd_meeting.binding import list_resolved_bindings, resolve_node_binding
+from synapse.rd_meeting.bootstrap import append_node_init_chat
+from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.config_store import (
     DEFAULT_MEETING_SKILL_ID,
     load_meeting_room_config,
@@ -229,6 +231,21 @@ class MeetingRoomService:
             if isinstance(room_state.get("agents_active"), list)
             else []
         )
+        scope_type = str(detail.get("scope_type") or "demand")
+        node_id = str(detail.get("current_node_id") or "pending")
+        binding = resolve_node_binding(
+            node_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            ticket_title=str(detail.get("ticket_title") or ""),
+        )
+        binding["node_id"] = node_id
+        participants = (
+            room_state.get("participants")
+            if isinstance(room_state.get("participants"), list)
+            else build_meeting_participants(binding)
+        )
+
         return {
             "room_id": room_id,
             "scope_id": scope_id,
@@ -242,6 +259,7 @@ class MeetingRoomService:
             "tokenBudget": detail.get("tokenBudget"),
             "stageDuration": detail.get("stageDuration"),
             "agents_active": agents_active,
+            "participants": participants,
             "sub_agents": sub_agents,
             "recent_history": history,
             "recent_chat": history_to_chat_logs(history),
@@ -436,7 +454,28 @@ class MeetingRoomService:
         detail = self._room_detail_payload(data, sid, titles)
         detail["room_state"] = room_state
 
-        if auto_run_first_node and str(data.get("current_node_id") or "") not in ("pending", ""):
+        run_node = str(data.get("current_node_id") or "")
+        if run_node not in ("pending", ""):
+            run_binding = resolve_node_binding(
+                run_node,
+                scope_type=scope_type,
+                scope_id=sid,
+                ticket_title=str(detail.get("ticket_title") or ""),
+            )
+            run_binding["node_id"] = run_node
+            append_node_init_chat(
+                sid,
+                room_id=room_id,
+                node_id=run_node,
+                binding=run_binding,
+            )
+            rs = load_room_state(sid) or {}
+            if isinstance(rs, dict):
+                rs = dict(rs)
+                rs["participants"] = build_meeting_participants(run_binding)
+                save_room_state(sid, rs)
+
+        if auto_run_first_node and run_node not in ("pending", ""):
             schedule_run_node(
                 scope_type=scope_type,
                 scope_id=sid,
@@ -642,10 +681,27 @@ class MeetingRoomService:
             if rs in ("processing", "human_intervention", "completed"):
                 item["status"] = rs
 
+        scope = data.get("scope") if isinstance(data.get("scope"), dict) else {}
+        scope_type = str(scope.get("type") or "demand")
+        node_id = str(data.get("current_node_id") or "pending")
+        ticket_title = str(item.get("ticket_title") or "")
+        binding = resolve_node_binding(
+            node_id,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            ticket_title=ticket_title,
+        )
+        binding["node_id"] = node_id
+        participants = build_meeting_participants(binding)
+        if isinstance(room_state, dict) and isinstance(room_state.get("participants"), list):
+            participants = room_state["participants"]
+
         item["room_state"] = room_state
         item["history"] = history
         item["archive_index"] = archive_index
         item["chat_logs"] = history_to_chat_logs(history)
+        item["current_node_binding"] = binding
+        item["participants"] = participants
         return item
 
     @staticmethod

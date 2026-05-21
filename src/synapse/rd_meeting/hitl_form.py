@@ -146,19 +146,128 @@ def resolve_hitl_schema_for_gate(
     dynamic_schema: dict[str, Any] | None,
     reason: str = "",
     force_fallback: bool = False,
+    intervention_kind: str = "interactive",
 ) -> dict[str, Any] | None:
-    """门控展示用 schema：智能体动态问卷优先，否则节点绑定默认或异常兜底。"""
+    """门控展示用 schema：智能体动态问卷优先；会中与结果确认使用不同兜底模板。"""
     if dynamic_schema:
         return dynamic_schema
     preset = binding.get("hitl_form_schema")
     if isinstance(preset, dict) and preset.get("questions"):
         return normalize_hitl_schema(preset)
     node_id = str(binding.get("node_id") or "")
-    if node_id and binding.get("human_confirm"):
-        return default_hitl_form_schema(node_id)
+    kind = (intervention_kind or "interactive").strip().lower()
     if force_fallback and node_id:
         return normalize_hitl_schema(fallback_exception_hitl_schema(node_id, reason=reason))
+    if kind == "interactive" and node_id:
+        return default_interactive_hitl_form_schema(node_id)
+    if kind == "result_confirm" and node_id and binding.get("human_confirm"):
+        return default_hitl_form_schema(node_id)
+    if node_id and binding.get("human_confirm") and kind not in ("interactive", "exception"):
+        return default_hitl_form_schema(node_id)
     return None
+
+
+def default_interactive_hitl_form_schema(node_id: str) -> dict[str, Any]:
+    """会中请示用户的兜底问卷（非结果确认）；优先引导业务澄清而非归档验收。"""
+    entry = get_node_manifest_entry(node_id)
+    name = str(entry.get("name") if entry else node_display_name(node_id))
+    intent = str(
+        entry.get("intent") if entry else binding_intent_hint(node_id)
+    ).strip()
+    questions = _interactive_questions_for_node(node_id, node_name=name, intent=intent)
+    return {
+        "type": QUESTIONNAIRE_TYPE,
+        "version": QUESTIONNAIRE_VERSION,
+        "title": f"{name} — 会中澄清",
+        "description": (
+            (intent or f"请就节点「{name}」当前议题补充信息，便于小鲸继续安排协作智能体。")
+            + " 若题目与当前讨论不符，请先在对话区说明；主控应通过技能 "
+            "whalecloud-dev-tool-ask-user 输出定制化 ``hitl-questionnaire`` 问卷。"
+        ),
+        "render": {
+            "layout": "stepped",
+            "showOverallProgress": True,
+            "accent": "emerald",
+            "animate": True,
+        },
+        "questions": questions,
+    }
+
+
+def binding_intent_hint(node_id: str) -> str:
+    entry = get_node_manifest_entry(node_id)
+    return str(entry.get("intent") if entry else "")
+
+
+def _interactive_questions_for_node(
+    node_id: str,
+    *,
+    node_name: str,
+    intent: str,
+) -> list[dict[str, Any]]:
+    """会中交互兜底题目：按节点略作区分，避免与结果确认问卷雷同。"""
+    intent_hint = intent.strip() or f"完成「{node_name}」的会议目标"
+    if node_id == "req_clarify":
+        raw = [
+            build_question(
+                qid="biz_background",
+                qtype="textarea",
+                title="业务背景与目标",
+                context="请补充需求来源、业务目标、用户场景，或纠正小鲸/协作智能体理解偏差。",
+                input_enabled=True,
+                required=False,
+            ),
+            build_question(
+                qid="scope_boundary",
+                qtype="textarea",
+                title="范围与边界",
+                context="本需求包含/不包含哪些能力？有无版本、环境、依赖系统约束？",
+                input_enabled=True,
+                required=False,
+            ),
+            build_question(
+                qid="open_questions",
+                qtype="textarea",
+                title="待澄清问题（可多行）",
+                context=(
+                    "列出仍需产品/业务确认的问题；若小鲸已给出问题列表，可在此逐条作答或标注「已确认/待跟进」。"
+                ),
+                input_enabled=True,
+                required=False,
+            ),
+            build_question(
+                qid="priority",
+                qtype="single",
+                title="优先级与时限",
+                context="当前需求的紧急程度？",
+                options=_letter_options(
+                    ["P0 — 阻塞交付", "P1 — 本迭代必须", "P2 — 可排期", "暂不确定"]
+                ),
+                input_enabled=True,
+                required=False,
+            ),
+        ]
+        return attach_question_progress(raw)
+
+    raw = [
+        build_question(
+            qid="context_gap",
+            qtype="textarea",
+            title="需补充的上下文",
+            context=f"围绕「{node_name}」与会议目标「{intent_hint}」，请补充小鲸尚未掌握的信息。",
+            input_enabled=True,
+            required=False,
+        ),
+        build_question(
+            qid="directive",
+            qtype="textarea",
+            title="给主控的指令",
+            context="希望小鲸下一步如何安排协作智能体？可指定重点、约束或跳过项。",
+            input_enabled=True,
+            required=False,
+        ),
+    ]
+    return attach_question_progress(raw)
 
 def _option_style_for(qtype: QuestionType) -> OptionStyle:
     if qtype == "multiple":
@@ -301,7 +410,9 @@ def _default_questions_for_node(node_id: str, *, node_name: str, intent: str) ->
 
 
 def default_hitl_form_schema(node_id: str) -> dict[str, Any]:
-    """按节点生成默认人机确认问卷（questionnaire v1.0）。"""
+    """节点结束后的「结果确认」问卷（归档验收）；需求澄清节点会中阶段勿用此模板。"""
+    if node_id == "req_clarify":
+        return default_interactive_hitl_form_schema(node_id)
     entry = get_node_manifest_entry(node_id)
     name = str(entry.get("name") if entry else node_display_name(node_id))
     intent = str(entry.get("intent") if entry else "")

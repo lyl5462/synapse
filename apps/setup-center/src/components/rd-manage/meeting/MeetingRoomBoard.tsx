@@ -11,6 +11,7 @@ import {
   type MeetingRoomDetail,
   type MeetingRoomListItem,
   type MeetingRoomLivePayload,
+  type MeetingRoomParticipantWire,
 } from '../../../api/meetingRoomService';
 import { consumeMeetingRoomFocus } from '../../../rd-meeting/focus';
 import { MeetingRoomConfigDrawer } from './MeetingRoomConfigDrawer';
@@ -99,27 +100,121 @@ interface MeetingRoom {
   runInProgress?: boolean;
   hitlFormSchema?: HitlFormSchema | null;
   hitlPendingSummary?: string | null;
+  participants?: MeetingRoomParticipantWire[];
 }
 
-const HOST_AGENT: RoomAgent = {
-  id: 'host',
-  name: '小鲸',
-  role: '会议主持',
-  avatarColor: 'bg-violet-500',
-  icon: <Bot className="w-3 h-3" />,
-  status: 'processing',
-  currentAction: '主持本节点',
-};
+const HOST_PROFILE_ID = 'default';
 
-function mapLiveAgents(live: MeetingRoomLivePayload): RoomAgent[] {
+const WORKER_COLORS = [
+  'bg-sky-500',
+  'bg-indigo-500',
+  'bg-teal-500',
+  'bg-cyan-500',
+  'bg-emerald-500',
+];
+
+function workerColor(profileId: string): string {
+  let h = 0;
+  for (let i = 0; i < profileId.length; i++) h = (h + profileId.charCodeAt(i)) % WORKER_COLORS.length;
+  return WORKER_COLORS[h] ?? 'bg-sky-500';
+}
+
+function participantToRoomAgent(p: MeetingRoomParticipantWire, status: RoomAgent['status'] = 'idle'): RoomAgent {
+  const isHost = p.role === 'host' || p.profile_id === HOST_PROFILE_ID;
+  const label = (p.display_name || '').trim();
+  return {
+    id: p.profile_id,
+    name: label && label !== p.profile_id ? label : isHost ? '小鲸' : '协作智能体',
+    role: isHost ? '会议主持' : '协作智能体',
+    avatarColor: isHost ? 'bg-violet-500' : workerColor(p.profile_id),
+    icon: isHost ? <Bot className="w-3 h-3" /> : <Cpu className="w-3 h-3" />,
+    status,
+    currentAction: isHost ? '主持本节点' : '待命',
+  };
+}
+
+function buildAgentsFromDetail(item: MeetingRoomDetail): RoomAgent[] {
+  const fromApi = item.participants;
+  if (fromApi?.length) {
+    const host = fromApi.find((p) => p.role === 'host') ?? fromApi[0];
+    const workers = fromApi.filter((p) => p.profile_id !== host.profile_id);
+    const runBusy = item.status === 'processing';
+    return [
+      participantToRoomAgent(host, runBusy ? 'processing' : 'idle'),
+      ...workers.map((w) => participantToRoomAgent(w, runBusy ? 'processing' : 'idle')),
+    ];
+  }
+  const rs = item.room_state;
+  const active = Array.isArray(rs?.agents_active)
+    ? (rs.agents_active as { profile_id?: string; role?: string; display_name?: string; status?: string }[])
+    : [];
+  if (active.length) {
+    return active.map((a) =>
+      participantToRoomAgent(
+        {
+          profile_id: String(a.profile_id || HOST_PROFILE_ID),
+          role: String(a.role || 'worker'),
+          display_name: String(a.display_name || a.profile_id || ''),
+        },
+        a.status === 'failed' ? 'error' : a.status === 'delegating' || a.status === 'running' ? 'processing' : 'idle',
+      ),
+    );
+  }
+  return [participantToRoomAgent({ profile_id: HOST_PROFILE_ID, role: 'host', display_name: '小鲸' }, 'processing')];
+}
+
+function mergeAgentsWithLive(roster: RoomAgent[], live: MeetingRoomLivePayload): RoomAgent[] {
+  const liveAgents = mapLiveAgents(live, roster);
+  if (!liveAgents.length) return roster;
+  const byId = new Map(roster.map((a) => [a.id, a]));
+  for (const la of liveAgents) {
+    const prev = byId.get(la.id);
+    if (prev) {
+      byId.set(la.id, {
+        ...prev,
+        status: la.status,
+        currentAction: la.currentAction || prev.currentAction,
+      });
+    } else if (la.id !== 'host') {
+      byId.set(la.id, la);
+    }
+  }
+  const host = byId.get(HOST_PROFILE_ID) ?? roster[0];
+  if (host && live.run_in_progress) {
+    byId.set(host.id, { ...host, status: 'processing', currentAction: '主持本节点' });
+  }
+  return Array.from(byId.values());
+}
+
+function resolveSpeakerName(room: MeetingRoom, agentId: string): string {
+  if (agentId === 'user') return '我 (人类专家)';
+  const hit = room.agents.find((a) => a.id === agentId);
+  if (hit?.name && hit.name !== hit.id) return hit.name;
+  const p = room.participants?.find((x) => x.profile_id === agentId);
+  if (p?.display_name && p.display_name !== p.profile_id) return p.display_name;
+  if (agentId === HOST_PROFILE_ID || agentId === 'host') return '小鲸';
+  if (agentId === 'system') return '系统';
+  return '小鲸';
+}
+
+function mapLiveAgents(live: MeetingRoomLivePayload, roster: RoomAgent[] = []): RoomAgent[] {
+  const rosterById = new Map(roster.map((a) => [a.id, a]));
   const workers: RoomAgent[] = (live.sub_agents || []).map((s, i) => {
     const pid = String(s.profile_id || s.agent_id || `worker-${i}`);
     const st = String(s.status || 'idle');
     const uiStatus: RoomAgent['status'] =
       st === 'running' || st === 'delegating' ? 'processing' : st === 'failed' ? 'error' : 'idle';
+    const fromRoster = rosterById.get(pid);
+    const rawName = String(s.name || fromRoster?.name || '').trim();
+    const name =
+      rawName && rawName !== pid
+        ? rawName
+        : live.participants?.find((p) => p.profile_id === pid)?.display_name ||
+          fromRoster?.name ||
+          '协作智能体';
     return {
       id: pid,
-      name: String(s.name || pid),
+      name,
       role: '协作智能体',
       avatarColor: 'bg-sky-500',
       icon: <Cpu className="w-3 h-3" />,
@@ -128,7 +223,13 @@ function mapLiveAgents(live: MeetingRoomLivePayload): RoomAgent[] {
     };
   });
   const hostStatus: RoomAgent['status'] = live.run_in_progress ? 'processing' : 'idle';
-  return [{ ...HOST_AGENT, status: hostStatus }, ...workers];
+  const hostRow =
+    live.participants?.find((p) => p.role === 'host') ?? {
+      profile_id: HOST_PROFILE_ID,
+      role: 'host',
+      display_name: '小鲸',
+    };
+  return [participantToRoomAgent(hostRow, hostStatus), ...workers];
 }
 
 function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): MeetingRoom {
@@ -136,7 +237,11 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
     live.recent_chat && live.recent_chat.length > 0
       ? live.recent_chat.map(mapChatWireToLog)
       : room.logs;
-  const agents = mapLiveAgents(live);
+  const roster =
+    room.agents.length > 0
+      ? room.agents
+      : (live.participants || []).map((p) => participantToRoomAgent(p, 'idle'));
+  const agents = mergeAgentsWithLive(roster, live);
   const uiStatus = live.status as MeetingRoom['status'] | undefined;
   return {
     ...room,
@@ -146,7 +251,7 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
     phase: live.phase || room.phase,
     runInProgress: live.run_in_progress ?? room.runInProgress,
     logs,
-    agents: agents.length > 1 ? agents : room.agents.length ? room.agents : agents,
+    agents,
     tokenConsumed: live.tokenConsumed ?? room.tokenConsumed,
     tokenBudget: live.tokenBudget ?? room.tokenBudget,
     stageDuration: live.stageDuration || room.stageDuration,
@@ -197,12 +302,13 @@ function mapDetailToRoom(item: MeetingRoomDetail): MeetingRoom {
     stageDuration: item.stageDuration || '—',
     tokenConsumed: item.tokenConsumed ?? 0,
     tokenBudget: item.tokenBudget ?? 150000,
-    agents: [],
+    agents: buildAgentsFromDetail(item),
     logs,
     brief: `${item.local_process_state} · ${item.current_node_name || item.current_node_id}`,
     hitlFormSchema: (item.room_state?.hitl_form_schema as HitlFormSchema | undefined) ?? null,
     hitlPendingSummary:
       (item.room_state?.pending_delivery as { report_body?: string } | undefined)?.report_body ?? null,
+    participants: item.participants,
   };
 }
 
@@ -972,12 +1078,17 @@ const InterventionDialog = ({
                  <Avatar size="small" className="bg-muted text-[10px] ring-2 ring-background">我</Avatar>
                  <span className="mx-1 text-muted-foreground/70">|</span>
                  {room.agents.map(a => (
-                   <Tooltip key={a.id} title={`${a.name} - ${a.status}`}>
-                     <div className="relative">
-                       <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] ${a.avatarColor} ring-2 ring-background`}>
-                         {a.icon}
+                   <Tooltip key={a.id} title={`${a.name} · ${a.role}`}>
+                     <div className="flex flex-col items-center gap-0.5 max-w-[56px]">
+                       <div className="relative">
+                         <div className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] ${a.avatarColor} ring-2 ring-background`}>
+                           {a.icon}
+                         </div>
+                         <div className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-background ${a.status === 'error' ? 'bg-red-500' : a.status === 'processing' ? 'bg-blue-500' : 'bg-muted-foreground'}`} />
                        </div>
-                       <div className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-background ${a.status === 'error' ? 'bg-red-500' : a.status === 'processing' ? 'bg-blue-500' : 'bg-muted-foreground'}`} />
+                       <span className="text-[9px] text-muted-foreground truncate w-full text-center leading-tight">
+                         {a.name}
+                       </span>
                      </div>
                    </Tooltip>
                  ))}
@@ -1005,7 +1116,7 @@ const InterventionDialog = ({
                   <div className={`flex flex-col max-w-[85%] ${isUser ? 'items-end' : 'items-start'}`}>
                     <div className="flex items-center gap-2 mb-1 px-1">
                       <span className="text-[11px] font-medium text-foreground/90">
-                        {isUser ? '我 (人类专家)' : agent?.name}
+                        {isUser ? '我 (人类专家)' : resolveSpeakerName(room, log.agentId)}
                       </span>
                       <span className="text-[9px] text-muted-foreground font-mono">{log.timestamp}</span>
                     </div>

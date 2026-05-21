@@ -13,6 +13,7 @@ from typing import Any
 
 from synapse.rd_meeting.artifacts import write_node_deliverables
 from synapse.rd_meeting.binding import resolve_node_binding
+from synapse.rd_meeting.bootstrap import append_node_init_chat, build_node_init_message
 from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
 from synapse.rd_meeting.hitl_form import (
     HitlGateFromReport,
@@ -22,6 +23,7 @@ from synapse.rd_meeting.hitl_form import (
 )
 from synapse.rd_meeting.notifications import schedule_human_intervention_notify
 from synapse.rd_meeting.paths import archive_root, scope_dir
+from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.phase import phase_prompt_hint, set_phase
 from synapse.rd_meeting.room_runtime import (
     append_history_event,
@@ -60,6 +62,16 @@ def _dry_run_enabled() -> bool:
         "true",
         "yes",
     )
+
+
+def _looks_like_final_delivery(node_id: str, report_body: str) -> bool:
+    """是否已形成可归档的节点终稿（含交付结论或满足产物校验）。"""
+    text = (report_body or "").strip()
+    if not text:
+        return False
+    if "# 交付结论" in text or "## 交付结论" in text:
+        return True
+    return validate_node_output(node_id, text).ok
 
 
 def _resolve_profile(profile_id: str):
@@ -132,8 +144,9 @@ def build_node_prompt(
             parts.append(f"\n### 结果确认表单字段\n{schema_txt}")
         parts.append(
             "\n### 动态人机问卷（技能 `whalecloud-dev-tool-ask-user`）\n"
-            "会议期间请示用户、异常反馈或自定义确认表单时，须在回复末尾附带 "
-            "``<!-- hitl-questionnaire -->`` 标记的 questionnaire JSON（详见该技能）。"
+            "会议期间向用户收集**需求澄清/选项/确认**时，须在回复末尾附带 "
+            "``<!-- hitl-questionnaire kind=interactive -->`` 的 questionnaire JSON，"
+            "题目须来自当前议题与协作智能体产出（勿使用系统默认的归档验收题）。"
             "系统检测到标记后会暂停并渲染表单；勿宣称已归档或已推进。"
         )
     else:
@@ -447,7 +460,11 @@ class MeetingRoomOrchestrator:
         skipped_nodes: list[str] | None = None,
     ) -> dict[str, Any]:
         """智能体显式输出 hitl-questionnaire 标记时进入人工门控。"""
-        hitl_schema = resolve_hitl_schema_for_gate(binding, dynamic_schema=gate.schema)
+        hitl_schema = resolve_hitl_schema_for_gate(
+            binding,
+            dynamic_schema=gate.schema,
+            intervention_kind=gate.intervention_kind,
+        )
         phase = "result_gate" if gate.intervention_kind == "result_confirm" else "clarify_gate"
         if gate.intervention_kind == "exception":
             phase = "exception_gate"
@@ -526,6 +543,9 @@ class MeetingRoomOrchestrator:
         save_room_state(sid, room_state)
 
         msg = reason or f"节点 {node_display_name(node_id)} 需人工处理"
+        gate_binding = resolve_node_binding(
+            node_id, scope_type=scope_type, scope_id=sid, ticket_title=ticket_title
+        )
         append_history_event(
             sid,
             {
@@ -534,7 +554,7 @@ class MeetingRoomOrchestrator:
                 "node_id": node_id,
                 "text": msg,
                 "log_type": "warning",
-                "agent_id": "system",
+                "agent_id": str(gate_binding.get("host_profile_id") or "default"),
             },
         )
         schedule_human_intervention_notify(
@@ -700,17 +720,27 @@ class MeetingRoomOrchestrator:
             ticket_title=ticket_title,
         )
 
+        binding["node_id"] = node_id
+        node_name = node_display_name(node_id)
+        participants = build_meeting_participants(binding)
+        init_text = build_node_init_message(binding, node_id=node_id)
+        host_id = str(binding.get("host_profile_id") or "default")
+
         append_history_event(
             sid,
             {
                 "event": "node_started",
                 "room_id": room_id,
                 "node_id": node_id,
+                "text": init_text,
+                "agent_id": host_id,
+                "log_type": "info",
                 "binding": {
                     "enabled": binding.get("enabled", True),
                     "host_profile_id": binding.get("host_profile_id"),
                     "worker_profile_ids": binding.get("worker_profile_ids"),
                 },
+                "participants": participants,
             },
         )
 
@@ -718,12 +748,19 @@ class MeetingRoomOrchestrator:
         room_state = dict(room_state)
         room_state["status"] = "processing"
         room_state["current_node_id"] = node_id
-        workers = binding.get("worker_profile_ids") or []
-        host = str(binding.get("host_profile_id") or "default")
         room_state["agents_active"] = [
-            {"profile_id": host, "role": "host"},
-            *[{"profile_id": w, "role": "worker"} for w in workers if w],
+            {"profile_id": p["profile_id"], "role": p["role"], "display_name": p["display_name"]}
+            for p in participants
         ]
+        room_state["participants"] = participants
+        room_state["current_node_binding"] = {
+            "node_id": node_id,
+            "node_name": node_name,
+            "host_profile_id": binding.get("host_profile_id"),
+            "worker_profile_ids": binding.get("worker_profile_ids"),
+            "node_intent": binding.get("node_intent"),
+            "human_confirm": binding.get("human_confirm"),
+        }
         nm = room_state.get("node_metrics")
         if not isinstance(nm, dict):
             nm = {}
@@ -747,7 +784,7 @@ class MeetingRoomOrchestrator:
             )
             tokens_used = 128
         else:
-            host_profile_id = str(binding.get("host_profile_id") or host or "default")
+            host_profile_id = str(binding.get("host_profile_id") or host_id or "default")
             host_profile = _resolve_profile(host_profile_id)
             if host_profile is None or agent_pool is None:
                 report_body = (
@@ -919,6 +956,56 @@ class MeetingRoomOrchestrator:
 
         need_human_confirm = bool(binding.get("human_confirm"))
         if need_human_confirm:
+            if node_id == "req_clarify" and not _looks_like_final_delivery(node_id, report_body):
+                set_phase(sid, "clarify_gate")
+                pending = {
+                    "node_id": node_id,
+                    "report_body": report_body,
+                    "await_confirm": False,
+                    "tokens_used": tokens_used,
+                    "duration_seconds": duration,
+                    "stage_id": stage_id,
+                }
+                gate = self.mark_human_gate(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    reason=(
+                        f"{node_display_name(node_id)}：请填写需求澄清问卷，"
+                        "小鲸将根据您的回答继续委派协作智能体"
+                    ),
+                    ticket_title=ticket_title,
+                    hitl_form_schema=resolve_hitl_schema_for_gate(
+                        binding,
+                        dynamic_schema=None,
+                        intervention_kind="interactive",
+                    ),
+                    pending_delivery=pending,
+                    intervention_kind="interactive",
+                )
+                append_history_event(
+                    sid,
+                    {
+                        "event": "node_pending_clarify",
+                        "room_id": room_id,
+                        "node_id": node_id,
+                        "text": (
+                            "小鲸已整理当前议题，请在下方的「需求澄清 — 会中澄清」问卷中"
+                            "补充业务信息；提交后将续跑本节点。"
+                        ),
+                        "agent_id": host_id,
+                        "log_type": "info",
+                    },
+                )
+                return {
+                    "status": "human_intervention",
+                    "node_id": node_id,
+                    "pending_confirm": False,
+                    "clarify_gate": True,
+                    **gate,
+                }
+
             set_phase(sid, "result_gate")
             pending = {
                 "node_id": node_id,
@@ -935,7 +1022,11 @@ class MeetingRoomOrchestrator:
                 node_id=node_id,
                 reason=f"{node_display_name(node_id)} 待确认总结，请填写表单后归档推进",
                 ticket_title=ticket_title,
-                hitl_form_schema=resolve_hitl_schema_for_gate(binding, dynamic_schema=None),
+                hitl_form_schema=resolve_hitl_schema_for_gate(
+                    binding,
+                    dynamic_schema=None,
+                    intervention_kind="result_confirm",
+                ),
                 pending_delivery=pending,
                 intervention_kind="result_confirm",
             )
