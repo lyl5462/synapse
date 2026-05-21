@@ -79,24 +79,43 @@ export interface MeetingSummaryPayload {
   recent_chat?: MeetingRoomChatLogWire[];
 }
 
-export interface HitlFormFieldOption {
-  label: string;
+export interface HitlQuestionOption {
   value: string;
+  label: string;
+  selected?: boolean;
 }
 
-export interface HitlFormField {
+export interface HitlQuestionRender {
+  layout?: 'vertical' | 'horizontal' | 'grid';
+  optionStyle?: 'radio' | 'checkbox' | 'boolean';
+  showProgress?: boolean;
+  progress?: { current: number; total: number };
+}
+
+export interface HitlQuestion {
   id: string;
-  label: string;
-  type: 'text' | 'textarea' | 'select' | 'radio' | 'checkbox';
+  type: 'single' | 'multiple' | 'boolean' | 'text' | 'textarea';
+  title: string;
+  context?: string;
+  options?: HitlQuestionOption[];
+  inputEnabled?: boolean;
+  inputPlaceholder?: string;
   required?: boolean;
-  placeholder?: string;
-  options?: HitlFormFieldOption[];
+  render?: HitlQuestionRender;
 }
 
 export interface HitlFormSchema {
+  type?: 'questionnaire';
+  version?: string;
   title?: string;
   description?: string;
-  fields: HitlFormField[];
+  questions?: HitlQuestion[];
+  render?: {
+    layout?: 'stepped' | 'flat';
+    showOverallProgress?: boolean;
+    accent?: 'blue' | 'violet' | 'emerald';
+    animate?: boolean;
+  };
 }
 
 export interface MeetingRoomNodeOverride {

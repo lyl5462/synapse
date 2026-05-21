@@ -121,7 +121,7 @@ Worker 返回结果后，逐项核对：
 ### 4.5 对用户汇报
 
 - 不暴露内部多轮扯皮；进展（启动了谁）与结论（最终方案）分层呈现。
-- **`human_confirm: true` 时（会议期间）**：可将 Worker 关键中间产物（如澄清问题列表）整理后提交用户，支持多轮人机交互。
+- **`human_confirm: true` 时（会议期间）**：可将 Worker 关键中间产物整理后，用 **`whalecloud-dev-tool-ask-user`** 生成问卷 JSON（`kind=interactive`）提交用户，支持多轮人机交互。
 - **`human_confirm: true` 时（会议结果）**：输出 `# 交付结论` 等待确认总结，**勿**宣称已归档或已推进；用户表单确认后由系统写入产物并切换节点。
 - **`human_confirm: false` 时**：自主收敛并输出最终结论，由系统自动归档推进。
 
@@ -175,7 +175,7 @@ Worker 返回结果后，逐项核对：
 | 人工确认 | 见 §1.2：期间交互 + 结果确认 + 异常介入 |
 | 用户可见性 | 仅最终结论与必要进展对用户可见；Worker 之间的扯皮、调试日志归档不外发 |
 
-**异常介入**（与 `human_confirm` 无关）：协作超时、产物质量/真实度无法达标、风险不可控时，必须主动调用 `ask_user` 或停在 `human_intervention` 状态，等待用户指令。
+**异常介入**（与 `human_confirm` 无关）：协作超时、产物质量/真实度无法达标、风险不可控时，必须使用技能 **`whalecloud-dev-tool-ask-user`** 在回复末尾输出 `hitl-questionnaire` 标记的问卷 JSON，系统将进入 `human_intervention` 并渲染表单；勿宣称已归档或已推进。
 
 ---
 

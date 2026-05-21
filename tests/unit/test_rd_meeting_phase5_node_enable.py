@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.config_store import save_meeting_room_config
-from synapse.rd_meeting.hitl_form import default_hitl_form_schema, format_hitl_schema_for_prompt
+from synapse.rd_meeting.hitl_form import (
+    default_hitl_form_schema,
+    extract_hitl_from_agent_output,
+    format_hitl_schema_for_prompt,
+)
 from synapse.rd_meeting.intents import default_node_intent, resolve_node_intent
 from synapse.rd_meeting.orchestrator import _skip_node_report_body
 from synapse.rd_meeting.service import MeetingRoomService
@@ -61,8 +66,11 @@ def test_human_confirm_override(isolated_config_dir: Path):
 def test_human_confirm_provides_hitl_schema(isolated_config_dir: Path):
     binding = resolve_node_binding("req_risk")
     assert binding["human_confirm"] is True
-    assert binding["hitl_form_schema"] is not None
-    assert binding["hitl_form_schema"].get("fields")
+    schema = binding["hitl_form_schema"]
+    assert schema is not None
+    assert schema.get("type") == "questionnaire"
+    assert schema.get("questions")
+    assert any(q.get("id") == "decision" for q in schema["questions"])
 
 
 def test_node_outputs_list(isolated_config_dir: Path):
@@ -89,10 +97,46 @@ def test_service_put_persists_human_confirm_and_intent(isolated_config_dir: Path
     assert ov["human_confirm"] is True
 
 
+def test_extract_hitl_from_agent_output_fence():
+    schema = {"type": "questionnaire", "version": "1.0", "questions": [{"id": "q1", "type": "text", "title": "t"}]}
+    body = (
+        "# 进展\n请确认。\n\n"
+        "```hitl-questionnaire\n"
+        + json.dumps(schema, ensure_ascii=False)
+        + "\n```"
+    )
+    gate = extract_hitl_from_agent_output(body)
+    assert gate.explicit is True
+    assert gate.clean_body.startswith("# 进展")
+    assert gate.schema is not None
+    assert gate.schema.get("questions")
+
+
+def test_extract_hitl_from_agent_output_html_kind():
+    schema = {
+        "type": "questionnaire",
+        "version": "1.0",
+        "questions": [{"id": "decision", "type": "single", "title": "结论", "options": []}],
+    }
+    raw = json.dumps(schema, ensure_ascii=False)
+    body = (
+        "说明\n\n"
+        f"<!-- hitl-questionnaire kind=result_confirm await_confirm=true -->\n"
+        f"{raw}\n"
+        "<!-- /hitl-questionnaire -->"
+    )
+    gate = extract_hitl_from_agent_output(body)
+    assert gate.explicit is True
+    assert gate.intervention_kind == "result_confirm"
+    assert gate.await_confirm is True
+
+
 def test_hitl_schema_prompt_text():
     schema = default_hitl_form_schema("boundary")
     text = format_hitl_schema_for_prompt(schema)
     assert "确认结论" in text
+    assert "共 4 题" in text
+    assert "decision" in text or "approve" in text
 
 
 def test_skip_report_body_has_completion_markers():

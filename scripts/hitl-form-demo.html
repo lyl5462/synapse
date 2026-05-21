@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HITL 人工确认表单 Demo</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --panel: #161922;
+      --panel2: #1c2030;
+      --border: rgba(255,255,255,.08);
+      --fg: #e8eaef;
+      --muted: #8b93a7;
+      --blue: #3b82f6;
+      --violet: #8b5cf6;
+      --emerald: #10b981;
+      --rose: #f43f5e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(ellipse 80% 60% at 50% -10%, rgba(59,130,246,.18), transparent),
+                  var(--bg);
+      color: var(--fg);
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
+    }
+    .wrap { width: min(520px, 100%); }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--muted);
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border);
+      border-radius: 999px; padding: 4px 10px; margin-bottom: 12px;
+    }
+    .form-shell {
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(59,130,246,.22), rgba(59,130,246,.04) 40%, transparent);
+      overflow: hidden;
+      box-shadow: 0 24px 48px rgba(0,0,0,.35);
+    }
+    .form-inner { padding: 20px; }
+    .title-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .accent-bar { width: 4px; height: 20px; border-radius: 4px; background: var(--blue); }
+    .title { font-size: 15px; font-weight: 600; }
+    .desc { font-size: 11px; color: var(--muted); line-height: 1.6; padding-left: 12px; margin-bottom: 16px; }
+    .progress-head { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-bottom: 6px; }
+    .progress-track { height: 4px; background: rgba(255,255,255,.08); border-radius: 4px; overflow: hidden; margin-bottom: 16px; }
+    .progress-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--blue), var(--violet)); transition: width .3s; }
+    .summary {
+      border-radius: 12px; border: 1px solid var(--border);
+      background: rgba(0,0,0,.25); padding: 12px; margin-bottom: 14px;
+      max-height: 160px; overflow-y: auto; font-size: 11px; line-height: 1.65;
+    }
+    .summary h4 { margin: 0 0 8px; font-size: 10px; color: var(--muted); font-weight: 600; }
+    .q-card {
+      border-radius: 12px; border: 1px solid var(--border);
+      background: rgba(0,0,0,.22); padding: 16px;
+      animation: fadeIn .25s ease;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    .q-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+    .q-title { font-size: 14px; font-weight: 600; margin: 0; }
+    .q-badge { font-size: 10px; color: var(--muted); background: rgba(255,255,255,.06); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+    .q-context {
+      font-size: 11px; color: var(--muted); line-height: 1.6;
+      border-left: 2px solid var(--border); padding-left: 10px; margin: 10px 0 0;
+    }
+    .bool-row { display: flex; gap: 10px; margin-top: 12px; }
+    .bool-btn {
+      flex: 1; padding: 12px; border-radius: 12px; border: 1px solid var(--border);
+      background: rgba(0,0,0,.2); color: var(--muted); font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: all .15s;
+    }
+    .bool-btn:hover { border-color: rgba(255,255,255,.2); }
+    .bool-btn.yes.active { border-color: rgba(16,185,129,.6); background: rgba(16,185,129,.15); color: #6ee7b7; box-shadow: 0 0 20px rgba(16,185,129,.15); }
+    .bool-btn.no.active { border-color: rgba(244,63,94,.6); background: rgba(244,63,94,.15); color: #fda4af; box-shadow: 0 0 20px rgba(244,63,94,.12); }
+    .opt-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+    .opt-btn {
+      display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
+      padding: 12px; border-radius: 12px; border: 1px solid var(--border);
+      background: rgba(0,0,0,.18); color: var(--fg); cursor: pointer; transition: all .15s;
+      font-size: 12px; line-height: 1.5;
+    }
+    .opt-btn:hover { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.04); }
+    .opt-btn.active { border-color: rgba(59,130,246,.5); background: rgba(59,130,246,.1); box-shadow: 0 0 0 1px rgba(59,130,246,.25); }
+    .opt-btn.approve.active { border-color: rgba(16,185,129,.5); background: rgba(16,185,129,.1); box-shadow: 0 0 0 1px rgba(16,185,129,.25); }
+    .opt-btn.reject.active { border-color: rgba(244,63,94,.5); background: rgba(244,63,94,.1); box-shadow: 0 0 0 1px rgba(244,63,94,.25); }
+    .letter {
+      width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; background: rgba(255,255,255,.08); color: var(--muted);
+    }
+    .opt-btn.active .letter { background: var(--blue); color: #fff; }
+    .opt-btn.approve.active .letter { background: var(--emerald); }
+    .opt-btn.reject.active .letter { background: var(--rose); }
+    textarea, .custom-input {
+      width: 100%; margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: rgba(0,0,0,.25);
+      color: var(--fg); font-size: 12px; font-family: inherit; resize: vertical;
+    }
+    .custom-toggle {
+      margin-top: 8px; width: 100%; text-align: left; padding: 8px 12px;
+      border-radius: 10px; border: 1px dashed var(--border); background: transparent;
+      color: var(--muted); font-size: 11px; cursor: pointer;
+    }
+    .nav { display: flex; justify-content: space-between; margin-top: 16px; gap: 8px; }
+    .btn {
+      padding: 8px 16px; border-radius: 8px; border: none; font-size: 12px; font-weight: 500; cursor: pointer;
+    }
+    .btn-ghost { background: rgba(255,255,255,.06); color: var(--fg); }
+    .btn-primary {
+      background: var(--blue); color: #fff;
+      box-shadow: 0 4px 14px rgba(37,99,235,.35);
+    }
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+    .output {
+      margin-top: 16px; padding: 12px; border-radius: 10px;
+      border: 1px solid rgba(16,185,129,.3); background: rgba(16,185,129,.08);
+      font-size: 11px; font-family: ui-monospace, monospace; white-space: pre-wrap;
+      display: none;
+    }
+    .output.show { display: block; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="badge">✨ questionnaire v1.0 · 分步向导 Demo</div>
+    <div class="form-shell">
+      <div class="form-inner" id="app"></div>
+    </div>
+    <pre class="output" id="output"></pre>
+  </div>
+
+  <script>
+    const SCHEMA = {
+      "type": "questionnaire",
+      "version": "1.0",
+      "title": "边界确认 — 人工确认",
+      "description": "识别跨产品边界，确保单需求单产品。系统将依据「确认结论」决定归档推进或返工重跑。",
+      "render": { "layout": "stepped", "showOverallProgress": true, "accent": "blue" },
+      "questions": [
+        {
+          "id": "quality_check", "type": "single", "title": "产出质量",
+          "context": "请审阅待确认总结：节点「边界确认」的交付内容是否完整、准确，且符合会议目标「识别跨产品边界，确保单需求单产品。」？",
+          "options": [{"value":"true","label":"是"},{"value":"false","label":"否"}],
+          "inputEnabled": true, "inputPlaceholder": "如有具体质量问题，请在此说明：",
+          "render": { "optionStyle": "boolean", "progress": { "current": 1, "total": 4 } }
+        },
+        {
+          "id": "risk_ack", "type": "single", "title": "风险与遗留项",
+          "context": "总结中是否已明确标注未决风险、依赖阻塞或需后续跟进的遗留项？",
+          "options": [
+            {"value":"A","label":"已充分标注，可接受"},
+            {"value":"B","label":"部分标注，需补充说明（可在下方填写）"},
+            {"value":"C","label":"未标注或存在重大遗漏"}
+          ],
+          "inputEnabled": true, "inputPlaceholder": "或者你的答案：",
+          "render": { "optionStyle": "radio", "progress": { "current": 2, "total": 4 } }
+        },
+        {
+          "id": "decision", "type": "single", "title": "确认结论", "required": true,
+          "context": "基于上述审阅，请选择下一步操作。确认通过后系统将写入归档产物并推进至下一节点。",
+          "options": [
+            {"value":"approve","label":"通过 — 归档产出并进入下一节点"},
+            {"value":"reject","label":"不通过 — 按补充说明返工本节点"}
+          ],
+          "render": { "optionStyle": "radio", "progress": { "current": 3, "total": 4 } }
+        },
+        {
+          "id": "comment", "type": "textarea", "title": "补充说明",
+          "context": "可选：记录评审意见、返工原因、验收备注或给智能体的后续指引。",
+          "options": [], "inputEnabled": true, "inputPlaceholder": "输入补充说明…",
+          "render": { "progress": { "current": 4, "total": 4 } }
+        }
+      ]
+    };
+
+    const SUMMARY = `# 边界确认 — 待确认总结
+
+## 交付结论
+- 本需求归属 **BSS 计费域**，不涉及 OCS 实时计费模块
+- 跨产品依赖：需 CRM 提供客户资料接口（已确认 v2.3）
+- 遗留风险：CRM 接口 SLA 未书面确认
+
+结论：边界已识别，建议进入下一节点。`;
+
+    const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    let step = 0;
+    const answers = {};
+    const custom = {};
+    const showCustom = {};
+
+    function isBool(q) {
+      return q.render?.optionStyle === 'boolean' ||
+        (q.options?.length === 2 && q.options.every(o => o.value === 'true' || o.value === 'false'));
+    }
+
+    function answered(q) {
+      if (q.type === 'textarea' || q.type === 'text') return !!(custom[q.id] || '').trim() || !q.required;
+      if (q.required) return answers[q.id] != null || !!(custom[q.id] || '').trim();
+      return true;
+    }
+
+    function answeredCount() {
+      return SCHEMA.questions.filter(q => {
+        if (q.type === 'textarea' || q.type === 'text') return !!(custom[q.id] || '').trim();
+        return answers[q.id] != null || !!(custom[q.id] || '').trim();
+      }).length;
+    }
+
+    function render() {
+      const q = SCHEMA.questions[step];
+      const total = SCHEMA.questions.length;
+      const pct = Math.round((answeredCount() / total) * 100);
+      const app = document.getElementById('app');
+
+      let body = '';
+      if (q.type === 'textarea' || q.type === 'text') {
+        body = `<textarea rows="4" placeholder="${q.inputPlaceholder || ''}" oninput="custom['${q.id}']=this.value;render()">${custom[q.id] || ''}</textarea>`;
+      } else if (isBool(q)) {
+        body = `<div class="bool-row">${q.options.map(o =>
+          `<button type="button" class="bool-btn ${o.value === 'true' ? 'yes' : 'no'} ${answers[q.id] === o.value ? 'active' : ''}"
+            onclick="answers['${q.id}']='${o.value}';render()">${o.label}</button>`
+        ).join('')}</div>`;
+      } else {
+        body = `<div class="opt-list">${q.options.map((o, i) => {
+          const cls = q.id === 'decision' ? (o.value === 'approve' ? 'approve' : 'reject') : '';
+          return `<button type="button" class="opt-btn ${cls} ${answers[q.id] === o.value ? 'active' : ''}"
+            onclick="answers['${q.id}']='${o.value}';render()">
+            <span class="letter">${LETTERS[i]}</span><span>${o.label}</span></button>`;
+        }).join('')}</div>`;
+      }
+
+      if (q.inputEnabled && q.type !== 'textarea' && q.type !== 'text') {
+        if (showCustom[q.id]) {
+          body += `<input class="custom-input" placeholder="${q.inputPlaceholder || ''}" value="${custom[q.id] || ''}"
+            oninput="custom['${q.id}']=this.value;render()" />`;
+        } else {
+          body += `<button type="button" class="custom-toggle" onclick="showCustom['${q.id}']=true;render()">${q.inputPlaceholder || '或者你的答案…'}</button>`;
+        }
+      }
+
+      app.innerHTML = `
+        <div class="title-row"><div class="accent-bar"></div><div class="title">${SCHEMA.title}</div></div>
+        <div class="desc">${SCHEMA.description}</div>
+        <div class="progress-head"><span>✨ 确认进度</span><span>${answeredCount()}/${total} 已答</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <div class="summary"><h4>📋 待确认总结</h4>${SUMMARY.replace(/\n/g, '<br>')}</div>
+        <div class="q-card">
+          <div class="q-head">
+            <h3 class="q-title">${q.title}${q.required ? '<span style="color:#f43f5e"> *</span>' : ''}</h3>
+            <span class="q-badge">${q.render?.progress?.current}/${q.render?.progress?.total}</span>
+          </div>
+          ${q.context ? `<p class="q-context">${q.context}</p>` : ''}
+          ${body}
+        </div>
+        <div class="nav">
+          ${step > 0 ? '<button type="button" class="btn btn-ghost" onclick="step--;render()">上一题</button>' : '<span></span>'}
+          ${step < total - 1
+            ? `<button type="button" class="btn btn-primary" ${answered(q) ? '' : 'disabled'} onclick="if(${answered(q)}){step++;render()}">下一题 →</button>`
+            : `<button type="button" class="btn btn-primary" onclick="submitForm()">确认总结并归档推进</button>`}
+        </div>`;
+    }
+
+    function submitForm() {
+      const lines = ['[人工确认表单]'];
+      SCHEMA.questions.forEach(q => {
+        if (answers[q.id] != null) lines.push(`${q.id}: ${answers[q.id]}`);
+        if (custom[q.id]) lines.push(`${q.id}_custom: ${custom[q.id]}`);
+        if (q.id === 'comment' && custom[q.id]) lines.push(`comment: ${custom[q.id]}`);
+      });
+      if (answers.decision) lines.push(`decision: ${answers.decision}`);
+      const out = document.getElementById('output');
+      out.textContent = lines.join('\n');
+      out.classList.add('show');
+    }
+
+    render();
+  </script>
+</body>
+</html>

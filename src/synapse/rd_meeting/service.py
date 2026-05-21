@@ -414,7 +414,12 @@ class MeetingRoomService:
             if isinstance(room_state, dict)
             else None
         )
-        if isinstance(pending, dict) and pending.get("report_body") and message_type == "instruction":
+        if (
+            isinstance(pending, dict)
+            and pending.get("report_body")
+            and pending.get("await_confirm", True)
+            and message_type == "instruction"
+        ):
             approved, comment = self._parse_hitl_decision(text, resume_run=resume_run)
             orch = MeetingRoomOrchestrator()
             orch.confirm_node_delivery(

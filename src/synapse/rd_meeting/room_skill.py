@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 Role = Literal["host", "worker"]
 
 DEFAULT_MEETING_SKILL_ID = "whalecloud-dev-tool-meeting-room"
+DEFAULT_ASK_USER_SKILL_ID = "whalecloud-dev-tool-ask-user"
 DEFAULT_LLM_ENDPOINT_KEY = "default"
 
 
@@ -83,6 +84,18 @@ def find_meeting_skill_file(skill_id: str = DEFAULT_MEETING_SKILL_ID) -> Path | 
         if path.is_file():
             return path
     return None
+
+
+def load_ask_user_skill_body(skill_id: str = DEFAULT_ASK_USER_SKILL_ID) -> str:
+    """读取人机问卷技能正文（host 专用片段）。"""
+    path = find_meeting_skill_file(skill_id)
+    if path is None:
+        return ""
+    try:
+        return _strip_frontmatter(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        logger.warning("read ask-user skill %s failed: %s", path, exc)
+        return ""
 
 
 def load_meeting_skill_body(skill_id: str = DEFAULT_MEETING_SKILL_ID) -> str:
@@ -348,6 +361,11 @@ def build_room_skill_prompt(
     )
     if runtime_ctx:
         rendered = f"{rendered}\n\n---\n\n{runtime_ctx}\n"
+
+    if context.role == "host":
+        ask_body = load_ask_user_skill_body().strip()
+        if ask_body:
+            rendered = f"{rendered}\n\n---\n\n{ask_body}\n"
 
     return rendered
 

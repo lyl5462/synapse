@@ -1,0 +1,128 @@
+﻿{
+  "type": "questionnaire",
+  "version": "1.0",
+  "title": "边界确认 — 人工确认",
+  "description": "识别跨产品边界，确保单需求单产品。 系统将依据「确认结论」决定归档推进或返工重跑。",
+  "render": {
+    "layout": "stepped",
+    "showOverallProgress": true,
+    "accent": "blue",
+    "animate": true
+  },
+  "questions": [
+    {
+      "id": "quality_check",
+      "type": "single",
+      "title": "产出质量",
+      "context": "请审阅待确认总结：节点「边界确认」的交付内容是否完整、准确，且符合会议目标「识别跨产品边界，确保单需求单产品。」？",
+      "options": [
+        {
+          "value": "true",
+          "label": "是",
+          "selected": false
+        },
+        {
+          "value": "false",
+          "label": "否",
+          "selected": false
+        }
+      ],
+      "inputEnabled": true,
+      "inputPlaceholder": "如有具体质量问题，请在此说明：",
+      "required": false,
+      "render": {
+        "layout": "vertical",
+        "optionStyle": "boolean",
+        "showProgress": true,
+        "progress": {
+          "current": 1,
+          "total": 4
+        }
+      }
+    },
+    {
+      "id": "risk_ack",
+      "type": "single",
+      "title": "风险与遗留项",
+      "context": "总结中是否已明确标注未决风险、依赖阻塞或需后续跟进的遗留项？",
+      "options": [
+        {
+          "value": "A",
+          "label": "已充分标注，可接受",
+          "selected": false
+        },
+        {
+          "value": "B",
+          "label": "部分标注，需补充说明（可在下方填写）",
+          "selected": false
+        },
+        {
+          "value": "C",
+          "label": "未标注或存在重大遗漏",
+          "selected": false
+        }
+      ],
+      "inputEnabled": true,
+      "inputPlaceholder": "或者你的答案：",
+      "required": false,
+      "render": {
+        "layout": "vertical",
+        "optionStyle": "radio",
+        "showProgress": true,
+        "progress": {
+          "current": 2,
+          "total": 4
+        }
+      }
+    },
+    {
+      "id": "decision",
+      "type": "single",
+      "title": "确认结论",
+      "context": "基于上述审阅，请选择下一步操作。确认通过后系统将写入归档产物并推进至下一节点。",
+      "options": [
+        {
+          "value": "approve",
+          "label": "通过 — 归档产出并进入下一节点",
+          "selected": false
+        },
+        {
+          "value": "reject",
+          "label": "不通过 — 按补充说明返工本节点",
+          "selected": false
+        }
+      ],
+      "inputEnabled": false,
+      "inputPlaceholder": "",
+      "required": true,
+      "render": {
+        "layout": "vertical",
+        "optionStyle": "radio",
+        "showProgress": true,
+        "progress": {
+          "current": 3,
+          "total": 4
+        }
+      }
+    },
+    {
+      "id": "comment",
+      "type": "textarea",
+      "title": "补充说明",
+      "context": "可选：记录评审意见、返工原因、验收备注或给智能体的后续指引。",
+      "options": [],
+      "inputEnabled": true,
+      "inputPlaceholder": "输入补充说明…",
+      "required": false,
+      "render": {
+        "layout": "vertical",
+        "optionStyle": "radio",
+        "showProgress": true,
+        "progress": {
+          "current": 4,
+          "total": 4
+        }
+      }
+    }
+  ]
+}

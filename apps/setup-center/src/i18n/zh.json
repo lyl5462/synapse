@@ -287,6 +287,7 @@
         "autoProcessFromError": "自动处理",
         "generating": "生成中...",
         "manualGenerationPlanned": "规划中",
+        "manualRequiresArchitecture": "请先生成产品架构文档后再生成产品手册",
         "generateMissingDevserviceHost": "未获取到产品公共服务主机，无法生成文档。请在引导中完成「产品公共服务」或检查用户目录 .synapse\\devservice.ip。",
         "generateInvalidCategory": "无效的文档分类，无法初始化文档任务。",
         "modeEdit": "编辑模式",

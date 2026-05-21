@@ -287,6 +287,7 @@
         "autoProcessFromError": "Auto process",
         "generating": "Generating...",
         "manualGenerationPlanned": "Planned",
+        "manualRequiresArchitecture": "Generate the architecture document before generating the manual",
         "generateMissingDevserviceHost": "Unified product service host is not available; cannot generate documents. Complete onboarding or check ~/.synapse/devservice.ip.",
         "modeEdit": "Edit Mode",
         "modePreview": "Preview Mode",

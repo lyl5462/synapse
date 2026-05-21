@@ -794,9 +794,11 @@ export function ProductDetail({
   const activeRepoForGraph = product.repositories[activeRepoIdx];
   const activeRepoWireU = activeRepoForGraph?.wireAnalysisState ?? "new";
   const activeRepoAnalyzing = activeRepoWireU === "init" || activeRepoWireU === "process";
-  /** 主仓库分析完成（done）时，自动生成按钮才可用 */
+  /** 主仓库分析完成（done）时，产品架构生成按钮才可用 */
   const mainRepo = product.repositories.find((r) => r.isMain);
   const mainRepoAnalysisDone = (mainRepo?.wireAnalysisState ?? "new") === "done";
+  /** 产品架构文档完成（D）后，才允许生成产品手册 */
+  const architectureDocDone = isProductKnowledgeSlotDone(product.knowledge.architecture);
 
   const ticketReqMetric =
     product.demandOrderCount !== undefined
@@ -940,6 +942,15 @@ export function ProductDetail({
       return;
     }
     const cat = categoryKey as ProductKnowledgeCategory;
+    if (cat === "manual" && !isProductKnowledgeSlotDone(product.knowledge.architecture)) {
+      toast.error(
+        t(
+          "workbench.products.detail.manualRequiresArchitecture",
+          "请先生成产品架构文档后再生成产品手册",
+        ),
+      );
+      return;
+    }
     setKnowledgeCategoryView((prev) => ({
       ...prev,
       [cat]: { ...prev[cat], generating: true },
@@ -1312,7 +1323,8 @@ export function ProductDetail({
                   const isArchitecture = item.key === "architecture";
                   const isManual = item.key === "manual";
                   const canGenerateArchitecture = isArchitecture && !done && mainRepoAnalysisDone;
-                  const canGenerateManual = isManual && !done && mainRepoAnalysisDone;
+                  const canGenerateManual =
+                    isManual && !done && mainRepoAnalysisDone && architectureDocDone;
                   const rowActive =
                     done ||
                     hasGeneratedDocs ||
@@ -1397,7 +1409,9 @@ export function ProductDetail({
                               </Badge>
                             ) : slot.wireState === "new" ? (
                               <span className="text-[11px] text-muted-foreground">
-                                {t("workbench.products.detail.notCreated")}
+                                {isManual && !architectureDocDone
+                                  ? t("workbench.products.detail.manualGenerationPlanned", "规划中")
+                                  : t("workbench.products.detail.notCreated")}
                               </span>
                             ) : null}
                           </div>

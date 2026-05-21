@@ -13,7 +13,12 @@ from typing import Any
 
 from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
-from synapse.rd_meeting.hitl_form import format_hitl_schema_for_prompt
+from synapse.rd_meeting.hitl_form import (
+    HitlGateFromReport,
+    extract_hitl_from_agent_output,
+    format_hitl_schema_for_prompt,
+    resolve_hitl_schema_for_gate,
+)
 from synapse.rd_meeting.notifications import schedule_human_intervention_notify
 from synapse.rd_meeting.paths import archive_root, scope_dir
 from synapse.rd_meeting.room_runtime import (
@@ -122,11 +127,18 @@ def build_node_prompt(
         )
         if schema_txt:
             parts.append(f"\n### 结果确认表单字段\n{schema_txt}")
+        parts.append(
+            "\n### 动态人机问卷（技能 `whalecloud-dev-tool-ask-user`）\n"
+            "会议期间请示用户、异常反馈或自定义确认表单时，须在回复末尾附带 "
+            "``<!-- hitl-questionnaire -->`` 标记的 questionnaire JSON（详见该技能）。"
+            "系统检测到标记后会暂停并渲染表单；勿宣称已归档或已推进。"
+        )
     else:
         parts.append(
             "\n## 人工确认（本节点已关闭 `human_confirm`）\n"
             "会议期间与结果收敛均由你自主决策，不必为常规中间产物请示用户。"
             "但若出现超时、质量/真实度不达标、不可控风险等**异常**，仍必须主动请求人工介入。"
+            "此时请使用技能 `whalecloud-dev-tool-ask-user` 输出带 ``hitl-questionnaire`` 标记的问卷 JSON。"
         )
     if supplement:
         parts.append(f"\n## 运营补充\n{supplement}")
@@ -411,6 +423,72 @@ class MeetingRoomOrchestrator:
             advance=True,
             ticket_title=ticket_title,
         )
+
+    def _gate_from_agent_hitl(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        node_id: str,
+        binding: dict[str, Any],
+        gate: HitlGateFromReport,
+        report_body: str,
+        tokens_used: int,
+        duration_seconds: int,
+        stage_id: int,
+        ticket_title: str,
+        skipped_nodes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """智能体显式输出 hitl-questionnaire 标记时进入人工门控。"""
+        hitl_schema = resolve_hitl_schema_for_gate(binding, dynamic_schema=gate.schema)
+        await_confirm = gate.await_confirm if gate.await_confirm is not None else False
+        pending: dict[str, Any] | None = None
+        if report_body.strip() or await_confirm:
+            pending = {
+                "node_id": node_id,
+                "report_body": report_body,
+                "await_confirm": await_confirm,
+                "tokens_used": tokens_used,
+                "duration_seconds": duration_seconds,
+                "stage_id": stage_id,
+            }
+        reason = (
+            f"{node_display_name(node_id)} 待确认总结，请填写表单后归档推进"
+            if await_confirm
+            else f"{node_display_name(node_id)} 需人工填写问卷后继续"
+        )
+        gate_state = self.mark_human_gate(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            room_id=room_id,
+            node_id=node_id,
+            reason=reason,
+            ticket_title=ticket_title,
+            hitl_form_schema=hitl_schema,
+            pending_delivery=pending,
+            intervention_kind=gate.intervention_kind,
+        )
+        if await_confirm:
+            append_history_event(
+                scope_id,
+                {
+                    "event": "node_pending_confirm",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "tokens_used": tokens_used,
+                    "duration_seconds": duration_seconds,
+                    "dynamic_form": True,
+                },
+            )
+        return {
+            "status": "human_intervention",
+            "node_id": node_id,
+            "skipped_nodes": skipped_nodes or None,
+            "pending_confirm": await_confirm,
+            "dynamic_hitl": True,
+            **gate_state,
+        }
 
     def mark_human_gate(
         self,
@@ -733,7 +811,7 @@ class MeetingRoomOrchestrator:
                         node_id=node_id,
                         reason=f"{node_display_name(node_id)} 执行异常，需人工介入：{err}",
                         ticket_title=ticket_title,
-                        hitl_form_schema=binding.get("hitl_form_schema"),
+                        hitl_form_schema=resolve_hitl_schema_for_gate(binding, dynamic_schema=None),
                         intervention_kind="exception",
                     )
                     return {
@@ -745,6 +823,28 @@ class MeetingRoomOrchestrator:
 
                 usage = getattr(host_agent, "last_usage", None) or {}
                 tokens_used = int(usage.get("total_tokens") or usage.get("tokens") or 256)
+
+        hitl_gate = extract_hitl_from_agent_output(report_body)
+        report_body = hitl_gate.clean_body
+
+        stage_id = int(dev.get("stage_id") or stage_id_for_node_id(node_id))
+        duration = max(1, int(time.monotonic() - started))
+
+        if hitl_gate.explicit:
+            return self._gate_from_agent_hitl(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                binding=binding,
+                gate=hitl_gate,
+                report_body=report_body,
+                tokens_used=tokens_used,
+                duration_seconds=duration,
+                stage_id=stage_id,
+                ticket_title=ticket_title,
+                skipped_nodes=skipped_nodes or None,
+            )
 
         validation = validate_node_output(node_id, report_body)
         if not validation.ok:
@@ -767,13 +867,14 @@ class MeetingRoomOrchestrator:
                     + "; ".join(validation.errors)
                 ),
                 ticket_title=ticket_title,
-                hitl_form_schema=binding.get("hitl_form_schema"),
+                hitl_form_schema=resolve_hitl_schema_for_gate(binding, dynamic_schema=None),
                 pending_delivery={
                     "node_id": node_id,
                     "report_body": report_body,
+                    "await_confirm": False,
                     "tokens_used": tokens_used,
-                    "duration_seconds": max(1, int(time.monotonic() - started)),
-                    "stage_id": int(dev.get("stage_id") or stage_id_for_node_id(node_id)),
+                    "duration_seconds": duration,
+                    "stage_id": stage_id,
                 },
                 intervention_kind="exception",
             )
@@ -785,14 +886,12 @@ class MeetingRoomOrchestrator:
                 **gate,
             }
 
-        stage_id = int(dev.get("stage_id") or stage_id_for_node_id(node_id))
-        duration = max(1, int(time.monotonic() - started))
-
         need_human_confirm = bool(binding.get("human_confirm"))
         if need_human_confirm:
             pending = {
                 "node_id": node_id,
                 "report_body": report_body,
+                "await_confirm": True,
                 "tokens_used": tokens_used,
                 "duration_seconds": duration,
                 "stage_id": stage_id,
@@ -804,7 +903,7 @@ class MeetingRoomOrchestrator:
                 node_id=node_id,
                 reason=f"{node_display_name(node_id)} 待确认总结，请填写表单后归档推进",
                 ticket_title=ticket_title,
-                hitl_form_schema=binding.get("hitl_form_schema"),
+                hitl_form_schema=resolve_hitl_schema_for_gate(binding, dynamic_schema=None),
                 pending_delivery=pending,
                 intervention_kind="result_confirm",
             )
