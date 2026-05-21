@@ -287,7 +287,18 @@ def history_to_chat_logs(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     logs: list[dict[str, Any]] = []
     for i, ev in enumerate(history):
         et = str(ev.get("event") or "")
-        if et in ("chat_message", "human_intervene", "room_opened", "system"):
+        if et in (
+            "chat_message",
+            "human_intervene",
+            "room_opened",
+            "system",
+            "delegation_started",
+            "delegation_finished",
+            "node_failed",
+            "hitl_approved",
+            "hitl_rejected",
+            "node_pending_confirm",
+        ):
             text = str(ev.get("text") or ev.get("message") or "").strip()
             if not text and et == "room_opened":
                 text = "会议室已开启"

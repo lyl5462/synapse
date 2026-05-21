@@ -4,8 +4,8 @@
 
 - **会议室全局**：host_llm_endpoint_key、worker_llm_endpoint_key、meeting_skill_id。
   小鲸独立配端点（能力优先），所有协作智能体共享另一端点。
-- **节点级覆盖**：`node_overrides[<node_id>]` 仍可覆盖 prompt_supplement / host /
-  worker / skill_ids / llm_endpoint_key（节点级 llm_endpoint_key 仅覆盖 worker）。
+- **节点级覆盖**：`node_overrides[<node_id>]` 可覆盖 prompt_supplement / host /
+  worker / llm_endpoint_key（节点级 llm_endpoint_key 仅覆盖 worker）。业务技能由 Profile 配置，不在此持久化。
 """
 
 from __future__ import annotations
@@ -82,7 +82,9 @@ def load_meeting_room_config() -> dict[str, Any]:
         data.get("meeting_skill_id"), DEFAULT_MEETING_SKILL_ID
     )
     overrides = data.get("node_overrides")
-    merged["node_overrides"] = overrides if isinstance(overrides, dict) else {}
+    merged["node_overrides"] = (
+        _strip_legacy_override_fields(overrides) if isinstance(overrides, dict) else {}
+    )
     return merged
 
 
@@ -92,7 +94,6 @@ _SAVABLE_OVERRIDE_KEYS = (
     "prompt_supplement",
     "host_profile_id",
     "worker_profile_ids",
-    "skill_ids",
     "llm_endpoint_key",
     "node_intent",
     "hitl_form_schema",
@@ -111,8 +112,23 @@ def _normalize_overrides(value: Any) -> dict[str, Any]:
             if key in ov:
                 entry[key] = ov[key]
         if entry:
+            entry.pop("skill_ids", None)
             cleaned[str(node_id)] = entry
     return cleaned
+
+
+def _strip_legacy_override_fields(overrides: dict[str, Any]) -> dict[str, Any]:
+    """读取时剔除已废弃字段，避免 API 继续暴露 skill_ids。"""
+    if not overrides:
+        return {}
+    out: dict[str, Any] = {}
+    for node_id, ov in overrides.items():
+        if not isinstance(ov, dict):
+            continue
+        entry = {k: v for k, v in ov.items() if k != "skill_ids"}
+        if entry:
+            out[str(node_id)] = entry
+    return out
 
 
 def save_meeting_room_config(payload: dict[str, Any]) -> dict[str, Any]:

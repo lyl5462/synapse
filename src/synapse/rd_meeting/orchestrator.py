@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from synapse.rd_meeting.artifacts import write_node_deliverables
 from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
 from synapse.rd_meeting.hitl_form import (
@@ -21,6 +22,7 @@ from synapse.rd_meeting.hitl_form import (
 )
 from synapse.rd_meeting.notifications import schedule_human_intervention_notify
 from synapse.rd_meeting.paths import archive_root, scope_dir
+from synapse.rd_meeting.phase import phase_prompt_hint, set_phase
 from synapse.rd_meeting.room_runtime import (
     append_history_event,
     load_room_state,
@@ -33,8 +35,8 @@ from synapse.rd_meeting.room_skill import (
     make_context,
 )
 from synapse.rd_meeting.runtime_context import runtime_context_for_binding
-from synapse.rd_meeting.userwork_sync import patch_userwork_summary
 from synapse.rd_meeting.user_context import drain_user_context_for_prompt
+from synapse.rd_meeting.userwork_sync import patch_userwork_summary
 from synapse.rd_meeting.validation import validate_node_output
 from synapse.rd_sop.manifest import (
     next_node_id,
@@ -143,6 +145,9 @@ def build_node_prompt(
         )
     if supplement:
         parts.append(f"\n## 运营补充\n{supplement}")
+    phase_hint = phase_prompt_hint(scope_id, human_confirm=bool(binding.get("human_confirm")))
+    if phase_hint:
+        parts.append(phase_hint)
     parts.append(
         "\n请按"
         "「拆分目标 → delegate Worker → 检查反馈契合度/真实性/准确性 → 多轮迭代 → 综合输出」"
@@ -443,6 +448,10 @@ class MeetingRoomOrchestrator:
     ) -> dict[str, Any]:
         """智能体显式输出 hitl-questionnaire 标记时进入人工门控。"""
         hitl_schema = resolve_hitl_schema_for_gate(binding, dynamic_schema=gate.schema)
+        phase = "result_gate" if gate.intervention_kind == "result_confirm" else "clarify_gate"
+        if gate.intervention_kind == "exception":
+            phase = "exception_gate"
+        set_phase(scope_id, phase)
         await_confirm = gate.await_confirm if gate.await_confirm is not None else False
         pending: dict[str, Any] | None = None
         if report_body.strip() or await_confirm:
@@ -591,19 +600,13 @@ class MeetingRoomOrchestrator:
             raise ValueError("node_output_validation_failed: " + "; ".join(validation.errors))
 
         stage_id = int(pending.get("stage_id") or stage_id_for_node_id(node_id))
-        artifact_path = write_archive_artifact(
-            sid,
-            stage_id,
-            node_id,
-            filename="result.md",
-            content=report_body,
-        )
-        artifacts = [
-            {
-                "name": artifact_path.name,
-                "relative_path": artifact_path.relative_to(scope_dir(sid)).as_posix(),
-            }
-        ]
+        set_phase(sid, "document")
+        artifacts = write_node_deliverables(sid, stage_id, node_id, report_body)
+        from synapse.rd_meeting.validation import validate_node_archive_files
+
+        file_val = validate_node_archive_files(sid, stage_id, node_id)
+        if not file_val.ok:
+            raise ValueError("node_archive_validation_failed: " + "; ".join(file_val.errors))
         tokens_used = int(pending.get("tokens_used") or 0)
         duration = int(pending.get("duration_seconds") or 0)
 
@@ -624,6 +627,7 @@ class MeetingRoomOrchestrator:
         rs = dict(rs)
         rs.pop("pending_delivery", None)
         rs.pop("hitl_form_schema", None)
+        set_phase(sid, "completed")
         save_room_state(sid, rs)
 
         append_history_event(
@@ -728,6 +732,7 @@ class MeetingRoomOrchestrator:
         room_state["node_metrics"] = nm
         rework = str(room_state.pop("rework_instruction", "") or "").strip()
         save_room_state(sid, room_state)
+        set_phase(sid, "running")
 
         use_dry = _dry_run_enabled() if dry_run is None else dry_run
         started = time.monotonic()
@@ -825,9 +830,15 @@ class MeetingRoomOrchestrator:
                         node_id=node_id,
                         reason=f"{node_display_name(node_id)} 执行异常，需人工介入：{err}",
                         ticket_title=ticket_title,
-                        hitl_form_schema=resolve_hitl_schema_for_gate(binding, dynamic_schema=None),
+                        hitl_form_schema=resolve_hitl_schema_for_gate(
+                            binding,
+                            dynamic_schema=None,
+                            reason=err,
+                            force_fallback=True,
+                        ),
                         intervention_kind="exception",
                     )
+                    set_phase(sid, "exception_gate")
                     return {
                         "status": "human_intervention",
                         "node_id": node_id,
@@ -881,7 +892,12 @@ class MeetingRoomOrchestrator:
                     + "; ".join(validation.errors)
                 ),
                 ticket_title=ticket_title,
-                hitl_form_schema=resolve_hitl_schema_for_gate(binding, dynamic_schema=None),
+                hitl_form_schema=resolve_hitl_schema_for_gate(
+                    binding,
+                    dynamic_schema=None,
+                    reason="; ".join(validation.errors),
+                    force_fallback=True,
+                ),
                 pending_delivery={
                     "node_id": node_id,
                     "report_body": report_body,
@@ -892,6 +908,7 @@ class MeetingRoomOrchestrator:
                 },
                 intervention_kind="exception",
             )
+            set_phase(sid, "exception_gate")
             return {
                 "status": "human_intervention",
                 "node_id": node_id,
@@ -902,6 +919,7 @@ class MeetingRoomOrchestrator:
 
         need_human_confirm = bool(binding.get("human_confirm"))
         if need_human_confirm:
+            set_phase(sid, "result_gate")
             pending = {
                 "node_id": node_id,
                 "report_body": report_body,
@@ -939,19 +957,7 @@ class MeetingRoomOrchestrator:
                 **gate,
             }
 
-        artifact_path = write_archive_artifact(
-            sid,
-            stage_id,
-            node_id,
-            filename="result.md",
-            content=report_body,
-        )
-        artifacts = [
-            {
-                "name": artifact_path.name,
-                "relative_path": artifact_path.relative_to(scope_dir(sid)).as_posix(),
-            }
-        ]
+        artifacts = write_node_deliverables(sid, stage_id, node_id, report_body)
         out = self.on_node_complete(
             scope_type=scope_type,
             scope_id=sid,
@@ -1009,7 +1015,13 @@ def schedule_run_node(
         finally:
             _running_tasks.pop(key, None)
 
-    task = asyncio.create_task(_runner())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("schedule_run_node: no event loop, skip background run for %s", key)
+        return key
+
+    task = loop.create_task(_runner())
     _running_tasks[key] = task
     return key
 

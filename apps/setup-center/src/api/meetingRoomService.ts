@@ -130,7 +130,6 @@ export interface MeetingRoomNodeOverride {
   prompt_supplement?: string;
   host_profile_id?: string;
   worker_profile_ids?: string[];
-  skill_ids?: string[];
   llm_endpoint_key?: string;
 }
 
@@ -174,7 +173,6 @@ export interface MeetingRoomNodeBinding {
   node_outputs?: string[];
   host_profile_id?: string;
   worker_profile_ids?: string[];
-  skill_ids?: string[];
   /** 节点级 worker 端点（覆盖会议室级 worker_llm_endpoint_key） */
   llm_endpoint_key?: string;
   host_llm_endpoint_key?: string;
@@ -248,6 +246,48 @@ export async function fetchMeetingRoomDetail(
 ): Promise<MeetingRoomDetail> {
   const base = synapseApiBase.replace(/\/$/, '');
   return apiGet<MeetingRoomDetail>(base, `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}`);
+}
+
+export interface MeetingRoomLivePayload {
+  room_id: string;
+  scope_id?: string;
+  scope_type?: MeetingRoomScopeType;
+  status?: string;
+  phase?: string;
+  run_in_progress?: boolean;
+  current_node_id?: string;
+  current_node_name?: string;
+  tokenConsumed?: number;
+  tokenBudget?: number;
+  stageDuration?: string;
+  agents_active?: { profile_id: string; role?: string; status?: string }[];
+  sub_agents?: {
+    agent_id?: string;
+    profile_id?: string;
+    name?: string;
+    status?: string;
+    iteration?: number;
+    tools_executed?: string[];
+    tools_total?: number;
+    elapsed_s?: number;
+    current_tool_summary?: string;
+  }[];
+  recent_history?: Record<string, unknown>[];
+  recent_chat?: MeetingRoomChatLogWire[];
+  intervention_kind?: string;
+  hitl_form_schema?: HitlFormSchema;
+  pending_delivery?: { report_body?: string; await_confirm?: boolean };
+}
+
+export async function fetchMeetingRoomLive(
+  synapseApiBase: string,
+  roomId: string,
+): Promise<MeetingRoomLivePayload> {
+  const base = synapseApiBase.replace(/\/$/, '');
+  return apiGet<MeetingRoomLivePayload>(
+    base,
+    `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/live`,
+  );
 }
 
 export async function openMeetingRoom(

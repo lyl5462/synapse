@@ -20,12 +20,14 @@ from synapse.rd_meeting.dev_status import (
     save_dev_status,
     should_list_in_meeting_rooms,
 )
+from synapse.rd_meeting.live import collect_live_sub_agents
 from synapse.rd_meeting.orchestrator import (
     MeetingRoomOrchestrator,
     is_room_run_in_progress,
     schedule_run_node,
 )
 from synapse.rd_meeting.paths import iter_work_order_directories, scope_dir
+from synapse.rd_meeting.phase import get_phase
 from synapse.rd_meeting.room_runtime import (
     append_history_event,
     build_meeting_summary_nodes,
@@ -101,7 +103,6 @@ class MeetingRoomService:
                     "prompt_supplement",
                     "host_profile_id",
                     "worker_profile_ids",
-                    "skill_ids",
                     "llm_endpoint_key",
                     "node_intent",
                     "hitl_form_schema",
@@ -188,6 +189,66 @@ class MeetingRoomService:
 
     def get_by_room_id(self, room_id: str) -> dict[str, Any] | None:
         return self.get_room_detail(room_id)
+
+    def get_room_live(
+        self,
+        room_id: str,
+        *,
+        agent_pool: Any | None = None,
+        history_limit: int = 40,
+    ) -> dict[str, Any] | None:
+        """轻量 live 快照：phase、委派进度、子 Agent 状态、近期 history（供 UI 轮询）。"""
+        detail = self.get_room_detail(room_id)
+        if detail is None:
+            return None
+        scope_id = str(detail.get("scope_id") or "")
+        room_state = detail.get("room_state") if isinstance(detail.get("room_state"), dict) else {}
+        history = read_history(scope_id, limit=history_limit) if scope_id else []
+
+        orchestrator = None
+        try:
+            from synapse.main import _orchestrator
+
+            orchestrator = _orchestrator
+        except (ImportError, AttributeError):
+            pass
+        if orchestrator is None and agent_pool is not None:
+            orchestrator = getattr(agent_pool, "orchestrator", None)
+
+        host_session_id = f"rd_meeting:{room_id.strip()}:host"
+        sub_agents: list[dict[str, Any]] = []
+        if orchestrator is not None:
+            getter = getattr(orchestrator, "get_sub_agent_states", None)
+            if callable(getter):
+                sub_agents = list(getter(host_session_id) or [])
+            if not sub_agents:
+                sub_agents = collect_live_sub_agents(orchestrator, host_session_id)
+
+        agents_active = (
+            room_state.get("agents_active")
+            if isinstance(room_state.get("agents_active"), list)
+            else []
+        )
+        return {
+            "room_id": room_id,
+            "scope_id": scope_id,
+            "scope_type": detail.get("scope_type"),
+            "status": detail.get("status") or room_state.get("status"),
+            "phase": get_phase(scope_id) if scope_id else "idle",
+            "run_in_progress": is_room_run_in_progress(room_id),
+            "current_node_id": detail.get("current_node_id"),
+            "current_node_name": detail.get("current_node_name"),
+            "tokenConsumed": detail.get("tokenConsumed"),
+            "tokenBudget": detail.get("tokenBudget"),
+            "stageDuration": detail.get("stageDuration"),
+            "agents_active": agents_active,
+            "sub_agents": sub_agents,
+            "recent_history": history,
+            "recent_chat": history_to_chat_logs(history),
+            "intervention_kind": room_state.get("intervention_kind"),
+            "hitl_form_schema": room_state.get("hitl_form_schema"),
+            "pending_delivery": room_state.get("pending_delivery"),
+        }
 
     def get_room_detail(self, room_id: str) -> dict[str, Any] | None:
         rid = (room_id or "").strip()
@@ -500,9 +561,7 @@ class MeetingRoomService:
         comment = ""
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped.lower().startswith("comment:"):
-                comment = stripped.split(":", 1)[-1].strip()
-            elif stripped.startswith("补充说明:"):
+            if stripped.lower().startswith("comment:") or stripped.startswith("补充说明:"):
                 comment = stripped.split(":", 1)[-1].strip()
 
         if "decision: reject" in lower or "decision:reject" in lower:

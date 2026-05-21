@@ -144,8 +144,10 @@ def resolve_hitl_schema_for_gate(
     binding: dict[str, Any],
     *,
     dynamic_schema: dict[str, Any] | None,
+    reason: str = "",
+    force_fallback: bool = False,
 ) -> dict[str, Any] | None:
-    """门控展示用 schema：智能体动态问卷优先，否则节点绑定默认。"""
+    """门控展示用 schema：智能体动态问卷优先，否则节点绑定默认或异常兜底。"""
     if dynamic_schema:
         return dynamic_schema
     preset = binding.get("hitl_form_schema")
@@ -154,6 +156,8 @@ def resolve_hitl_schema_for_gate(
     node_id = str(binding.get("node_id") or "")
     if node_id and binding.get("human_confirm"):
         return default_hitl_form_schema(node_id)
+    if force_fallback and node_id:
+        return normalize_hitl_schema(fallback_exception_hitl_schema(node_id, reason=reason))
     return None
 
 def _option_style_for(qtype: QuestionType) -> OptionStyle:
@@ -334,6 +338,57 @@ def normalize_hitl_schema(schema: dict[str, Any] | None) -> dict[str, Any] | Non
         out["version"] = QUESTIONNAIRE_VERSION
     out["questions"] = attach_question_progress(list(questions))
     return out
+
+
+def fallback_exception_hitl_schema(
+    node_id: str,
+    *,
+    reason: str = "",
+) -> dict[str, Any]:
+    """异常/委派失败等场景的兜底问卷（P0/P3）。"""
+    name = node_display_name(node_id)
+    reason_txt = (reason or "执行异常，需人工裁决").strip()[:500]
+    questions = attach_question_progress(
+        [
+            build_question(
+                qid="situation",
+                qtype="textarea",
+                title="当前情况",
+                context=reason_txt,
+                input_enabled=True,
+                required=False,
+            ),
+            build_question(
+                qid="decision",
+                qtype="single",
+                title="下一步",
+                context="请选择如何处理本节点。",
+                options=_value_options(
+                    [
+                        ("retry", "重试 — 按当前上下文继续执行"),
+                        ("rework", "返工 — 按补充说明重新跑本节点"),
+                        ("skip", "跳过 — 标记风险并推进（慎用）"),
+                    ]
+                ),
+                required=True,
+            ),
+            build_question(
+                qid="comment",
+                qtype="textarea",
+                title="补充说明",
+                context="可选：给智能体的具体指令。",
+                required=False,
+            ),
+        ]
+    )
+    return {
+        "type": QUESTIONNAIRE_TYPE,
+        "version": QUESTIONNAIRE_VERSION,
+        "title": f"{name} — 异常人工介入",
+        "description": reason_txt,
+        "render": {"layout": "stepped", "showOverallProgress": True, "accent": "violet", "animate": True},
+        "questions": questions,
+    }
 
 
 def resolve_hitl_form_schema(

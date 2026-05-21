@@ -105,6 +105,50 @@ def patch_userwork_summary(
         return True
 
 
+def load_scope_work_order_context(
+    scope_type: ScopeType,
+    scope_id: str,
+) -> dict[str, str]:
+    """从 userwork 快照读取工单上下文（P1 运行时注入）。"""
+    row = _scope_row(scope_type, scope_id)
+    if not row:
+        return {}
+    out: dict[str, str] = {
+        "demand_title": str(row.get("demand_title") or row.get("task_title") or ""),
+        "demand_desc": str(row.get("demand_desc") or row.get("comments") or ""),
+        "demand_impact": str(row.get("demand_impact") or ""),
+        "product_version_code": str(row.get("product_version_code") or row.get("branch") or ""),
+        "repo_url": str(row.get("repo_url") or row.get("branch") or ""),
+    }
+    if scope_type == "task":
+        out["task_title"] = str(row.get("task_title") or "")
+        out["task_no"] = str(row.get("task_no") or scope_id)
+    else:
+        out["demand_no"] = str(row.get("demand_no") or scope_id)
+    return {k: v for k, v in out.items() if v}
+
+
+def _scope_row(scope_type: ScopeType, scope_id: str) -> dict[str, Any] | None:
+    from synapse.api.routes.dev_iwhalecloud import _snapshot_norm_id
+
+    sid = _snapshot_norm_id(scope_id)
+    for demand in _load_userwork_list():
+        if scope_type == "demand":
+            if _snapshot_norm_id(demand.get("demand_no")) == sid:
+                return demand
+            continue
+        owned = demand.get("owned_work_items")
+        if not isinstance(owned, list):
+            continue
+        for task in owned:
+            if isinstance(task, dict) and _snapshot_norm_id(task.get("task_no")) == sid:
+                merged = dict(demand)
+                merged.update(task)
+                merged["scope_type"] = "task"
+                return merged
+    return None
+
+
 def build_title_index() -> dict[str, dict[str, str]]:
     """scope_id → { title, branch?, scope_type }，从 userwork 只读构建。"""
     index: dict[str, dict[str, str]] = {}

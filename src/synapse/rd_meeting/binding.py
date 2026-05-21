@@ -57,10 +57,6 @@ def _merge_binding(base: dict[str, Any], override: dict[str, Any]) -> dict[str, 
         w = override["worker_profile_ids"]
         if isinstance(w, list):
             out["worker_profile_ids"] = [str(x).strip() for x in w if str(x).strip()]
-    if override.get("skill_ids"):
-        s = override["skill_ids"]
-        if isinstance(s, list):
-            out["skill_ids"] = [str(x).strip() for x in s if str(x).strip()]
     if override.get("llm_endpoint_key"):
         out["llm_endpoint_key"] = str(override["llm_endpoint_key"]).strip()
     if override.get("prompt_supplement") is not None:

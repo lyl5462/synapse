@@ -3,12 +3,14 @@ import { ConfigProvider, theme, Avatar, Modal, Button, Input, Tag, Badge, Toolti
 import {
   approveAndResumeMeetingNode,
   fetchMeetingRoomDetail,
+  fetchMeetingRoomLive,
   fetchMeetingRooms,
   interveneMeetingRoom,
   runMeetingRoomNode,
   type MeetingRoomChatLogWire,
   type MeetingRoomDetail,
   type MeetingRoomListItem,
+  type MeetingRoomLivePayload,
 } from '../../../api/meetingRoomService';
 import { consumeMeetingRoomFocus } from '../../../rd-meeting/focus';
 import { MeetingRoomConfigDrawer } from './MeetingRoomConfigDrawer';
@@ -93,8 +95,68 @@ interface MeetingRoom {
   agents: RoomAgent[];
   logs: LogEntry[];
   brief: string;
+  phase?: string;
+  runInProgress?: boolean;
   hitlFormSchema?: HitlFormSchema | null;
   hitlPendingSummary?: string | null;
+}
+
+const HOST_AGENT: RoomAgent = {
+  id: 'host',
+  name: '小鲸',
+  role: '会议主持',
+  avatarColor: 'bg-violet-500',
+  icon: <Bot className="w-3 h-3" />,
+  status: 'processing',
+  currentAction: '主持本节点',
+};
+
+function mapLiveAgents(live: MeetingRoomLivePayload): RoomAgent[] {
+  const workers: RoomAgent[] = (live.sub_agents || []).map((s, i) => {
+    const pid = String(s.profile_id || s.agent_id || `worker-${i}`);
+    const st = String(s.status || 'idle');
+    const uiStatus: RoomAgent['status'] =
+      st === 'running' || st === 'delegating' ? 'processing' : st === 'failed' ? 'error' : 'idle';
+    return {
+      id: pid,
+      name: String(s.name || pid),
+      role: '协作智能体',
+      avatarColor: 'bg-sky-500',
+      icon: <Cpu className="w-3 h-3" />,
+      status: uiStatus,
+      currentAction: String(s.current_tool_summary || s.status || ''),
+    };
+  });
+  const hostStatus: RoomAgent['status'] = live.run_in_progress ? 'processing' : 'idle';
+  return [{ ...HOST_AGENT, status: hostStatus }, ...workers];
+}
+
+function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): MeetingRoom {
+  const logs =
+    live.recent_chat && live.recent_chat.length > 0
+      ? live.recent_chat.map(mapChatWireToLog)
+      : room.logs;
+  const agents = mapLiveAgents(live);
+  const uiStatus = live.status as MeetingRoom['status'] | undefined;
+  return {
+    ...room,
+    status: uiStatus && ['processing', 'human_intervention', 'completed'].includes(uiStatus)
+      ? uiStatus
+      : room.status,
+    phase: live.phase || room.phase,
+    runInProgress: live.run_in_progress ?? room.runInProgress,
+    logs,
+    agents: agents.length > 1 ? agents : room.agents.length ? room.agents : agents,
+    tokenConsumed: live.tokenConsumed ?? room.tokenConsumed,
+    tokenBudget: live.tokenBudget ?? room.tokenBudget,
+    stageDuration: live.stageDuration || room.stageDuration,
+    hitlFormSchema: (live.hitl_form_schema as HitlFormSchema | undefined) ?? room.hitlFormSchema,
+    hitlPendingSummary:
+      live.pending_delivery?.report_body ?? room.hitlPendingSummary ?? null,
+    brief: live.phase
+      ? `${room.brief.split(' · ')[0] || room.brief} · ${live.phase}`
+      : room.brief,
+  };
 }
 
 function mapChatWireToLog(w: MeetingRoomChatLogWire): LogEntry {
@@ -1095,6 +1157,25 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
   useEffect(() => {
     void reloadRooms();
   }, [reloadRooms]);
+
+  useEffect(() => {
+    if (!dialogOpen || !activeRoom?.id) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    const roomId = activeRoom.id;
+    const poll = () => {
+      void fetchMeetingRoomLive(base, roomId)
+        .then((live) => {
+          setActiveRoom((prev) => (prev && prev.id === roomId ? applyLivePatch(prev, live) : prev));
+        })
+        .catch(() => {
+          /* 轮询失败静默，避免打断会中操作 */
+        });
+    };
+    poll();
+    const timer = window.setInterval(poll, 3000);
+    return () => window.clearInterval(timer);
+  }, [dialogOpen, activeRoom?.id, synapseApiBase]);
 
   useEffect(() => {
     const focus = consumeMeetingRoomFocus();

@@ -89,6 +89,16 @@ async def get_meeting_room(room_id: str) -> dict:
     return success_response(item)
 
 
+@router.get("/api/dev/meeting-rooms/{room_id}/live")
+async def get_meeting_room_live(room_id: str, request: Request) -> dict:
+    """会议室 live 快照：委派进度、子 Agent、phase、近期聊天事件（轮询）。"""
+    pool = getattr(request.app.state, "agent_pool", None)
+    item = _service.get_room_live(room_id, agent_pool=pool)
+    if item is None:
+        return error_response(404, "meeting_room_not_found")
+    return success_response(item)
+
+
 @router.post("/api/dev/meeting-rooms/{room_id}/intervene")
 async def intervene_meeting(room_id: str, body: InterveneBody, request: Request) -> dict:
     pool = getattr(request.app.state, "agent_pool", None)

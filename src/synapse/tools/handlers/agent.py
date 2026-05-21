@@ -97,7 +97,25 @@ class AgentToolHandler:
         if reason:
             isolated_message += f"\n[委派原因] {reason}"
 
+        session_id = (
+            getattr(session, "id", None)
+            or getattr(session, "session_id", None)
+            or getattr(self.agent, "_current_session_id", None)
+            or ""
+        )
+        started = time.monotonic()
         try:
+            from synapse.rd_meeting.live import (
+                record_delegation_finished,
+                record_delegation_started,
+            )
+
+            record_delegation_started(
+                str(session_id),
+                from_agent=current_agent,
+                to_agent=agent_id,
+                reason=reason,
+            )
             result = await orchestrator.delegate(
                 session=session,
                 from_agent=current_agent,
@@ -105,9 +123,37 @@ class AgentToolHandler:
                 message=isolated_message,
                 reason=reason,
             )
+            ok = not str(result).strip().startswith("❌")
+            record_delegation_finished(
+                str(session_id),
+                from_agent=current_agent,
+                to_agent=agent_id,
+                ok=ok,
+                summary=str(result)[:500],
+                elapsed_s=time.monotonic() - started,
+            )
             return str(result)
         except Exception as e:
             logger.error(f"[AgentToolHandler] Delegation failed: {e}", exc_info=True)
+            try:
+                from synapse.rd_meeting.gate import schedule_delegation_failure_gate
+                from synapse.rd_meeting.live import record_delegation_finished
+
+                record_delegation_finished(
+                    str(session_id),
+                    from_agent=current_agent,
+                    to_agent=agent_id,
+                    ok=False,
+                    summary=str(e)[:500],
+                    elapsed_s=time.monotonic() - started,
+                )
+                schedule_delegation_failure_gate(
+                    str(session_id),
+                    to_agent=agent_id,
+                    error_text=str(e),
+                )
+            except Exception as live_exc:
+                logger.debug("rd_meeting delegation live hooks: %s", live_exc)
             return f"❌ Delegation to {agent_id} failed: {e}"
 
     # ------------------------------------------------------------------
@@ -259,8 +305,26 @@ class AgentToolHandler:
                 f"[AgentToolHandler] Parallel delegation: {current_agent} -> {aid} | reason={rsn}"
             )
 
+            session_id = (
+                getattr(session, "id", None)
+                or getattr(session, "session_id", None)
+                or getattr(self.agent, "_current_session_id", None)
+                or ""
+            )
+            started = time.monotonic()
             isolated_ctx = None
             try:
+                from synapse.rd_meeting.live import (
+                    record_delegation_finished,
+                    record_delegation_started,
+                )
+
+                record_delegation_started(
+                    str(session_id),
+                    from_agent=current_agent,
+                    to_agent=aid,
+                    reason=rsn,
+                )
                 if parent_browser and parent_browser.is_ready:
                     try:
                         isolated_ctx = await parent_browser.create_isolated_context()
@@ -275,9 +339,37 @@ class AgentToolHandler:
                     reason=rsn,
                     isolated_browser=isolated_ctx,
                 )
+                ok = not str(result).strip().startswith("❌")
+                record_delegation_finished(
+                    str(session_id),
+                    from_agent=current_agent,
+                    to_agent=aid,
+                    ok=ok,
+                    summary=str(result)[:500],
+                    elapsed_s=time.monotonic() - started,
+                )
                 return display, str(result)
             except BaseException as e:
                 logger.error(f"[AgentToolHandler] Parallel delegation to {aid} failed: {e}")
+                try:
+                    from synapse.rd_meeting.gate import schedule_delegation_failure_gate
+                    from synapse.rd_meeting.live import record_delegation_finished
+
+                    record_delegation_finished(
+                        str(session_id),
+                        from_agent=current_agent,
+                        to_agent=aid,
+                        ok=False,
+                        summary=str(e)[:500],
+                        elapsed_s=time.monotonic() - started,
+                    )
+                    schedule_delegation_failure_gate(
+                        str(session_id),
+                        to_agent=aid,
+                        error_text=str(e),
+                    )
+                except Exception as live_exc:
+                    logger.debug("rd_meeting parallel delegation live hooks: %s", live_exc)
                 return display, f"❌ Failed: {e}"
             finally:
                 if isolated_ctx and isolated_ctx is not parent_browser:
