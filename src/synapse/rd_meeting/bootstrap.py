@@ -7,7 +7,8 @@ from typing import Any, Literal
 from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, format_host_prompt_chat_display
 from synapse.rd_meeting.init_context import format_node_init_log
 from synapse.rd_meeting.participants import build_meeting_participants
-from synapse.rd_meeting.pipeline_chat import format_node_init_chat
+from synapse.rd_meeting.flow_log import flow_log_to_text
+from synapse.rd_meeting.pipeline_chat import format_host_prompt_step_chat, format_node_init_chat
 from synapse.rd_meeting.room_runtime import append_history_event
 
 ScopeType = Literal["demand", "task"]
@@ -47,9 +48,7 @@ def append_node_init_chat(
             "scope_type": scope_type,
             "scope_id": scope_id,
             "text": text,
-            "chat_text": format_node_init_chat(
-                scope_type, scope_id, node_id=node_id, binding=binding
-            ),
+            "chat_text": format_node_init_chat(),
             "agent_id": host_id,
             "log_type": "info",
             "participants": participants,
@@ -76,7 +75,7 @@ def append_host_prompt_chat(
         binding=binding,
         ticket_title=ticket_title,
     )
-    display = format_host_prompt_chat_display(bundle)
+    chat_text = format_host_prompt_chat_display(bundle)
     host_id = str(binding.get("host_profile_id") or "default")
     append_history_event(
         scope_id,
@@ -86,16 +85,19 @@ def append_host_prompt_chat(
             "node_id": node_id,
             "scope_type": scope_type,
             "scope_id": scope_id,
-            "text": display,
-            "chat_text": display,
+            "text": flow_log_to_text(
+                {
+                    "step": 3,
+                    "message": "主控提示词组装完成",
+                    "meeting_prompt_chars": len(str(bundle.get("meeting_prompt") or "")),
+                    "dynamic_chars": len(str(bundle.get("dynamic_context") or "")),
+                    "skill_id": str(bundle.get("meeting_skill_id") or ""),
+                }
+            ),
+            "chat_text": chat_text,
             "agent_id": host_id,
             "log_type": "info",
             "flow_stage": "主控提示词组装",
-            "prompt_stats": {
-                "system_chars": len(str(bundle.get("system_prompt_suffix") or "")),
-                "user_chars": len(str(bundle.get("user_prompt") or "")),
-                "skill_id": str(bundle.get("meeting_skill_id") or ""),
-            },
         },
     )
-    return display
+    return chat_text

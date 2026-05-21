@@ -1,4 +1,8 @@
-"""Pipeline 各步骤在协作会议流中的可读展示（chat_text）。"""
+"""Pipeline 各步骤在协作会议流中的可读展示（chat_text）。
+
+``chat_text`` 仅描述**流程步骤**完成情况；实例数据在 ``text``（JSON）或快照中。
+大模型 / 协作智能体的具体产出由其它事件（如 ``work_plan_submitted``、``delegation_*``）展示。
+"""
 
 from __future__ import annotations
 
@@ -6,153 +10,83 @@ import json
 from typing import Any
 
 from synapse.rd_meeting.flow_log import flow_log_to_text
-from synapse.rd_meeting.dynamic_prompt import build_dynamic_meeting_context
-from synapse.rd_meeting.init_context import (
-    build_node_init_log_data,
-    normalize_node_init_log_data,
+
+# --- 步骤完成说明（流程层，不含工单/产品等实例字段）---
+
+STEP_OPEN_SUMMARY = (
+    "【步骤 1/3】开启会议室\n\n"
+    "已为当前工单创建研发会议室并同步流程状态，下一步将进行节点初始化。"
+)
+
+STEP_NODE_INIT_SUMMARY = (
+    "【步骤 2/3】节点初始化\n\n"
+    "已解析本节点绑定关系，并加载工单 / 产品 / 系统上下文，供后续主控提示词注入。"
+)
+
+STEP_HOST_PROMPT_SUMMARY = (
+    "【步骤 3/3】主控提示词组装\n\n"
+    "已将会诊室 SKILL 与四段式动态上下文写入小鲸系统提示；"
+    "待机后可触发「执行当前节点」开始主控推理。"
+)
+
+PHASE_WAITING_SUMMARY = (
+    "【流程待机】\n\n"
+    "会议室准备流程已完成，等待执行当前 SOP 节点或人工触发。"
+)
+
+STEP_RUN_NODE_SCHEDULE_SUMMARY = (
+    "【调度执行】\n\n"
+    "已提交当前 SOP 节点后台执行，主控将开始推理并按计划委派协作智能体。"
 )
 
 
-def format_room_opened_chat(
-    *,
-    room_id: str,
-    scope_id: str,
-    userwork_updates: dict[str, str] | None = None,
-    current_node_id: str = "",
-    sop_display: str = "",
-) -> str:
-    """【步骤 1/3】开启会议室。"""
-    lines = [
-        "【步骤 1/3】开启会议室",
-        "",
-        f"- 会议室 ID：`{room_id or '—'}`",
-        f"- 工单范围：`{scope_id or '—'}`",
-    ]
-    if current_node_id and current_node_id not in ("pending", ""):
-        lines.append(f"- 当前节点：`{current_node_id}`" + (f"（{sop_display}）" if sop_display else ""))
-    updates = userwork_updates or {}
-    if updates:
-        lines.append("- userwork 已回写：")
-        for k, v in updates.items():
-            if v is not None and str(v).strip():
-                lines.append(f"  - {k}：`{v}`")
-    else:
-        lines.append("- userwork：本次未同步（或无可写字段）")
-    lines.append("")
-    lines.append("会议室目录与流程状态已就绪，进入节点初始化。")
-    return "\n".join(lines)
+def format_room_opened_chat() -> str:
+    """步骤 1：开启会议室（流程说明）。"""
+    return STEP_OPEN_SUMMARY
 
 
-def format_node_init_chat(
-    scope_type: str,
-    scope_id: str,
-    *,
-    node_id: str = "",
-    binding: dict | None = None,
-) -> str:
-    """【步骤 2/3】节点初始化（二/三/四段预览）。"""
-    data = build_node_init_log_data(scope_type, scope_id, node_id=node_id)  # type: ignore[arg-type]
-    bind = binding or {"node_id": node_id, "stage_id": 0, "node_intent": ""}
-    sections = build_dynamic_meeting_context(
-        binding=bind,
-        init_data=data,
-        scope_type=scope_type,  # type: ignore[arg-type]
-        scope_id=scope_id,
-    )
-    # 仅展示继承段（二～四）
-    tail = sections
-    for marker in ("## 二、", "## 三、", "## 四、"):
-        idx = tail.find(marker)
-        if idx >= 0:
-            tail = tail[idx:]
-            break
-    return "\n".join(
-        [
-            "【步骤 2/3】节点初始化",
-            "",
-            "已加载 userwork 工单上下文，并按 prod 完成统一服务产品定位（以下为四段式中的二～四段）：",
-            "",
-            tail.strip(),
-        ]
-    ).strip()
+def format_node_init_chat() -> str:
+    """步骤 2：节点初始化（流程说明）。"""
+    return STEP_NODE_INIT_SUMMARY
 
 
-def format_node_init_chat_from_event(event: dict[str, Any]) -> str:
-    """从 history 事件还原步骤 2 展示。"""
-    payload = event.get("payload")
-    if isinstance(payload, dict) and "order" in payload:
-        data = normalize_node_init_log_data(payload)
-    else:
-        scope_type = str(event.get("scope_type") or "demand")
-        scope_id = str(event.get("scope_id") or "").strip()
-        node_id = str(event.get("node_id") or "").strip()
-        if scope_id:
-            data = build_node_init_log_data(scope_type, scope_id, node_id=node_id)  # type: ignore[arg-type]
-        else:
-            text = str(event.get("text") or "").strip()
-            if text.startswith("{"):
-                try:
-                    parsed = json.loads(text)
-                    data = normalize_node_init_log_data(parsed) if isinstance(parsed, dict) else {}
-                except json.JSONDecodeError:
-                    return text
-            else:
-                return text or "【步骤 2/3】节点初始化"
-    return format_node_init_chat(
-        str(data.get("order", {}).get("scope_type") or event.get("scope_type") or "demand"),
-        str(data.get("order", {}).get("scope_id") or event.get("scope_id") or ""),
-        node_id=str(event.get("node_id") or ""),
-    )
+def format_host_prompt_step_chat() -> str:
+    """步骤 3：主控提示词组装（流程说明）。"""
+    return STEP_HOST_PROMPT_SUMMARY
 
 
-def format_pipeline_transition_chat(event: dict[str, Any]) -> str:
-    from_label = str(event.get("from_step_label") or event.get("from_step") or "").strip()
-    to_label = str(event.get("to_step_label") or event.get("to_step") or "").strip()
-    reason = str(event.get("reason") or "").strip()
-    lines = ["**流程迁移**", f"`{from_label}` → `{to_label}`"]
-    if reason:
-        lines.append(f"原因：{reason}")
-    return "\n".join(lines)
+def format_phase_change_chat(*, to_phase: str) -> str | None:
+    """阶段切换：仅对需在会议流展示的阶段返回文案。"""
+    phase = (to_phase or "").strip().lower()
+    if phase == "waiting":
+        return PHASE_WAITING_SUMMARY
+    return None
+
+
+def format_run_node_scheduled_chat() -> str:
+    """可选步骤：调度节点执行。"""
+    return STEP_RUN_NODE_SCHEDULE_SUMMARY
 
 
 def format_event_chat_display(event: dict[str, Any]) -> str:
-    """将 history 事件转为协作会议流展示文案（优先完整 Markdown）。"""
+    """将 history 事件转为协作会议流展示文案（优先 ``chat_text``）。"""
     explicit = str(event.get("chat_text") or "").strip()
     if explicit:
         return explicit
 
     et = str(event.get("event") or "").strip()
     if et == "room_opened":
-        text = str(event.get("text") or "").strip()
-        updates: dict[str, str] = {}
-        if text.startswith("{"):
-            try:
-                raw = json.loads(text)
-                if isinstance(raw, dict):
-                    updates = {k: str(v) for k, v in raw.items()}
-            except json.JSONDecodeError:
-                pass
-        if not updates and isinstance(event.get("userwork_updates"), dict):
-            updates = {k: str(v) for k, v in event["userwork_updates"].items()}
-        return format_room_opened_chat(
-            room_id=str(event.get("room_id") or ""),
-            scope_id=str(event.get("scope_id") or ""),
-            userwork_updates=updates,
-            current_node_id=str(event.get("current_node_id") or ""),
-            sop_display=str(event.get("sop_display") or updates.get("sop_node") or ""),
-        )
+        return format_room_opened_chat()
     if et == "node_init":
-        return format_node_init_chat_from_event(event)
+        return format_node_init_chat()
     if et == "host_prompt_assembled":
-        return str(event.get("text") or "").strip() or "【步骤 3/3】主控提示词已组装"
-    if et == "pipeline_transition":
-        payload = event.get("payload")
-        if isinstance(payload, dict):
-            merged = {**event, **payload}
-            return format_pipeline_transition_chat(merged)
-        return format_pipeline_transition_chat(event)
+        return format_host_prompt_step_chat()
+    if et == "phase_change":
+        return format_phase_change_chat(to_phase=str(event.get("to_phase") or "")) or ""
     if et == "work_plan_submitted":
         return str(event.get("text") or "").strip()
+    if et == "run_node_scheduled":
+        return format_run_node_scheduled_chat()
 
     text = str(event.get("text") or event.get("message") or "").strip()
     if text and not text.startswith("{"):
@@ -164,11 +98,5 @@ def format_event_chat_display(event: dict[str, Any]) -> str:
             return text[:8000]
         if isinstance(obj, dict) and obj.get("message"):
             return str(obj["message"])
-        if et == "node_init" and isinstance(obj, dict) and "order" in obj:
-            return format_node_init_chat(
-                str(event.get("scope_type") or "demand"),
-                str(event.get("scope_id") or ""),
-                node_id=str(event.get("node_id") or ""),
-            )
         return flow_log_to_text(obj)
     return text

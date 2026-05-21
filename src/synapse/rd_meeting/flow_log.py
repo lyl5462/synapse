@@ -34,7 +34,6 @@ EVENT_FLOW_STAGE: dict[str, str] = {
     "hitl_dynamic": "动态问卷",
     "user_context": "用户上下文",
     "phase_change": "阶段切换",
-    "pipeline_transition": "流程迁移",
     "system": "系统",
     "chat_message": "对话",
 }
@@ -67,7 +66,7 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "node_completed",
         "node_skipped",
         "phase_change",
-        "pipeline_transition",
+        "run_node_scheduled",
     }
 )
 
@@ -182,14 +181,6 @@ def _generic_event_text(event: dict[str, Any]) -> str:
     payload = event.get("payload")
     if isinstance(payload, dict):
         return flow_log_to_text(payload)
-    if et == "pipeline_transition":
-        return flow_log_to_text(
-            {
-                k: event.get(k)
-                for k in ("from_step", "to_step", "reason")
-                if event.get(k) is not None
-            }
-        )
     if et == "human_intervene":
         content = text if text and not is_flow_log_formatted(text) else ""
         return flow_log_to_text(

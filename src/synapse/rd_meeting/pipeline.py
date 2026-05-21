@@ -13,8 +13,12 @@ from typing import Any, Callable, Literal
 
 from synapse.rd_meeting.bootstrap import append_host_prompt_chat, append_node_init_chat
 from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, save_host_prompt_snapshot
-from synapse.rd_meeting.pipeline_chat import format_room_opened_chat
 from synapse.rd_meeting.binding import resolve_node_binding
+from synapse.rd_meeting.pipeline_chat import (
+    format_phase_change_chat,
+    format_room_opened_chat,
+    format_run_node_scheduled_chat,
+)
 from synapse.rd_meeting.dev_status import (
     ensure_room_id,
     load_dev_status,
@@ -205,41 +209,28 @@ class MeetingPipeline:
             rs = dict(load_room_state(self.scope_id) or {})
             rs["phase"] = phase
             save_room_state(self.scope_id, rs)
-            append_history_event(
+            host_id = _host_profile_id_for_scope(
                 self.scope_id,
-                {
-                    "event": "phase_change",
-                    "room_id": self.room_id,
-                    "from_phase": prev,
-                    "to_phase": phase,
-                    "log_type": "info",
-                    "agent_id": "system",
-                    "flow_stage": "阶段切换",
-                },
+                node_id=self.current_node_id,
+                scope_type=str(self._data.get("scope_type") or "demand"),
             )
+            row: dict[str, Any] = {
+                "event": "phase_change",
+                "room_id": self.room_id,
+                "from_phase": prev,
+                "to_phase": phase,
+                "log_type": "info",
+                "agent_id": host_id,
+                "flow_stage": "阶段切换",
+            }
+            phase_chat = format_phase_change_chat(to_phase=phase)
+            if phase_chat:
+                row["chat_text"] = phase_chat
+            append_history_event(self.scope_id, row)
 
     def _log_flow_transition(self, from_step: str, to_step: str, reason: str) -> None:
-        payload = {
-            "from_step": from_step,
-            "from_step_label": FLOW_STEP_LABEL.get(from_step, from_step),
-            "to_step": to_step,
-            "to_step_label": FLOW_STEP_LABEL.get(to_step, to_step),
-            "reason": reason or "",
-        }
-        append_history_event(
-            self.scope_id,
-            {
-                "event": "pipeline_transition",
-                "room_id": self.room_id,
-                "payload": payload,
-                "from_step": from_step,
-                "to_step": to_step,
-                "reason": reason,
-                "log_type": "info",
-                "agent_id": "system",
-                "flow_stage": "流程迁移",
-            },
-        )
+        """仅更新 pipeline 内存状态；不再写入 ``pipeline_transition`` 会议流事件。"""
+        _ = from_step, to_step, reason
 
     @classmethod
     def load(cls, scope_id: str) -> MeetingPipeline | None:
@@ -310,6 +301,27 @@ class PipelineRunContext:
 
 
 StepHandler = Callable[[MeetingPipeline, PipelineRunContext], None]
+
+
+def _host_profile_id_for_scope(
+    scope_id: str,
+    *,
+    node_id: str = "",
+    scope_type: ScopeType = "demand",
+) -> str:
+    """当前节点 binding 中的主控 profile（默认小鲸 ``default``）。"""
+    nid = (node_id or "").strip()
+    if not nid or nid == "pending":
+        dev = load_dev_status(scope_id)
+        if dev:
+            nid = str(dev.get("current_node_id") or "").strip()
+    if not nid or nid == "pending":
+        nid = "req_clarify"
+    try:
+        binding = resolve_node_binding(nid, scope_type=scope_type, scope_id=scope_id)
+        return str(binding.get("host_profile_id") or "default").strip() or "default"
+    except Exception:
+        return "default"
 
 
 def _resolve_open_node(
@@ -408,6 +420,13 @@ def _step_open_meeting(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
 
     save_prod_catalog_to_pipeline(sid, catalog_rows, selected_prod=prod)
 
+    open_binding = resolve_node_binding(
+        node_id,
+        scope_type=scope_type,
+        scope_id=sid,
+    )
+    host_id = str(open_binding.get("host_profile_id") or "default").strip() or "default"
+
     append_history_event(
         sid,
         {
@@ -417,16 +436,10 @@ def _step_open_meeting(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
             "current_node_id": node_id,
             "sop_display": sop_display,
             "userwork_updates": userwork_updates,
-            "chat_text": format_room_opened_chat(
-                room_id=room_id,
-                scope_id=sid,
-                userwork_updates=userwork_updates,
-                current_node_id=node_id,
-                sop_display=sop_display,
-            ),
+            "chat_text": format_room_opened_chat(),
             "flow_stage": "开启会议室",
             "log_type": "info",
-            "agent_id": "system",
+            "agent_id": host_id,
         },
     )
 
@@ -564,6 +577,11 @@ def _step_run_node_schedule(pipe: MeetingPipeline, ctx: PipelineRunContext) -> N
 
     sid = ctx.scope_id
     room_id = pipe.room_id
+    host_id = _host_profile_id_for_scope(
+        sid,
+        node_id=pipe.current_node_id,
+        scope_type=ctx.scope_type,
+    )
     append_history_event(
         sid,
         {
@@ -572,8 +590,9 @@ def _step_run_node_schedule(pipe: MeetingPipeline, ctx: PipelineRunContext) -> N
             "scope_type": ctx.scope_type,
             "current_node_id": pipe.current_node_id,
             "trigger": "pipeline_run_node_schedule",
+            "chat_text": format_run_node_scheduled_chat(),
             "log_type": "info",
-            "agent_id": "system",
+            "agent_id": host_id,
         },
     )
     schedule_run_node(

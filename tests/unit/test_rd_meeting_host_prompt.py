@@ -68,20 +68,14 @@ def test_assemble_host_prompt_bundle_has_system_and_user(host_binding, monkeypat
     assert "submit_meeting_work_plan" in bundle["user_prompt"]
     md = format_host_prompt_chat_display(bundle)
     assert "【步骤 3/3】" in md
-    assert "## 一、本 SOP 环节工作信息" in md
-    assert "此处不重复" in md
-    assert md.count("## 二、工单信息") == 1
+    assert "## 一、本 SOP 环节工作信息" not in md
+    assert "四段式" in md
 
 
 def test_chat_display_three_pipeline_steps():
-    opened = format_room_opened_chat(
-        room_id="room-1",
-        scope_id="D1",
-        userwork_updates={"sop_node": "需求澄清", "local_process_state": "处理中", "prod": "myprod"},
-        current_node_id="req_clarify",
-        sop_display="需求澄清",
-    )
+    opened = format_room_opened_chat()
     assert "【步骤 1/3】" in opened
+    assert "room-1" not in opened
 
     ev_open = {
         "event": "room_opened",
@@ -92,18 +86,19 @@ def test_chat_display_three_pipeline_steps():
             ensure_ascii=False,
         ),
         "chat_text": opened,
-        "agent_id": "system",
+        "agent_id": "default",
         "ts": "2026-05-21T10:00:00",
     }
     logs = history_to_chat_logs([ev_open])
     assert len(logs) == 1
     assert "【步骤 1/3】" in logs[0]["text"]
-    assert logs[0].get("rich") is True
+    assert logs[0]["agentId"] == "default"
+    assert logs[0].get("rich") is not True
 
-    host_md = "【步骤 3/3】主控智能体（小鲸）提示词已组装\n\n## 一、会议节点"
+    host_md = format_host_prompt_chat_display()
     ev_host = {
         "event": "host_prompt_assembled",
-        "text": host_md,
+        "text": '{"step":3}',
         "chat_text": host_md,
         "agent_id": "default",
         "ts": "2026-05-21T10:00:02",

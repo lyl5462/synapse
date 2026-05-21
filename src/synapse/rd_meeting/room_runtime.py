@@ -307,7 +307,7 @@ def history_to_chat_logs(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "text": text,
                 "timestamp": _format_ts_hms(str(ev.get("ts") or "")),
                 "type": str(ev.get("log_type") or ("user" if et == "human_intervene" else "info")),
-                "rich": et in ("node_init", "host_prompt_assembled", "room_opened", "work_plan_submitted"),
+                "rich": et in ("work_plan_submitted",),
             }
         )
     return logs

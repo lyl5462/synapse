@@ -9,6 +9,7 @@ from synapse.rd_meeting.dev_status import load_dev_status
 from synapse.rd_meeting.dynamic_prompt import build_dynamic_meeting_context, build_meeting_user_turn_prompt
 from synapse.rd_meeting.init_context import build_node_init_log_data
 from synapse.rd_meeting.paths import scope_dir
+from synapse.rd_meeting.pipeline_chat import format_host_prompt_step_chat
 from synapse.rd_meeting.room_skill import build_room_skill_prompt, load_meeting_skill_body, make_context
 from synapse.rd_sop.nodes import node_display_name, stage_id_for_node_id
 
@@ -88,27 +89,10 @@ def assemble_host_prompt_bundle(
     }
 
 
-def format_host_prompt_chat_display(bundle: dict[str, Any]) -> str:
-    """协作会议流：只展示四段式数据段（SKILL 规范已在同条系统提示内，不重复粘贴）。"""
-    dynamic_txt = str(bundle.get("dynamic_context") or "").strip()
-    meeting_len = len(str(bundle.get("meeting_prompt") or ""))
-    user_txt = str(bundle.get("user_prompt") or "").strip()
-    skill_id = str(bundle.get("meeting_skill_id") or "—")
-
-    parts = [
-        "【步骤 3/3】主控智能体（小鲸）提示词已组装",
-        "",
-        f"数据注入：`{skill_id}` → §0 `{{DYNAMIC_MEETING_CONTEXT}}`（下列四段式**仅展示一次**）。",
-        f"协作规范（§1～§7）已写入系统提示，约 {meeting_len} 字，此处不重复。",
-        "",
-        dynamic_txt or "（四段式上下文为空）",
-        "",
-        "---",
-        "**首轮 User 触发**：",
-        user_txt or "（空）",
-        f" · 系统提示总长约 {meeting_len} 字",
-    ]
-    return "\n".join(parts)
+def format_host_prompt_chat_display(bundle: dict[str, Any] | None = None) -> str:
+    """协作会议流：步骤 3 流程说明（实例数据见快照 ``host_prompt_snapshot.md``）。"""
+    _ = bundle
+    return format_host_prompt_step_chat()
 
 
 def format_host_prompt_snapshot(bundle: dict[str, Any]) -> str:
