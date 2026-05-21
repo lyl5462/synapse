@@ -281,11 +281,11 @@ export async function fetchPendingHumanIntervention(
   return Array.isArray(data?.list) ? data.list! : [];
 }
 
-/** 人工确认后继续当前节点（Phase 3 一键通过） */
+/** 人工确认待归档总结后归档并推进（或纯人工节点一键通过） */
 export async function approveAndResumeMeetingNode(
   synapseApiBase: string,
   roomId: string,
-  text = '人工确认通过，继续执行当前节点',
+  text = '人工确认通过，确认总结并归档推进',
 ): Promise<MeetingRoomDetail> {
   return interveneMeetingRoom(synapseApiBase, roomId, text, 'instruction', { resumeRun: true });
 }

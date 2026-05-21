@@ -94,6 +94,7 @@ interface MeetingRoom {
   logs: LogEntry[];
   brief: string;
   hitlFormSchema?: HitlFormSchema | null;
+  hitlPendingSummary?: string | null;
 }
 
 function mapChatWireToLog(w: MeetingRoomChatLogWire): LogEntry {
@@ -138,6 +139,8 @@ function mapDetailToRoom(item: MeetingRoomDetail): MeetingRoom {
     logs,
     brief: `${item.local_process_state} · ${item.current_node_name || item.current_node_id}`,
     hitlFormSchema: (item.room_state?.hitl_form_schema as HitlFormSchema | undefined) ?? null,
+    hitlPendingSummary:
+      (item.room_state?.pending_delivery as { report_body?: string } | undefined)?.report_body ?? null,
   };
 }
 
@@ -993,7 +996,8 @@ const InterventionDialog = ({
               <div className="mb-3">
                 <MeetingHitlForm
                   schema={room.hitlFormSchema}
-                  submitLabel="提交确认并推进"
+                  summaryMarkdown={room.hitlPendingSummary ?? undefined}
+                  submitLabel={room.hitlPendingSummary ? '确认总结并归档推进' : '提交确认并推进'}
                   onSubmit={(values) => {
                     const summary = Object.entries(values)
                       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(',') : String(v)}`)
@@ -1027,7 +1031,16 @@ const InterventionDialog = ({
             </div>
             <div className="mt-2.5 flex items-center justify-between text-[11px] text-muted-foreground px-1">
               <div className="flex items-center gap-3">
-                {onApprovePass ? (
+                {onApprovePass && room.hitlPendingSummary ? (
+                  <button
+                    type="button"
+                    disabled={approveBusy}
+                    className="flex items-center gap-1 transition-colors hover:text-blue-400 disabled:opacity-50"
+                    onClick={() => onApprovePass()}
+                  >
+                    <Zap className="h-3 w-3" /> 确认总结并推进
+                  </button>
+                ) : onApprovePass ? (
                   <button
                     type="button"
                     disabled={approveBusy}
@@ -1151,7 +1164,7 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
         const updatedRoom = mapDetailToRoom(detail);
         setActiveRoom(updatedRoom);
         setRooms((prev) => prev.map((r) => (r.id === updatedRoom.id ? updatedRoom : r)));
-        toast.success('已确认通过并继续执行');
+        toast.success('已确认总结，归档并推进至下一节点');
         void reloadRooms();
       })
       .catch((e) => {

@@ -1,4 +1,4 @@
-"""节点会议目标（NODE_INTENT / ROOM_INTENT 统一为节点会议目标）。"""
+"""节点会议目标（NODE_INTENT）。"""
 
 from __future__ import annotations
 

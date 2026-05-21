@@ -27,12 +27,10 @@ from synapse.rd_meeting.room_skill import (
     load_meeting_skill_body,
     make_context,
 )
+from synapse.rd_meeting.runtime_context import runtime_context_for_binding
 from synapse.rd_meeting.userwork_sync import patch_userwork_summary
 from synapse.rd_meeting.validation import validate_node_output
 from synapse.rd_sop.manifest import (
-    get_node_manifest_entry,
-    is_human_gate_node,
-    is_human_only_node,
     next_node_id,
 )
 from synapse.rd_sop.nodes import ALL_NODES, node_display_name, stage_id_for_node_id
@@ -102,10 +100,34 @@ def build_node_prompt(
         parts.append("- 可分派的协作智能体: " + ", ".join(workers))
     if node_intent:
         parts.append(f"\n## 会议目标\n{node_intent}")
+    runtime_ctx = runtime_context_for_binding(
+        binding,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        ticket_title=ticket_title,
+    )
+    if runtime_ctx:
+        parts.append(f"\n{runtime_ctx}")
     if binding.get("human_confirm"):
         schema_txt = format_hitl_schema_for_prompt(binding.get("hitl_form_schema"))
+        parts.append(
+            "\n## 人工确认（本节点已开启 `human_confirm`）\n"
+            "**会议期间**：可将协作智能体关键中间产物（如需求澄清问题列表、风险清单）"
+            "主动整理后提交给用户审阅，支持多轮人机交互；关闭此开关时由你自主决策、不必逐条请示。\n"
+            "**会议结果**：协作收敛后输出「待确认总结」（含 `# 交付结论` 与验收字样）；"
+            "系统将暂停并把总结呈现给用户填写确认表单。"
+            "**仅用户确认通过后**才写入归档产物并推进下一节点（与下一节点类型无关）；"
+            "若用户返工，按其意见重新执行本节点。\n"
+            "**异常**：超时、质量/真实度无法达标、风险不可控等，**无论本开关是否开启**都必须主动请求人工介入。"
+        )
         if schema_txt:
-            parts.append(f"\n## 人工确认表单（完成后需用户填写）\n{schema_txt}")
+            parts.append(f"\n### 结果确认表单字段\n{schema_txt}")
+    else:
+        parts.append(
+            "\n## 人工确认（本节点已关闭 `human_confirm`）\n"
+            "会议期间与结果收敛均由你自主决策，不必为常规中间产物请示用户。"
+            "但若出现超时、质量/真实度不达标、不可控风险等**异常**，仍必须主动请求人工介入。"
+        )
     if supplement:
         parts.append(f"\n## 运营补充\n{supplement}")
     parts.append(
@@ -309,15 +331,6 @@ class MeetingRoomOrchestrator:
                 dev["sop_node_display"] = node_display_name(next_id)
                 room_state["current_node_id"] = next_id
                 room_state["stage_id"] = dev["stage_id"]
-                if is_human_gate_node(next_id):
-                    room_state["status"] = "human_intervention"
-                    schedule_human_intervention_notify(
-                        scope_id=sid,
-                        room_id=room_id,
-                        node_id=next_id,
-                        ticket_title=ticket_title,
-                        reason=f"节点 {node_display_name(next_id)} 待人工确认",
-                    )
             else:
                 dev["local_process_state"] = "已完成"
                 room_state["status"] = "completed"
@@ -409,14 +422,19 @@ class MeetingRoomOrchestrator:
         reason: str = "",
         ticket_title: str = "",
         hitl_form_schema: dict[str, Any] | None = None,
+        pending_delivery: dict[str, Any] | None = None,
+        intervention_kind: str = "gate",
     ) -> dict[str, Any]:
         sid = scope_id.strip()
         room_state = load_room_state(sid) or {}
         room_state = dict(room_state)
         room_state["status"] = "human_intervention"
         room_state["current_node_id"] = node_id
+        room_state["intervention_kind"] = intervention_kind
         if hitl_form_schema:
             room_state["hitl_form_schema"] = hitl_form_schema
+        if pending_delivery:
+            room_state["pending_delivery"] = pending_delivery
         save_room_state(sid, room_state)
 
         msg = reason or f"节点 {node_display_name(node_id)} 需人工处理"
@@ -439,6 +457,108 @@ class MeetingRoomOrchestrator:
             reason=msg,
         )
         return room_state
+
+    def confirm_node_delivery(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        approved: bool,
+        comment: str = "",
+        ticket_title: str = "",
+        sync_userwork: bool = True,
+    ) -> dict[str, Any]:
+        """人工确认待归档总结：通过则写入产物并推进；拒绝则清除 pending 并返工。"""
+        sid = scope_id.strip()
+        room_state = load_room_state(sid) or {}
+        pending = room_state.get("pending_delivery")
+        if not isinstance(pending, dict) or not pending.get("report_body"):
+            raise ValueError("no_pending_delivery")
+
+        node_id = str(pending.get("node_id") or room_state.get("current_node_id") or "")
+        if not node_id:
+            raise ValueError("invalid_pending_node")
+
+        if not approved:
+            room_state = dict(room_state)
+            room_state.pop("pending_delivery", None)
+            room_state["status"] = "processing"
+            if comment.strip():
+                room_state["rework_instruction"] = comment.strip()
+            save_room_state(sid, room_state)
+            append_history_event(
+                sid,
+                {
+                    "event": "hitl_rejected",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "comment": comment.strip(),
+                    "log_type": "warning",
+                    "agent_id": "user",
+                },
+            )
+            schedule_run_node(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                ticket_title=ticket_title,
+            )
+            return {"status": "rework", "node_id": node_id, "room_state": room_state}
+
+        report_body = str(pending.get("report_body") or "")
+        validation = validate_node_output(node_id, report_body)
+        if not validation.ok:
+            raise ValueError("node_output_validation_failed: " + "; ".join(validation.errors))
+
+        stage_id = int(pending.get("stage_id") or stage_id_for_node_id(node_id))
+        artifact_path = write_archive_artifact(
+            sid,
+            stage_id,
+            node_id,
+            filename="result.md",
+            content=report_body,
+        )
+        artifacts = [
+            {
+                "name": artifact_path.name,
+                "relative_path": artifact_path.relative_to(scope_dir(sid)).as_posix(),
+            }
+        ]
+        tokens_used = int(pending.get("tokens_used") or 0)
+        duration = int(pending.get("duration_seconds") or 0)
+
+        out = self.on_node_complete(
+            scope_type=scope_type,
+            scope_id=sid,
+            room_id=room_id,
+            node_id=node_id,
+            artifacts=artifacts,
+            tokens_used=tokens_used,
+            duration_seconds=duration,
+            sync_userwork=sync_userwork,
+            advance=True,
+            ticket_title=ticket_title,
+        )
+
+        rs = load_room_state(sid) or {}
+        rs = dict(rs)
+        rs.pop("pending_delivery", None)
+        rs.pop("hitl_form_schema", None)
+        save_room_state(sid, rs)
+
+        append_history_event(
+            sid,
+            {
+                "event": "hitl_approved",
+                "room_id": room_id,
+                "node_id": node_id,
+                "comment": comment.strip(),
+                "log_type": "user",
+                "agent_id": "user",
+            },
+        )
+        return {"status": "approved", **out, "room_state": rs}
 
     async def run_current_node(
         self,
@@ -496,7 +616,6 @@ class MeetingRoomOrchestrator:
             scope_id=sid,
             ticket_title=ticket_title,
         )
-        entry = get_node_manifest_entry(node_id)
 
         append_history_event(
             sid,
@@ -528,19 +647,8 @@ class MeetingRoomOrchestrator:
         if node_id not in nm or not isinstance(nm.get(node_id), dict):
             nm[node_id] = {"started_at": _now_iso(), "seconds": 0, "tokens": 0}
         room_state["node_metrics"] = nm
+        rework = str(room_state.pop("rework_instruction", "") or "").strip()
         save_room_state(sid, room_state)
-
-        if is_human_only_node(node_id):
-            self.mark_human_gate(
-                scope_type=scope_type,
-                scope_id=sid,
-                room_id=room_id,
-                node_id=node_id,
-                reason=f"{entry.get('name') if entry else node_id} 需人工处理",
-                ticket_title=ticket_title,
-                hitl_form_schema=binding.get("hitl_form_schema"),
-            )
-            return {"status": "human_intervention", "node_id": node_id, "skipped_llm": True}
 
         use_dry = _dry_run_enabled() if dry_run is None else dry_run
         started = time.monotonic()
@@ -599,6 +707,8 @@ class MeetingRoomOrchestrator:
                     binding=binding,
                     ticket_title=ticket_title,
                 )
+                if rework:
+                    prompt = f"{prompt}\n\n## 人工返工意见\n{rework}\n"
                 result = await host_agent.execute_task_from_message(
                     prompt,
                     usage_scene=f"rd_meeting_{sid}_{node_id}",
@@ -606,20 +716,32 @@ class MeetingRoomOrchestrator:
                 if result.success:
                     report_body = str(result.data or result.error or "完成")
                 else:
+                    err = str(result.error or "unknown")
                     append_history_event(
                         sid,
                         {
                             "event": "node_failed",
                             "room_id": room_id,
                             "node_id": node_id,
-                            "error": str(result.error or "unknown"),
+                            "error": err,
                         },
                     )
-                    rs = load_room_state(sid) or {}
-                    rs = dict(rs)
-                    rs["status"] = "failed"
-                    save_room_state(sid, rs)
-                    raise RuntimeError(str(result.error or "node_execution_failed"))
+                    gate = self.mark_human_gate(
+                        scope_type=scope_type,
+                        scope_id=sid,
+                        room_id=room_id,
+                        node_id=node_id,
+                        reason=f"{node_display_name(node_id)} 执行异常，需人工介入：{err}",
+                        ticket_title=ticket_title,
+                        hitl_form_schema=binding.get("hitl_form_schema"),
+                        intervention_kind="exception",
+                    )
+                    return {
+                        "status": "human_intervention",
+                        "node_id": node_id,
+                        "exception": True,
+                        **gate,
+                    }
 
                 usage = getattr(host_agent, "last_usage", None) or {}
                 tokens_used = int(usage.get("total_tokens") or usage.get("tokens") or 256)
@@ -635,9 +757,75 @@ class MeetingRoomOrchestrator:
                     "errors": validation.errors,
                 },
             )
-            raise ValueError("node_output_validation_failed: " + "; ".join(validation.errors))
+            gate = self.mark_human_gate(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                reason=(
+                    f"{node_display_name(node_id)} 产物质量/格式未达标，需人工介入："
+                    + "; ".join(validation.errors)
+                ),
+                ticket_title=ticket_title,
+                hitl_form_schema=binding.get("hitl_form_schema"),
+                pending_delivery={
+                    "node_id": node_id,
+                    "report_body": report_body,
+                    "tokens_used": tokens_used,
+                    "duration_seconds": max(1, int(time.monotonic() - started)),
+                    "stage_id": int(dev.get("stage_id") or stage_id_for_node_id(node_id)),
+                },
+                intervention_kind="exception",
+            )
+            return {
+                "status": "human_intervention",
+                "node_id": node_id,
+                "exception": True,
+                "validation_errors": validation.errors,
+                **gate,
+            }
 
         stage_id = int(dev.get("stage_id") or stage_id_for_node_id(node_id))
+        duration = max(1, int(time.monotonic() - started))
+
+        need_human_confirm = bool(binding.get("human_confirm"))
+        if need_human_confirm:
+            pending = {
+                "node_id": node_id,
+                "report_body": report_body,
+                "tokens_used": tokens_used,
+                "duration_seconds": duration,
+                "stage_id": stage_id,
+            }
+            gate = self.mark_human_gate(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                reason=f"{node_display_name(node_id)} 待确认总结，请填写表单后归档推进",
+                ticket_title=ticket_title,
+                hitl_form_schema=binding.get("hitl_form_schema"),
+                pending_delivery=pending,
+                intervention_kind="result_confirm",
+            )
+            append_history_event(
+                sid,
+                {
+                    "event": "node_pending_confirm",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "tokens_used": tokens_used,
+                    "duration_seconds": duration,
+                },
+            )
+            return {
+                "status": "human_intervention",
+                "node_id": node_id,
+                "skipped_nodes": skipped_nodes or None,
+                "pending_confirm": True,
+                **gate,
+            }
+
         artifact_path = write_archive_artifact(
             sid,
             stage_id,
@@ -645,15 +833,12 @@ class MeetingRoomOrchestrator:
             filename="result.md",
             content=report_body,
         )
-        duration = max(1, int(time.monotonic() - started))
         artifacts = [
             {
                 "name": artifact_path.name,
                 "relative_path": artifact_path.relative_to(scope_dir(sid)).as_posix(),
             }
         ]
-
-        need_human_confirm = bool(binding.get("human_confirm"))
         out = self.on_node_complete(
             scope_type=scope_type,
             scope_id=sid,
@@ -662,25 +847,9 @@ class MeetingRoomOrchestrator:
             artifacts=artifacts,
             tokens_used=tokens_used,
             duration_seconds=duration,
-            advance=not need_human_confirm,
+            advance=True,
             ticket_title=ticket_title,
         )
-        if need_human_confirm:
-            gate = self.mark_human_gate(
-                scope_type=scope_type,
-                scope_id=sid,
-                room_id=room_id,
-                node_id=node_id,
-                reason=f"{node_display_name(node_id)} 已完成，待人工确认后推进",
-                ticket_title=ticket_title,
-                hitl_form_schema=binding.get("hitl_form_schema"),
-            )
-            return {
-                "status": "human_intervention",
-                "node_id": node_id,
-                "skipped_nodes": skipped_nodes or None,
-                **gate,
-            }
         if skipped_nodes:
             out["skipped_nodes"] = skipped_nodes
         return out

@@ -75,7 +75,11 @@ async def test_run_node_dry_run_advances_and_archives(synapse_work_home):
 
 
 @pytest.mark.asyncio
-async def test_human_gate_skips_llm(synapse_work_home):
+async def test_human_node_runs_agents_and_result_confirm_gate(synapse_work_home):
+    """人工型节点仍跑智能体；默认 human_confirm 开启时结束于结果确认门控。"""
+    from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
+    from synapse.rd_meeting.room_runtime import load_room_state, read_history
+
     scope_id = "21883201"
     svc = MeetingRoomService()
     opened = svc.open_meeting("demand", scope_id, sync_userwork=False)
@@ -89,6 +93,12 @@ async def test_human_gate_skips_llm(synapse_work_home):
 
     out = await svc.run_current_node_sync(room_id, dry_run=True)
     assert out["result"]["status"] == "human_intervention"
+    assert out["result"].get("pending_confirm") is True
+
+    history = read_history(scope_id, limit=20)
+    assert any(str(h.get("event") or "") == "node_started" for h in history)
+
     rs = load_room_state(scope_id)
     assert rs is not None
     assert rs["status"] == "human_intervention"
+    assert isinstance(rs.get("pending_delivery"), dict)

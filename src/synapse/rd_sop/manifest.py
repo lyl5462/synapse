@@ -115,12 +115,13 @@ def next_node_id(current_node_id: str) -> str | None:
 
 
 def is_human_gate_node(node_id: str) -> bool:
+    """节点 SOP 类型是否偏人工（仅用于默认配置/UI 提示，不驱动运行时门控）。"""
     t = NODE_TYPES.get(node_id, "")
     return "human" in t or t in ("human_start", "ai_human", "ai_exception", "human_multi")
 
 
 def default_human_confirm(node_id: str) -> bool:
-    """节点是否默认需要「完成后人工确认」（与 NODE_TYPES 对齐）。"""
+    """节点是否默认开启「人工确认」配置（与 NODE_TYPES 对齐，运行时可覆盖）。"""
     t = NODE_TYPES.get(node_id, "")
     if t in ("human", "human_start", "ai_human", "human_multi"):
         return True
@@ -130,7 +131,7 @@ def default_human_confirm(node_id: str) -> bool:
 
 
 def is_human_only_node(node_id: str) -> bool:
-    """纯人工节点：不跑小鲸/Worker，进入即待人机交互。"""
+    """已废弃：人工型节点仍走智能体协作，人工参与度由 `human_confirm` 与运行时交互决定。"""
     return NODE_TYPES.get(node_id, "") == "human"
 
 

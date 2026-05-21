@@ -51,11 +51,6 @@ def test_resolve_node_intent_uses_override(isolated_config_dir: Path):
     assert def_intent == default_node_intent("boundary")
 
 
-def test_room_intent_equals_node_intent(isolated_config_dir: Path):
-    binding = resolve_node_binding("boundary")
-    assert binding["room_intent"] == binding["node_intent"]
-
-
 def test_human_confirm_override(isolated_config_dir: Path):
     save_meeting_room_config({"node_overrides": {"boundary": {"human_confirm": False}}})
     binding = resolve_node_binding("boundary")
@@ -109,3 +104,108 @@ def test_skip_report_body_has_completion_markers():
 def test_default_human_confirm_for_human_node():
     assert default_human_confirm("req_clarify") is True
     assert default_human_confirm("boundary") is False
+
+
+@pytest.fixture
+def synapse_work_home(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg_dir = work / "_rd_meeting_cfg"
+    cfg_dir.mkdir(parents=True)
+
+    def _work_root():
+        return work
+
+    def _rd_cfg_dir():
+        return cfg_dir
+
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", _work_root)
+    monkeypatch.setattr("synapse.rd_meeting.config_store.rd_meeting_config_dir", _rd_cfg_dir)
+    return work
+
+
+@pytest.mark.asyncio
+async def test_human_confirm_defers_archive_until_approved(synapse_work_home):
+    from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
+    from synapse.rd_meeting.room_runtime import list_archive_index, load_room_state
+    from synapse.rd_sop.manifest import next_node_id
+
+    scope_id = "21883500"
+    save_meeting_room_config({"node_overrides": {"boundary": {"human_confirm": True}}})
+    svc = MeetingRoomService()
+    opened = svc.open_meeting("demand", scope_id, sync_userwork=False)
+    room_id = opened["room_id"]
+
+    dev = load_dev_status(scope_id)
+    assert dev is not None
+    dev["current_node_id"] = "boundary"
+    dev["stage_id"] = 1
+    save_dev_status(scope_id, dev)
+
+    result = await svc.run_current_node_sync(room_id, dry_run=True)
+    assert result["result"]["status"] == "human_intervention"
+    assert result["result"].get("pending_confirm") is True
+
+    arch = list_archive_index(scope_id)
+    assert not any(a["node_id"] == "boundary" for a in arch)
+
+    rs = load_room_state(scope_id)
+    assert rs is not None
+    assert isinstance(rs.get("pending_delivery"), dict)
+    assert rs["pending_delivery"].get("report_body")
+
+    detail = svc.intervene(
+        room_id,
+        text="[人工确认表单]\ndecision: approve\ncomment: 确认无误",
+    )
+    assert detail is not None
+
+    arch2 = list_archive_index(scope_id)
+    assert any(a["node_id"] == "boundary" for a in arch2)
+
+    rs2 = load_room_state(scope_id)
+    assert rs2 is not None
+    assert rs2.get("pending_delivery") is None
+    assert rs2["current_node_id"] == next_node_id("boundary")
+
+
+@pytest.mark.asyncio
+async def test_human_confirm_reject_triggers_rework(synapse_work_home, monkeypatch):
+    from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
+    from synapse.rd_meeting.room_runtime import load_room_state
+
+    scheduled: list[str] = []
+
+    def _fake_schedule(**kwargs):
+        scheduled.append(kwargs.get("scope_id", ""))
+        return kwargs.get("room_id", "")
+
+    monkeypatch.setattr(
+        "synapse.rd_meeting.orchestrator.schedule_run_node",
+        _fake_schedule,
+    )
+
+    scope_id = "21883501"
+    save_meeting_room_config({"node_overrides": {"boundary": {"human_confirm": True}}})
+    svc = MeetingRoomService()
+    opened = svc.open_meeting("demand", scope_id, sync_userwork=False)
+    room_id = opened["room_id"]
+
+    dev = load_dev_status(scope_id)
+    assert dev is not None
+    dev["current_node_id"] = "boundary"
+    dev["stage_id"] = 1
+    save_dev_status(scope_id, dev)
+
+    await svc.run_current_node_sync(room_id, dry_run=True)
+
+    svc.intervene(
+        room_id,
+        text="[人工确认表单]\ndecision: reject\ncomment: 边界描述不完整",
+    )
+
+    rs = load_room_state(scope_id)
+    assert rs is not None
+    assert rs.get("pending_delivery") is None
+    assert rs.get("rework_instruction") == "边界描述不完整"
+    assert scheduled == [scope_id]

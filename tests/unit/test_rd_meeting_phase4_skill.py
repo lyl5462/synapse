@@ -47,7 +47,7 @@ def test_skill_file_exists_in_repo():
 
 def test_load_skill_body_strips_frontmatter():
     body = load_meeting_skill_body(DEFAULT_MEETING_SKILL_ID)
-    assert "## 1. 会议室主旨" in body
+    assert "## 1. 节点会议目标" in body
     assert "## 7. 不变量" in body
     assert "name: whalecloud-dev-tool-meeting-room" not in body, "front-matter 应被去除"
 
@@ -109,7 +109,7 @@ def test_build_room_skill_prompt_renders_context_vars(host_binding):
     assert "边界确认" in rendered
     assert "reasoning-heavy" in rendered
     assert "worker-default" in rendered
-    assert "## 1. 会议室主旨" in rendered
+    assert "## 1. 节点会议目标" in rendered
     assert "## 4. 小鲸（Host）的工作循环" in rendered
     assert "## 5. 协作智能体（Worker）的协作规范" not in rendered
     assert "本产品为账务中心" in rendered, "运营补充应被追加"

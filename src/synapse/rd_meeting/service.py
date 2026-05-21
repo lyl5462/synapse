@@ -405,6 +405,40 @@ class MeetingRoomService:
             raise ValueError("meeting_room_not_found")
 
         scope_id = str(detail.get("scope_id") or "")
+        scope_type = str(detail.get("scope_type") or "demand")
+        ticket_title = str(detail.get("ticket_title") or "")
+
+        room_state = load_room_state(scope_id)
+        pending = (
+            room_state.get("pending_delivery")
+            if isinstance(room_state, dict)
+            else None
+        )
+        if isinstance(pending, dict) and pending.get("report_body") and message_type == "instruction":
+            approved, comment = self._parse_hitl_decision(text, resume_run=resume_run)
+            orch = MeetingRoomOrchestrator()
+            orch.confirm_node_delivery(
+                scope_type=scope_type,  # type: ignore[arg-type]
+                scope_id=scope_id,
+                room_id=rid,
+                approved=approved,
+                comment=comment,
+                ticket_title=ticket_title,
+            )
+            append_history_event(
+                scope_id,
+                {
+                    "event": "human_intervene",
+                    "room_id": rid,
+                    "text": text,
+                    "message_type": message_type,
+                    "log_type": "user",
+                    "agent_id": "user",
+                    "id": uuid.uuid4().hex[:12],
+                },
+            )
+            return self.get_room_detail(rid) or detail
+
         append_history_event(
             scope_id,
             {
@@ -418,7 +452,6 @@ class MeetingRoomService:
             },
         )
 
-        room_state = load_room_state(scope_id)
         if room_state and message_type == "instruction":
             room_state = dict(room_state)
             room_state["status"] = "processing"
@@ -427,14 +460,36 @@ class MeetingRoomService:
         out = self.get_room_detail(rid) or detail
         if resume_run and message_type == "instruction":
             schedule_run_node(
-                scope_type=str(out.get("scope_type") or "demand"),
+                scope_type=scope_type,  # type: ignore[arg-type]
                 scope_id=scope_id,
                 room_id=rid,
-                ticket_title=str(out.get("ticket_title") or ""),
+                ticket_title=ticket_title,
                 agent_pool=agent_pool,
             )
             out["resume_run_started"] = True
         return out
+
+    @staticmethod
+    def _parse_hitl_decision(text: str, *, resume_run: bool = False) -> tuple[bool, str]:
+        """解析人工确认表单或一键通过指令，返回 (是否通过, 补充说明)。"""
+        lower = text.lower()
+        comment = ""
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.lower().startswith("comment:"):
+                comment = stripped.split(":", 1)[-1].strip()
+            elif stripped.startswith("补充说明:"):
+                comment = stripped.split(":", 1)[-1].strip()
+
+        if "decision: reject" in lower or "decision:reject" in lower:
+            return False, comment or text
+        if "decision: approve" in lower or "decision:approve" in lower:
+            return True, comment
+        if "不通过" in text or "需返工" in text or "reject" in lower:
+            return False, comment or text
+        if resume_run or "人工确认通过" in text or "approve" in lower:
+            return True, comment
+        return True, comment or text
 
     def meeting_summary(self, scope_type: ScopeType, scope_id: str) -> dict[str, Any]:
         """工单侧只读聚合：dev.status + room_state + archive + 节点 metrics。"""

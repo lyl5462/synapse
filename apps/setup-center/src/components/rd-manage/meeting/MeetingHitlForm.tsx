@@ -33,6 +33,8 @@ export type HitlFormValues = Record<string, string | string[] | boolean>;
 
 export const MeetingHitlForm: React.FC<{
   schema: HitlFormSchema;
+  /** 待确认总结（人工确认门控：归档前展示） */
+  summaryMarkdown?: string;
   /** 预览模式：仅展示字段结构，不可提交 */
   preview?: boolean;
   initialValues?: HitlFormValues;
@@ -41,6 +43,7 @@ export const MeetingHitlForm: React.FC<{
   className?: string;
 }> = ({
   schema,
+  summaryMarkdown,
   preview = false,
   initialValues,
   onSubmit,
@@ -133,6 +136,14 @@ export const MeetingHitlForm: React.FC<{
       {schema.description ? (
         <p className="text-[11px] text-muted-foreground leading-relaxed mb-3">{schema.description}</p>
       ) : null}
+      {summaryMarkdown && !preview ? (
+        <div className="mb-3 rounded-md border border-border/50 bg-background/60 p-3 max-h-48 overflow-y-auto custom-scrollbar">
+          <div className="text-[10px] font-medium text-muted-foreground mb-2">待确认总结</div>
+          <pre className="text-[11px] text-foreground/90 whitespace-pre-wrap font-sans leading-relaxed m-0">
+            {summaryMarkdown}
+          </pre>
+        </div>
+      ) : null}
       <Form
         form={form}
         layout="vertical"
@@ -149,7 +160,7 @@ export const MeetingHitlForm: React.FC<{
       </Form>
       {preview ? (
         <p className="text-[10px] text-muted-foreground mt-2 mb-0">
-          预览：节点开启「人工确认」后，用户将按上述字段填写并提交给小鲸。
+          预览：节点开启「人工确认」后，智能体先输出待确认总结，用户审阅并填写上述字段提交；确认通过后系统才写入归档产物并推进节点。
         </p>
       ) : null}
     </div>

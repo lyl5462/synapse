@@ -36,7 +36,10 @@ def default_hitl_form_schema(node_id: str) -> dict[str, Any]:
     intent = str(entry.get("intent") if entry else "")
     return {
         "title": f"{name} — 人工确认",
-        "description": intent or f"请确认节点「{name}」的交付结果后再推进 SOP。",
+        "description": (
+            (intent or f"请审阅节点「{name}」的待确认总结，确认无误后提交表单。")
+            + " 确认通过后系统将写入归档产物并推进至下一节点；选择返工将根据您的说明重新执行本节点。"
+        ),
         "fields": list(_DEFAULT_APPROVAL_FIELDS),
     }
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from synapse.agents.profile import AgentProfile, get_profile_store
+from synapse.rd_meeting.runtime_context import build_meeting_runtime_context_section
 from synapse.rd_sop.nodes import node_display_name, stage_name_for_id
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,6 @@ class MeetingRoomContext:
     worker_profile_ids: list[str]
     meeting_skill_id: str
     archive_dir: str
-    room_intent: str = ""
     prompt_supplement: str = ""
 
     def template_vars(self) -> dict[str, str]:
@@ -170,7 +170,6 @@ class MeetingRoomContext:
             "HOST_PROFILE_NAME": self.host_profile_name,
             "HOST_LLM_ENDPOINT": self.host_llm_endpoint or DEFAULT_LLM_ENDPOINT_KEY,
             "WORKER_LLM_ENDPOINT": self.worker_llm_endpoint or DEFAULT_LLM_ENDPOINT_KEY,
-            "ROOM_INTENT": self.room_intent,
             "ARCHIVE_DIR": self.archive_dir,
             "CAPABILITY_CARDS": "{CAPABILITY_CARDS}",
         }
@@ -339,6 +338,17 @@ def build_room_skill_prompt(
     suffix = (context.prompt_supplement or "").strip()
     if suffix:
         rendered = f"{rendered}\n\n---\n\n## 运营补充（本节点）\n\n{suffix}\n"
+
+    runtime_ctx = build_meeting_runtime_context_section(
+        scope_type=context.scope_type,
+        scope_id=context.scope_id,
+        ticket_title=context.ticket_title,
+        node_id=context.node_id,
+        stage_id=context.stage_id,
+    )
+    if runtime_ctx:
+        rendered = f"{rendered}\n\n---\n\n{runtime_ctx}\n"
+
     return rendered
 
 
@@ -389,7 +399,6 @@ def make_context(
         worker_profile_ids=[str(w) for w in worker_ids if str(w).strip()],
         meeting_skill_id=str(binding.get("meeting_skill_id") or DEFAULT_MEETING_SKILL_ID),
         archive_dir=str(archive_dir or ""),
-        room_intent=str(binding.get("node_intent") or binding.get("intent") or ""),
         prompt_supplement=str(binding.get("prompt_supplement") or ""),
     )
 
