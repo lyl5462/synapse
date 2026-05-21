@@ -251,3 +251,4 @@ claude_code/
 # QQ Bot SDK logs
 botpy.log*
 web_tmp/
+.tmp_test_uw/

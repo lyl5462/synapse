@@ -7,7 +7,6 @@ import uuid
 from typing import Any, Literal
 
 from synapse.rd_meeting.binding import list_resolved_bindings, resolve_node_binding
-from synapse.rd_meeting.bootstrap import append_node_init_chat
 from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.config_store import (
     DEFAULT_MEETING_SKILL_ID,
@@ -30,6 +29,7 @@ from synapse.rd_meeting.orchestrator import (
 )
 from synapse.rd_meeting.paths import iter_work_order_directories, scope_dir
 from synapse.rd_meeting.phase import get_phase
+from synapse.rd_meeting.pipeline import MeetingPipeline
 from synapse.rd_meeting.room_runtime import (
     append_history_event,
     build_meeting_summary_nodes,
@@ -252,6 +252,11 @@ class MeetingRoomService:
             "scope_type": detail.get("scope_type"),
             "status": detail.get("status") or room_state.get("status"),
             "phase": get_phase(scope_id) if scope_id else "idle",
+            "pipeline": (
+                MeetingPipeline.load(scope_id).snapshot_for_api()
+                if scope_id and MeetingPipeline.load(scope_id)
+                else None
+            ),
             "run_in_progress": is_room_run_in_progress(room_id),
             "current_node_id": detail.get("current_node_id"),
             "current_node_name": detail.get("current_node_name"),
@@ -371,134 +376,29 @@ class MeetingRoomService:
         *,
         sync_userwork: bool = True,
         promote_to_processing: bool = True,
-        auto_run_first_node: bool = True,
+        auto_run_first_node: bool = False,
     ) -> dict[str, Any]:
         sid = (scope_id or "").strip()
         if not sid:
             raise ValueError("scope_id required")
 
-        titles = build_title_index()
-        local = "处理中"
-        sop_display = ""
-        node_id = "pending"
-        stage_id = 0
+        from synapse.rd_meeting.pipeline import (
+            STEP_OPEN_MEETING,
+            PipelineRunContext,
+            run_pipeline_until_waiting,
+        )
 
-        snap = self._userwork_row_for_scope(scope_type, sid)
-        if snap:
-            sop_raw = str(snap.get("sop_node") or "").strip()
-            sop_display = sop_raw
-            resolved = resolve_sop_raw_to_node_id(sop_raw)
-            if resolved:
-                node_id = resolved
-                stage_id = stage_id_for_node_id(node_id)
-            local = str(snap.get("local_process_state") or local).strip() or local
-
-        if promote_to_processing:
-            if local in ("待处理", "", "预备中") or stage_id <= 0 or node_id in ("pending", ""):
-                local = "处理中"
-            if stage_id <= 0 or node_id in ("pending", ""):
-                node_id = "req_clarify"
-                stage_id = stage_id_for_node_id(node_id)
-                sop_display = sop_display or node_display_name(node_id)
-
-        existing = load_dev_status(sid)
-        if existing is not None:
-            data = dict(existing)
-        else:
-            data = load_or_create_dev_status(
-                sid,
-                scope_type=scope_type,
-                local_process_state=local,
-                stage_id=stage_id,
-                current_node_id=node_id,
-                sop_node_display=sop_display or node_display_name(node_id),
-                pipeline_enabled=local in {"处理中"},
-            )
-        data["local_process_state"] = local
-        data["pipeline_enabled"] = local in {"处理中"}
-        data["stage_id"] = stage_id
-        data["current_node_id"] = node_id
-        data["sop_node_display"] = sop_display or node_display_name(node_id)
-        mr = data.get("meeting_room")
-        if not isinstance(mr, dict):
-            mr = {}
-        data["meeting_room"] = {**mr, "active": True}
-        data = ensure_room_id(data)
-        save_dev_status(sid, data)
-        scope_dir(sid).mkdir(parents=True, exist_ok=True)
-
-        room_id = str(data["meeting_room"].get("room_id") or "")
-        room_state = sync_room_state_from_dev(
-            sid,
-            room_id=room_id,
+        ctx = PipelineRunContext(
             scope_type=scope_type,
-            stage_id=int(data.get("stage_id") or 0),
-            current_node_id=str(data.get("current_node_id") or "pending"),
-            local_process_state=local,
+            scope_id=sid,
+            sync_userwork=sync_userwork,
+            promote_to_processing=promote_to_processing,
+            auto_run_first_node=auto_run_first_node,
         )
-        append_history_event(
-            sid,
-            {
-                "event": "room_opened",
-                "room_id": room_id,
-                "scope_type": scope_type,
-                "scope_id": sid,
-                "stage_id": data.get("stage_id"),
-                "current_node_id": data.get("current_node_id"),
-            },
-        )
-
-        if sync_userwork:
-            self._sync_userwork_from_dev_status(scope_type, sid, data)
-
-        detail = self._room_detail_payload(data, sid, titles)
-        detail["room_state"] = room_state
-
-        run_node = str(data.get("current_node_id") or "")
-        if run_node not in ("pending", ""):
-            run_binding = resolve_node_binding(
-                run_node,
-                scope_type=scope_type,
-                scope_id=sid,
-                ticket_title=str(detail.get("ticket_title") or ""),
-            )
-            run_binding["node_id"] = run_node
-            append_node_init_chat(
-                sid,
-                room_id=room_id,
-                node_id=run_node,
-                binding=run_binding,
-            )
-            rs = load_room_state(sid) or {}
-            if isinstance(rs, dict):
-                rs = dict(rs)
-                rs["participants"] = build_meeting_participants(run_binding)
-                save_room_state(sid, rs)
-
-        if auto_run_first_node and run_node not in ("pending", ""):
-            append_history_event(
-                sid,
-                {
-                    "event": "run_node_scheduled",
-                    "room_id": room_id,
-                    "scope_type": scope_type,
-                    "current_node_id": run_node,
-                    "trigger": "open_meeting_auto_run",
-                    "log_type": "info",
-                    "agent_id": "system",
-                },
-            )
-            schedule_run_node(
-                scope_type=scope_type,
-                scope_id=sid,
-                room_id=room_id,
-                ticket_title=str(detail.get("ticket_title") or ""),
-                agent_pool=None,
-                dry_run=None,
-            )
-            detail["auto_run_started"] = True
-
-        return detail
+        run_pipeline_until_waiting(ctx, initial_flow_step=STEP_OPEN_MEETING)
+        if ctx.auto_run_started:
+            ctx.detail["auto_run_started"] = True
+        return ctx.detail
 
     def intervene(
         self,
@@ -714,6 +614,9 @@ class MeetingRoomService:
         item["chat_logs"] = history_to_chat_logs(history)
         item["current_node_binding"] = binding
         item["participants"] = participants
+        pipe = MeetingPipeline.load(scope_id)
+        if pipe is not None:
+            item["pipeline"] = pipe.snapshot_for_api()
         return item
 
     @staticmethod

@@ -24,7 +24,7 @@ class OpenMeetingBody(BaseModel):
     promote_to_processing: bool = Field(
         True, description="待处理工单开会时推进为处理中并定位首节点"
     )
-    auto_run_first_node: bool = Field(True, description="开会后后台执行当前节点")
+    auto_run_first_node: bool = Field(False, description="开会后是否后台执行当前节点（默认仅开启+初始化）")
 
 
 class InterveneBody(BaseModel):

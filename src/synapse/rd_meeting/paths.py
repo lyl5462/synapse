@@ -60,6 +60,11 @@ def room_history_path(scope_id: str) -> Path:
     return scope_dir(scope_id) / "room_history.jsonl"
 
 
+def meeting_pipeline_path(scope_id: str) -> Path:
+    """研发会议室主流程状态（按工单/会议 scope 缓存）。"""
+    return scope_dir(scope_id) / "meeting_pipeline.json"
+
+
 def archive_root(scope_id: str) -> Path:
     return scope_dir(scope_id) / "archive"
 

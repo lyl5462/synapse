@@ -31,6 +31,7 @@ EVENT_FLOW_STAGE: dict[str, str] = {
     "hitl_dynamic": "动态问卷",
     "user_context": "用户上下文",
     "phase_change": "阶段切换",
+    "pipeline_transition": "流程迁移",
     "system": "系统",
     "chat_message": "对话",
 }
@@ -62,6 +63,7 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "node_completed",
         "node_skipped",
         "phase_change",
+        "pipeline_transition",
     }
 )
 

@@ -738,7 +738,12 @@ class MeetingRoomOrchestrator:
         binding["node_id"] = node_id
         node_name = node_display_name(node_id)
         participants = build_meeting_participants(binding)
-        init_text = build_node_init_message(binding, node_id=node_id)
+        init_text = build_node_init_message(
+            binding,
+            node_id=node_id,
+            scope_type=scope_type,  # type: ignore[arg-type]
+            scope_id=sid,
+        )
         host_id = str(binding.get("host_profile_id") or "default")
 
         append_history_event(

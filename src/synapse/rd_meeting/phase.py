@@ -1,12 +1,14 @@
-"""会议室节点子阶段（P2）：辅助 UI 与 prompt，非硬编排 FSM。"""
+"""会议室节点子阶段：读写委托给 ``meeting_pipeline.json``（与 pipeline.phase 同步）。"""
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
-from synapse.rd_meeting.room_runtime import load_room_state, save_room_state
+from synapse.rd_meeting.pipeline import MeetingPipeline
 
-NodePhase = Literal[
+NodePhase = str
+
+_VALID = {
     "idle",
     "running",
     "clarify_gate",
@@ -14,20 +16,17 @@ NodePhase = Literal[
     "exception_gate",
     "document",
     "completed",
-]
-
-_VALID: set[str] = {
-    "idle",
-    "running",
-    "clarify_gate",
-    "result_gate",
-    "exception_gate",
-    "document",
-    "completed",
+    "waiting",
 }
 
 
 def get_phase(scope_id: str) -> str:
+    pipe = MeetingPipeline.load(scope_id)
+    if pipe is not None:
+        ph = pipe.phase
+        return ph if ph in _VALID else "idle"
+    from synapse.rd_meeting.room_runtime import load_room_state
+
     rs = load_room_state(scope_id) or {}
     phase = str(rs.get("phase") or "idle")
     return phase if phase in _VALID else "idle"
@@ -36,26 +35,15 @@ def get_phase(scope_id: str) -> str:
 def set_phase(scope_id: str, phase: str, *, extra: dict[str, Any] | None = None) -> None:
     if phase not in _VALID:
         phase = "running"
-    rs = dict(load_room_state(scope_id) or {})
-    prev = str(rs.get("phase") or "idle")
-    rs["phase"] = phase
+    pipe = MeetingPipeline.load_or_create(scope_id)
     if extra:
-        rs.update(extra)
-    save_room_state(scope_id, rs)
-    if prev != phase:
-        from synapse.rd_meeting.room_runtime import append_history_event
-
-        append_history_event(
-            scope_id,
-            {
-                "event": "phase_change",
-                "room_id": str(rs.get("room_id") or ""),
-                "from_phase": prev,
-                "to_phase": phase,
-                "log_type": "info",
-                "agent_id": "system",
-            },
-        )
+        ctx = pipe.data.get("context")
+        if not isinstance(ctx, dict):
+            ctx = {}
+        ctx.update(extra)
+        pipe.data["context"] = ctx
+    pipe.set_phase(phase, sync_room_state=True)
+    pipe.save()
 
 
 def phase_prompt_hint(scope_id: str, *, human_confirm: bool) -> str:
@@ -68,6 +56,7 @@ def phase_prompt_hint(scope_id: str, *, human_confirm: bool) -> str:
         "exception_gate": "当前处于**异常人工介入**阶段：请根据用户反馈调整策略。",
         "document": "当前处于**文档生成**阶段：请产出 NODE_OUTPUTS 约定文件名。",
         "running": "当前节点执行中：可按需输出会中问卷（interactive）或继续委派。",
+        "waiting": "当前流程待机：等待调度下一流程步骤（见 meeting_pipeline.json）。",
     }
     line = hints.get(phase, "")
     if not line:

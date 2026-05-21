@@ -315,7 +315,7 @@ export async function openMeetingRoom(
     scope_id: scopeId,
     sync_userwork: options?.syncUserwork ?? true,
     promote_to_processing: options?.promoteToProcessing ?? true,
-    auto_run_first_node: options?.autoRunFirstNode ?? true,
+    auto_run_first_node: options?.autoRunFirstNode ?? false,
   });
 }
 
