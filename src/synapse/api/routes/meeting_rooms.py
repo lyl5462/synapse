@@ -20,6 +20,7 @@ _service = MeetingRoomService()
 class OpenMeetingBody(BaseModel):
     scope_type: Literal["demand", "task"] = Field(..., description="demand 或 task")
     scope_id: str = Field(..., description="需求单号或研发单号")
+    prod: str = Field(..., min_length=1, description="统一服务产品标识（get_prod_info.prod）")
     sync_userwork: bool = Field(True, description="是否回写 userwork 摘要")
     promote_to_processing: bool = Field(
         True, description="待处理工单开会时推进为处理中并定位首节点"
@@ -126,6 +127,7 @@ async def open_meeting(body: OpenMeetingBody) -> dict:
         item = _service.open_meeting(
             body.scope_type,
             body.scope_id,
+            prod=body.prod.strip(),
             sync_userwork=body.sync_userwork,
             promote_to_processing=body.promote_to_processing,
             auto_run_first_node=body.auto_run_first_node,

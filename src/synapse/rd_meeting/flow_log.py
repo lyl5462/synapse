@@ -1,4 +1,4 @@
-"""研发会议室流程日志：``text`` 字段统一为可解析 JSON（便于排查）。"""
+"""研发会议室流程日志：``text`` 为紧凑 JSON，事件行不重复 payload。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 from typing import Any
 
 FLOW_LOG_PREFIX = "会议室流程日志"
-FLOW_LOG_JSON_VERSION = "1.0"
 
 # event → 流程阶段（UI / room_history 展示用）
 EVENT_FLOW_STAGE: dict[str, str] = {
@@ -68,10 +67,32 @@ CHAT_VISIBLE_EVENTS = frozenset(
     }
 )
 
+# room_opened 写入 history 后应剥离的重复字段
+_ROOM_OPENED_STRIP = frozenset(
+    {
+        "payload",
+        "userwork_updates",
+        "sop_display",
+        "local_process_state",
+        "userwork_synced",
+        "scope_type",
+        "stage_id",
+        "current_node_id",
+    }
+)
+
+_NODE_INIT_STRIP = frozenset({"payload"})
+
+
+def flow_log_to_text(data: Any) -> str:
+    """紧凑单行 JSON（无缩进、无转义换行）。"""
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str)
+
 
 def format_flow_log(stage: str, content: str) -> str:
-    """兼容旧调用：包装为 JSON ``text``。"""
-    return format_flow_log_json(stage, {"message": (content or "").strip() or "（无详情）"})
+    """兼容旧调用。"""
+    _ = stage
+    return flow_log_to_text({"message": (content or "").strip() or "（无详情）"})
 
 
 def format_flow_log_json(
@@ -80,15 +101,9 @@ def format_flow_log_json(
     *,
     event: str = "",
 ) -> str:
-    """生成写入 history ``text`` 的 JSON 字符串。"""
-    envelope = {
-        "log": FLOW_LOG_PREFIX,
-        "version": FLOW_LOG_JSON_VERSION,
-        "flow_stage": (stage or "流程").strip(),
-        "event": (event or "").strip(),
-        "data": data,
-    }
-    return json.dumps(envelope, ensure_ascii=False, indent=2, default=str)
+    """兼容旧调用，直接序列化 data（不再套 envelope）。"""
+    _ = stage, event
+    return flow_log_to_text(data)
 
 
 def is_flow_log_formatted(text: str) -> bool:
@@ -103,7 +118,7 @@ def is_flow_log_json(text: str) -> bool:
         obj = json.loads(raw)
     except json.JSONDecodeError:
         return False
-    return isinstance(obj, dict) and obj.get("log") == FLOW_LOG_PREFIX
+    return isinstance(obj, dict)
 
 
 def resolve_flow_stage(event: dict[str, Any]) -> str:
@@ -114,87 +129,122 @@ def resolve_flow_stage(event: dict[str, Any]) -> str:
     return EVENT_FLOW_STAGE.get(et, et or "流程")
 
 
-def _event_meta_fields(event: dict[str, Any]) -> dict[str, Any]:
-    """从事件行提取适合放入 JSON 的元字段（排除 text/payload 等大字段）。"""
-    skip = frozenset({"text", "message", "payload", "ts", "flow_stage"})
-    out: dict[str, Any] = {}
-    for key, val in event.items():
-        if key in skip:
-            continue
-        if isinstance(val, (str, int, float, bool)) or val is None:
-            out[key] = val
-        elif isinstance(val, (list, dict)):
-            out[key] = val
+def _legacy_userwork_updates(event: dict[str, Any]) -> dict[str, str]:
+    """从旧版重复字段推断 userwork 更新内容。"""
+    if not event.get("userwork_synced"):
+        return {}
+    out: dict[str, str] = {}
+    sop = str(event.get("sop_display") or "").strip()
+    if sop:
+        out["sop_node"] = sop
+    local = str(event.get("local_process_state") or "").strip()
+    if local:
+        out["local_process_state"] = local
     return out
 
 
-def build_event_payload(event: dict[str, Any]) -> dict[str, Any]:
-    """为缺少 payload 的事件合成结构化 data。"""
+def _room_opened_text(event: dict[str, Any]) -> str:
+    updates = event.get("userwork_updates")
+    if isinstance(updates, dict):
+        data = {k: str(v) for k, v in updates.items() if v is not None and str(v).strip()}
+    else:
+        data = _legacy_userwork_updates(event)
+    return flow_log_to_text(data)
+
+
+def _node_init_text(event: dict[str, Any]) -> str:
+    payload = event.get("payload")
+    if isinstance(payload, dict) and "order" in payload:
+        from synapse.rd_meeting.init_context import normalize_node_init_log_data
+
+        return flow_log_to_text(normalize_node_init_log_data(payload))
+    scope_type = str(event.get("scope_type") or "demand")
+    scope_id = str(event.get("scope_id") or "").strip()
+    node_id = str(event.get("node_id") or "").strip()
+    if scope_id:
+        from synapse.rd_meeting.init_context import build_node_init_log_data
+
+        return flow_log_to_text(
+            build_node_init_log_data(scope_type, scope_id, node_id=node_id)  # type: ignore[arg-type]
+        )
+    return flow_log_to_text({})
+
+
+def _generic_event_text(event: dict[str, Any]) -> str:
     et = str(event.get("event") or "")
     text = str(event.get("text") or event.get("message") or "").strip()
-    meta = _event_meta_fields(event)
-
-    if et == "room_opened":
-        return {
-            **meta,
-            "room_id": event.get("room_id"),
-            "scope_type": event.get("scope_type"),
-            "scope_id": event.get("scope_id"),
-            "current_node_id": event.get("current_node_id"),
-            "stage_id": event.get("stage_id"),
-            "userwork_synced": event.get("userwork_synced"),
-            "sop_display": event.get("sop_display"),
-            "local_process_state": event.get("local_process_state"),
-        }
+    if is_flow_log_json(text):
+        return text
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        return flow_log_to_text(payload)
     if et == "pipeline_transition":
-        return {
-            **meta,
-            "from_step": event.get("from_step"),
-            "to_step": event.get("to_step"),
-            "reason": event.get("reason"),
-        }
-    if et == "node_init":
-        payload = event.get("payload")
-        if isinstance(payload, dict):
-            return payload
-        return meta
+        return flow_log_to_text(
+            {
+                k: event.get(k)
+                for k in ("from_step", "to_step", "reason")
+                if event.get(k) is not None
+            }
+        )
     if et == "human_intervene":
-        return {
-            **meta,
-            "message_type": event.get("message_type"),
-            "content": text if text and not is_flow_log_json(text) else "",
-        }
-    if et == "delegation_finished" and text and not is_flow_log_json(text):
-        return {**meta, "summary": text}
-    if text and not is_flow_log_formatted(text) and not is_flow_log_json(text):
-        return {**meta, "message": text}
-    return meta
+        content = text if text and not is_flow_log_formatted(text) else ""
+        return flow_log_to_text(
+            {
+                "message_type": event.get("message_type"),
+                "content": content,
+            }
+        )
+    if text and not is_flow_log_formatted(text):
+        return flow_log_to_text({"message": text})
+    skip = frozenset({"text", "message", "payload", "ts", "flow_stage", "event"})
+    meta = {k: v for k, v in event.items() if k not in skip and v is not None}
+    return flow_log_to_text(meta if meta else {"message": "（无详情）"})
 
 
-def build_event_body(event: dict[str, Any]) -> str:
-    """兼容：由 payload 生成单行摘要（内部很少直接使用）。"""
-    payload = build_event_payload(event)
-    return json.dumps(payload, ensure_ascii=False, default=str)[:500]
+def _strip_event_fields(row: dict[str, Any], *, remove: frozenset[str]) -> None:
+    for key in remove:
+        row.pop(key, None)
 
 
 def apply_flow_log_format(event: dict[str, Any]) -> dict[str, Any]:
-    """为 history 事件写入 JSON 格式 ``text``，并保留 ``payload`` 副本。"""
+    """写入 history：``text`` 仅含业务 JSON，去掉与 text 重复的顶层字段。"""
     row = dict(event)
+    et = str(row.get("event") or "")
+    row["flow_stage"] = resolve_flow_stage(row)
+
     existing = str(row.get("text") or row.get("message") or "").strip()
     if is_flow_log_json(existing):
-        row.setdefault("flow_stage", resolve_flow_stage(row))
-        if not isinstance(row.get("payload"), dict):
-            try:
-                row["payload"] = json.loads(existing).get("data")
-            except json.JSONDecodeError:
-                pass
+        row["text"] = existing
+        if et == "room_opened":
+            _strip_event_fields(row, remove=_ROOM_OPENED_STRIP)
+        elif et == "node_init":
+            _strip_event_fields(row, remove=_NODE_INIT_STRIP)
+        else:
+            row.pop("payload", None)
         return row
 
-    stage = resolve_flow_stage(row)
-    et = str(row.get("event") or "")
-    payload = row.get("payload")
-    data = payload if isinstance(payload, dict) else build_event_payload(row)
-    row["payload"] = data
-    row["text"] = format_flow_log_json(stage, data, event=et)
-    row["flow_stage"] = stage
+    if et == "room_opened":
+        row["text"] = _room_opened_text(row)
+        _strip_event_fields(row, remove=_ROOM_OPENED_STRIP)
+    elif et == "node_init":
+        row["text"] = _node_init_text(row)
+        _strip_event_fields(row, remove=_NODE_INIT_STRIP)
+    else:
+        row["text"] = _generic_event_text(row)
+        row.pop("payload", None)
+
     return row
+
+
+def build_event_body(event: dict[str, Any]) -> str:
+    """会议室 UI 摘要：解析 ``text`` JSON 或回退原文。"""
+    text = str(event.get("text") or "").strip()
+    if is_flow_log_json(text):
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            return text[:500]
+        if isinstance(obj, dict) and obj.get("message"):
+            return str(obj["message"])[:500]
+        return flow_log_to_text(obj)[:500]
+    return text[:500] if text else ""

@@ -19,7 +19,6 @@ from synapse.rd_meeting.dev_status import (
     load_or_create_dev_status,
     save_dev_status,
 )
-from synapse.rd_meeting.flow_log import format_flow_log_json
 from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.paths import meeting_pipeline_path, scope_dir
 from synapse.rd_meeting.room_runtime import (
@@ -295,6 +294,7 @@ class PipelineRunContext:
     sync_userwork: bool = True
     promote_to_processing: bool = True
     auto_run_first_node: bool = False
+    prod: str = ""
     agent_pool: Any | None = None
     # 由步骤写入，供返回 API
     dev_status: dict[str, Any] = field(default_factory=dict)
@@ -375,38 +375,40 @@ def _step_open_meeting(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
         local_process_state=local,
     )
 
-    userwork_synced = False
+    prod = (ctx.prod or "").strip()
+    if not prod:
+        raise ValueError("请选择产品（prod 不能为空）")
+
+    from synapse.rd_meeting.product_context import (
+        ensure_prod_in_catalog,
+        save_prod_catalog_to_pipeline,
+    )
+
+    catalog_rows, catalog_err = ensure_prod_in_catalog(prod)
+    if catalog_err:
+        raise ValueError(catalog_err)
+
+    userwork_updates: dict[str, str] = {}
     if ctx.sync_userwork:
-        userwork_synced = patch_userwork_summary(
+        userwork_updates = patch_userwork_summary(
             scope_type=scope_type,
             scope_id=sid,
             sop_node=sop_display,
             local_process_state=local,
+            prod=prod,
         )
+    else:
+        userwork_updates = {"prod": prod}
 
-    room_payload = {
-        "room_id": room_id,
-        "scope_type": scope_type,
-        "scope_id": sid,
-        "stage_id": data.get("stage_id"),
-        "current_node_id": data.get("current_node_id"),
-        "sop_display": sop_display,
-        "local_process_state": local,
-        "userwork_synced": userwork_synced,
-    }
+    save_prod_catalog_to_pipeline(sid, catalog_rows, selected_prod=prod)
+
     append_history_event(
         sid,
         {
             "event": "room_opened",
             "room_id": room_id,
-            "scope_type": scope_type,
             "scope_id": sid,
-            "stage_id": data.get("stage_id"),
-            "current_node_id": data.get("current_node_id"),
-            "payload": room_payload,
-            "sop_display": sop_display,
-            "local_process_state": local,
-            "userwork_synced": userwork_synced,
+            "userwork_updates": userwork_updates,
             "flow_stage": "开启会议室",
             "log_type": "info",
             "agent_id": "system",

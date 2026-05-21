@@ -2,36 +2,37 @@
 
 import json
 
-from synapse.rd_meeting.flow_log import (
-    FLOW_LOG_PREFIX,
-    apply_flow_log_format,
-    is_flow_log_json,
-)
-
+from synapse.rd_meeting.flow_log import apply_flow_log_format, flow_log_to_text, is_flow_log_json
 from synapse.rd_meeting.room_runtime import append_history_event
 
 
-def test_format_flow_log_json_envelope():
-    from synapse.rd_meeting.flow_log import format_flow_log_json, is_flow_log_json
-
-    line = format_flow_log_json("委派协作", {"message": "小鲸 → 需求专家"}, event="delegation_started")
+def test_flow_log_compact_json_no_newlines():
+    line = flow_log_to_text({"message": "小鲸 → 需求专家"})
+    assert "\n" not in line
     assert is_flow_log_json(line)
-    obj = json.loads(line)
-    assert obj["log"] == FLOW_LOG_PREFIX
-    assert obj["flow_stage"] == "委派协作"
-    assert obj["data"]["message"] == "小鲸 → 需求专家"
+    assert json.loads(line)["message"] == "小鲸 → 需求专家"
 
 
-def test_apply_flow_log_format_room_opened():
-    from synapse.rd_meeting.flow_log import is_flow_log_json
-
+def test_apply_flow_log_format_room_opened_only_userwork_fields():
     row = apply_flow_log_format(
-        {"event": "room_opened", "room_id": "r1", "current_node_id": "req_clarify"}
+        {
+            "event": "room_opened",
+            "room_id": "r1",
+            "scope_id": "21881451",
+            "userwork_updates": {"sop_node": "需求澄清", "local_process_state": "处理中"},
+            "sop_display": "需求澄清",
+            "local_process_state": "处理中",
+            "userwork_synced": True,
+            "payload": {"room_id": "r1"},
+        }
     )
     assert is_flow_log_json(row["text"])
-    obj = json.loads(row["text"])
-    assert obj["flow_stage"] == "开启会议室"
-    assert obj["data"]["current_node_id"] == "req_clarify"
+    assert "\n" not in row["text"]
+    data = json.loads(row["text"])
+    assert data == {"sop_node": "需求澄清", "local_process_state": "处理中"}
+    assert "payload" not in row
+    assert "sop_display" not in row
+    assert "local_process_state" not in row
 
 
 def test_append_history_event_writes_formatted_line(tmp_path, monkeypatch):
@@ -52,5 +53,6 @@ def test_append_history_event_writes_formatted_line(tmp_path, monkeypatch):
     assert hist.is_file()
     ev = json.loads(hist.read_text(encoding="utf-8").strip())
     assert is_flow_log_json(ev["text"])
+    assert "\n" not in ev["text"]
     body = json.loads(ev["text"])
-    assert body["flow_stage"] == "委派协作"
+    assert body["message"] == "小鲸 → 专家：任务A"

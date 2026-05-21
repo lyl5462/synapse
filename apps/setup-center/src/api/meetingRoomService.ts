@@ -303,19 +303,25 @@ export async function openMeetingRoom(
   synapseApiBase: string,
   scopeType: MeetingRoomScopeType,
   scopeId: string,
-  options?: {
+  options: {
+    prod: string;
     promoteToProcessing?: boolean;
     autoRunFirstNode?: boolean;
     syncUserwork?: boolean;
   },
 ): Promise<MeetingRoomDetail> {
   const base = synapseApiBase.replace(/\/$/, '');
+  const prod = (options.prod || '').trim();
+  if (!prod) {
+    throw new Error('missing_prod');
+  }
   return apiPost<MeetingRoomDetail>(base, '/api/dev/meeting-rooms/open', {
     scope_type: scopeType,
     scope_id: scopeId,
-    sync_userwork: options?.syncUserwork ?? true,
-    promote_to_processing: options?.promoteToProcessing ?? true,
-    auto_run_first_node: options?.autoRunFirstNode ?? false,
+    prod,
+    sync_userwork: options.syncUserwork ?? true,
+    promote_to_processing: options.promoteToProcessing ?? true,
+    auto_run_first_node: options.autoRunFirstNode ?? false,
   });
 }
 

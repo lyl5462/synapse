@@ -374,6 +374,7 @@ class MeetingRoomService:
         scope_type: ScopeType,
         scope_id: str,
         *,
+        prod: str = "",
         sync_userwork: bool = True,
         promote_to_processing: bool = True,
         auto_run_first_node: bool = False,
@@ -381,6 +382,9 @@ class MeetingRoomService:
         sid = (scope_id or "").strip()
         if not sid:
             raise ValueError("scope_id required")
+        prod_key = (prod or "").strip()
+        if not prod_key:
+            raise ValueError("请选择产品（prod）")
 
         from synapse.rd_meeting.pipeline import (
             STEP_OPEN_MEETING,
@@ -391,6 +395,7 @@ class MeetingRoomService:
         ctx = PipelineRunContext(
             scope_type=scope_type,
             scope_id=sid,
+            prod=prod_key,
             sync_userwork=sync_userwork,
             promote_to_processing=promote_to_processing,
             auto_run_first_node=auto_run_first_node,

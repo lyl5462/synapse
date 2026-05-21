@@ -1,4 +1,4 @@
-"""会议室 → userwork.json：仅回写 local_process_state / sop_node。"""
+"""会议室 → userwork.json：回写 local_process_state / sop_node / prod。"""
 
 from __future__ import annotations
 
@@ -37,15 +37,16 @@ def patch_userwork_summary(
     sop_node: str | None = None,
     local_process_state: str | None = None,
     task_sop_node: str | None = None,
-) -> bool:
-    """更新 userwork 中对应需求单或研发子单的摘要字段。返回是否修改成功。"""
+    prod: str | None = None,
+) -> dict[str, str]:
+    """更新 userwork 摘要字段。返回本次写入的字段（键为 userwork 字段名）。"""
     path: Path = _owner_order_file_name()
     if not path.is_file():
-        return False
+        return {}
 
     dn = _snapshot_norm_id(scope_id)
     if not dn:
-        return False
+        return {}
 
     lock = FileLock(str(_owner_order_file_lock_path()), timeout=30)
     with lock:
@@ -53,14 +54,15 @@ def patch_userwork_summary(
             raw = path.read_text(encoding="utf-8")
             prev = json.loads(raw)
             if not isinstance(prev, dict):
-                return False
+                return {}
             existing_list = prev.get("list")
             if not isinstance(existing_list, list):
-                return False
+                return {}
         except (OSError, json.JSONDecodeError):
-            return False
+            return {}
 
         modified = False
+        applied: dict[str, str] = {}
         for demand in existing_list:
             if not isinstance(demand, dict):
                 continue
@@ -69,9 +71,15 @@ def patch_userwork_summary(
                     continue
                 if sop_node is not None:
                     demand["sop_node"] = sop_node
+                    applied["sop_node"] = sop_node
                     modified = True
                 if local_process_state is not None:
                     demand["local_process_state"] = local_process_state
+                    applied["local_process_state"] = local_process_state
+                    modified = True
+                if prod is not None:
+                    demand["prod"] = prod
+                    applied["prod"] = prod
                     modified = True
                 break
             # task scope
@@ -86,23 +94,29 @@ def patch_userwork_summary(
                 node_val = task_sop_node if task_sop_node is not None else sop_node
                 if node_val is not None:
                     task["sop_node"] = node_val
+                    applied["sop_node"] = node_val
                     modified = True
                 if local_process_state is not None:
                     task["local_process_state"] = local_process_state
+                    applied["local_process_state"] = local_process_state
+                    modified = True
+                if prod is not None:
+                    task["prod"] = prod
+                    applied["prod"] = prod
                     modified = True
                 break
             if modified:
                 break
 
         if not modified:
-            return False
+            return {}
 
         payload = {
             "list": existing_list,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
         _atomic_write_json_file(path, payload)
-        return True
+        return applied
 
 
 def load_scope_work_order_context(
@@ -125,6 +139,9 @@ def load_scope_work_order_context(
         out["task_no"] = str(row.get("task_no") or scope_id)
     else:
         out["demand_no"] = str(row.get("demand_no") or scope_id)
+    prod_val = str(row.get("prod") or "").strip()
+    if prod_val:
+        out["prod"] = prod_val
     return {k: v for k, v in out.items() if v}
 
 
