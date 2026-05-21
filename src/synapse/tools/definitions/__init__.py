@@ -57,6 +57,7 @@ from .im_channel import IM_CHANNEL_TOOLS
 from .lsp import LSP_TOOLS
 from .mcp import MCP_TOOLS
 from .memory import MEMORY_TOOLS
+from .meeting_room import MEETING_ROOM_TOOLS
 from .mode import MODE_TOOLS
 from .notebook import NOTEBOOK_TOOLS
 from .opencli import OPENCLI_TOOLS
@@ -149,6 +150,7 @@ __all__ = [
     "HUB_TOOLS",
     "AGENT_TOOLS",
     "ORG_SETUP_TOOLS",
+    "MEETING_ROOM_TOOLS",
     "AGENT_HUB_TOOLS",
     "AGENT_PACKAGE_TOOLS",
     "SKILL_STORE_TOOLS",

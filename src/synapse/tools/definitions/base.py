@@ -106,6 +106,7 @@ CATEGORY_PREFIXES = {
         "task_stop",
         "send_agent_message",
         "setup_organization",
+        "submit_meeting_work_plan",
     ),
     "Browser": "browser_",
     "Desktop": "desktop_",

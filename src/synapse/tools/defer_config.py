@@ -29,6 +29,7 @@ ALWAYS_LOAD_TOOLS: frozenset[str] = frozenset(
         # 代理委派
         "delegate_to_agent",
         "delegate_parallel",
+        "submit_meeting_work_plan",
         # MCP 入口（prompt 中 MCP Catalog 引导用户调用，必须常驻）
         "call_mcp_tool",
         "list_mcp_servers",

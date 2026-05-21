@@ -433,10 +433,12 @@ class Agent:
 
             _all_tools.extend(_DT)
         from ..tools.definitions.agent import AGENT_TOOLS
+        from ..tools.definitions.meeting_room import MEETING_ROOM_TOOLS
         from ..tools.definitions.org_setup import ORG_SETUP_TOOLS
 
         _all_tools.extend(AGENT_TOOLS)
         _all_tools.extend(ORG_SETUP_TOOLS)
+        _all_tools.extend(MEETING_ROOM_TOOLS)
         if opencli_available():
             from ..tools.definitions.opencli import OPENCLI_TOOLS as _OC
 
@@ -535,12 +537,14 @@ class Agent:
             logger.info(f"CLI-Anything tools enabled ({len(CLI_ANYTHING_TOOLS)} tools)")
 
         from ..tools.definitions.agent import AGENT_TOOLS
+        from ..tools.definitions.meeting_room import MEETING_ROOM_TOOLS
         from ..tools.definitions.org_setup import ORG_SETUP_TOOLS
 
         self._tools.extend(AGENT_TOOLS)
         self._tools.extend(ORG_SETUP_TOOLS)
+        self._tools.extend(MEETING_ROOM_TOOLS)
         logger.info(
-            f"Multi-agent tools enabled ({len(AGENT_TOOLS) + len(ORG_SETUP_TOOLS)} tools)"
+            f"Multi-agent tools enabled ({len(AGENT_TOOLS) + len(ORG_SETUP_TOOLS) + len(MEETING_ROOM_TOOLS)} tools)"
         )
 
         # Platform hub tools (Agent Hub + Skill Store, only when enabled)
@@ -1349,6 +1353,9 @@ class Agent:
             logger.info("CLI-Anything handler registered (cli-anything-* tools detected)")
 
         self.handler_registry.register("agent", create_agent_tool_handler(self))
+        from ..tools.handlers.meeting_room import create_meeting_room_handler
+
+        self.handler_registry.register("meeting_room", create_meeting_room_handler(self))
         from ..tools.handlers.org_setup import create_handler as create_org_setup_handler
 
         self.handler_registry.register("org_setup", create_org_setup_handler(self))

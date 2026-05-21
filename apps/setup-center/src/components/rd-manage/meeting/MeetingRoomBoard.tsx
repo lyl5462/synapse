@@ -78,6 +78,8 @@ interface LogEntry {
   text: string;
   timestamp: string;
   type: 'info' | 'error' | 'success' | 'warning' | 'user';
+  /** 后端 pipeline / 提示词等长文 Markdown，需 pre-wrap 展示 */
+  rich?: boolean;
 }
 
 interface MeetingRoom {
@@ -265,12 +267,16 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
 }
 
 function mapChatWireToLog(w: MeetingRoomChatLogWire): LogEntry {
+  const rich =
+    Boolean((w as { rich?: boolean }).rich) ||
+    /^(【步骤|\*\*流程迁移|# 工作安排计划)/.test((w.text || '').trim());
   return {
     id: w.id,
     agentId: w.agentId,
     text: w.text,
     timestamp: w.timestamp,
     type: w.type,
+    rich,
   };
 }
 
@@ -1121,7 +1127,7 @@ const InterventionDialog = ({
                         log.type === 'warning' ? 'bg-amber-950/40 border border-amber-900/50 text-amber-200 rounded-tl-sm' :
                         log.type === 'success' ? 'bg-green-950/40 border border-green-900/50 text-green-200 rounded-tl-sm' :
                         'bg-muted border border-border/50 text-foreground rounded-tl-sm'
-                      }`}>
+                      } ${log.rich ? 'max-h-[min(70vh,520px)] overflow-y-auto custom-scrollbar whitespace-pre-wrap font-mono text-[11px]' : ''}`}>
                       {log.type === 'error' && <ShieldAlert className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5 text-red-400" />}
                       {log.type === 'warning' && <AlertTriangle className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5 text-amber-400" />}
                       {log.type === 'success' && <CheckCircle2 className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5 text-green-400" />}

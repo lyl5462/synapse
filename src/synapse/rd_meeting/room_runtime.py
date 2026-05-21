@@ -286,27 +286,30 @@ def build_meeting_summary_nodes(
 
 def history_to_chat_logs(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """会议室 UI 用的简化聊天流（Phase 1：来自 history 事件）。"""
-    from synapse.rd_meeting.flow_log import CHAT_VISIBLE_EVENTS, build_event_body, format_flow_log, resolve_flow_stage
+    from synapse.rd_meeting.flow_log import CHAT_VISIBLE_EVENTS
+    from synapse.rd_meeting.pipeline_chat import format_event_chat_display
 
     logs: list[dict[str, Any]] = []
     for i, ev in enumerate(history):
         et = str(ev.get("event") or "")
         if et not in CHAT_VISIBLE_EVENTS:
             continue
-        text = str(ev.get("text") or ev.get("message") or "").strip()
-        if not text:
-            text = format_flow_log(resolve_flow_stage(ev), build_event_body(ev))
+        text = format_event_chat_display(ev)
         if not text:
             continue
-            logs.append(
-                {
-                    "id": str(ev.get("id") or f"hist-{i}"),
-                    "agentId": str(ev.get("agent_id") or ("user" if et == "human_intervene" else "system")),
-                    "text": text,
-                    "timestamp": _format_ts_hms(str(ev.get("ts") or "")),
-                    "type": str(ev.get("log_type") or ("user" if et == "human_intervene" else "info")),
-                }
-            )
+        agent_id = str(ev.get("agent_id") or ("user" if et == "human_intervene" else "system"))
+        if et == "host_prompt_assembled" and agent_id == "system":
+            agent_id = str(ev.get("agent_id") or "default")
+        logs.append(
+            {
+                "id": str(ev.get("id") or f"hist-{i}"),
+                "agentId": agent_id,
+                "text": text,
+                "timestamp": _format_ts_hms(str(ev.get("ts") or "")),
+                "type": str(ev.get("log_type") or ("user" if et == "human_intervene" else "info")),
+                "rich": et in ("node_init", "host_prompt_assembled", "room_opened", "work_plan_submitted"),
+            }
+        )
     return logs
 
 

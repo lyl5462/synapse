@@ -91,7 +91,8 @@ label: 研发会议室通用规范
 
 - 复读本节点的 `NODE_INTENT` 与工单硬约束（标题/描述/历史决策）。
 - 参考 §3 能力卡片，把节点目标拆分为可由具体 Worker 完成的子任务。
-- 优先 `delegate_parallel` 启动可并行的只读 / 调研任务。
+- **必须先**调用 `submit_meeting_work_plan` 提交结构化计划（每项含 `agent_id` / `task` / `reason`），再 `delegate_to_agent` 或 `delegate_parallel`（研发会议室强制）。
+- 优先 `delegate_parallel` 启动可并行的只读 / 调研任务（建议带 `plan_item_id` 关联计划条目）。
 
 ### 4.2 检查反馈
 

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, format_host_prompt_markdown
 from synapse.rd_meeting.init_context import format_node_init_log
 from synapse.rd_meeting.participants import build_meeting_participants
+from synapse.rd_meeting.pipeline_chat import format_node_init_chat
 from synapse.rd_meeting.room_runtime import append_history_event
 
 ScopeType = Literal["demand", "task"]
@@ -45,6 +47,7 @@ def append_node_init_chat(
             "scope_type": scope_type,
             "scope_id": scope_id,
             "text": text,
+            "chat_text": format_node_init_chat(scope_type, scope_id, node_id=node_id),
             "agent_id": host_id,
             "log_type": "info",
             "participants": participants,
@@ -52,3 +55,45 @@ def append_node_init_chat(
         },
     )
     return text
+
+
+def append_host_prompt_chat(
+    scope_id: str,
+    *,
+    room_id: str,
+    scope_type: ScopeType = "demand",
+    node_id: str,
+    binding: dict[str, Any],
+    ticket_title: str = "",
+) -> str:
+    """第三步：主控提示词组装结果写入协作会议流。"""
+    bundle = assemble_host_prompt_bundle(
+        scope_type=scope_type,
+        scope_id=scope_id,
+        node_id=node_id,
+        binding=binding,
+        ticket_title=ticket_title,
+    )
+    display = format_host_prompt_markdown(bundle)
+    host_id = str(binding.get("host_profile_id") or "default")
+    append_history_event(
+        scope_id,
+        {
+            "event": "host_prompt_assembled",
+            "room_id": room_id,
+            "node_id": node_id,
+            "scope_type": scope_type,
+            "scope_id": scope_id,
+            "text": display,
+            "chat_text": display,
+            "agent_id": host_id,
+            "log_type": "info",
+            "flow_stage": "主控提示词组装",
+            "prompt_stats": {
+                "system_chars": len(str(bundle.get("system_prompt_suffix") or "")),
+                "user_chars": len(str(bundle.get("user_prompt") or "")),
+                "skill_id": str(bundle.get("meeting_skill_id") or ""),
+            },
+        },
+    )
+    return display

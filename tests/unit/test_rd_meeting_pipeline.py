@@ -8,6 +8,7 @@ import pytest
 
 from synapse.rd_meeting.paths import meeting_pipeline_path
 from synapse.rd_meeting.pipeline import (
+    STEP_ASSEMBLE_HOST_PROMPT,
     STEP_NODE_INIT,
     STEP_OPEN_MEETING,
     STEP_WAITING,
@@ -79,4 +80,9 @@ def test_pipeline_file_created_on_open_flow(monkeypatch, tmp_path):
     assert pipe.flow_step == STEP_WAITING
     assert STEP_OPEN_MEETING in (pipe.data.get("steps_completed") or [])
     assert STEP_NODE_INIT in (pipe.data.get("steps_completed") or [])
+    assert STEP_ASSEMBLE_HOST_PROMPT in (pipe.data.get("steps_completed") or [])
+    ctx_host = pipe.data.get("context", {}).get("host_prompt")
+    assert isinstance(ctx_host, dict)
+    assert ctx_host.get("system_chars", 0) > 0
+    assert ctx_host.get("user_chars", 0) > 0
     assert detail.get("pipeline", {}).get("flow_step") == STEP_WAITING

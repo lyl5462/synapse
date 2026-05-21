@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Literal
 
-from synapse.rd_meeting.bootstrap import append_node_init_chat
+from synapse.rd_meeting.bootstrap import append_host_prompt_chat, append_node_init_chat
+from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, save_host_prompt_snapshot
+from synapse.rd_meeting.pipeline_chat import format_room_opened_chat
 from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.dev_status import (
     ensure_room_id,
@@ -56,6 +58,7 @@ PIPELINE_SCHEMA_VERSION = 1
 STEP_IDLE = "idle"
 STEP_OPEN_MEETING = "open_meeting"
 STEP_NODE_INIT = "node_init"
+STEP_ASSEMBLE_HOST_PROMPT = "assemble_host_prompt"
 STEP_RUN_NODE_SCHEDULE = "run_node_schedule"
 STEP_RUN_NODE = "run_node"
 STEP_WAITING = "waiting"
@@ -66,6 +69,7 @@ _VALID_FLOW_STEPS = frozenset(
         STEP_IDLE,
         STEP_OPEN_MEETING,
         STEP_NODE_INIT,
+        STEP_ASSEMBLE_HOST_PROMPT,
         STEP_RUN_NODE_SCHEDULE,
         STEP_RUN_NODE,
         STEP_WAITING,
@@ -91,6 +95,7 @@ FLOW_STEP_LABEL: dict[str, str] = {
     STEP_IDLE: "空闲",
     STEP_OPEN_MEETING: "开启会议室",
     STEP_NODE_INIT: "节点初始化",
+    STEP_ASSEMBLE_HOST_PROMPT: "主控提示词组装",
     STEP_RUN_NODE_SCHEDULE: "调度节点执行",
     STEP_RUN_NODE: "执行当前节点",
     STEP_WAITING: "流程待机",
@@ -100,7 +105,8 @@ FLOW_STEP_LABEL: dict[str, str] = {
 # 登记：某步完成后默认进入的下一步（可被 handler 覆盖）
 FLOW_STEP_NEXT: dict[str, str] = {
     STEP_OPEN_MEETING: STEP_NODE_INIT,
-    STEP_NODE_INIT: STEP_WAITING,
+    STEP_NODE_INIT: STEP_ASSEMBLE_HOST_PROMPT,
+    STEP_ASSEMBLE_HOST_PROMPT: STEP_WAITING,
     STEP_RUN_NODE_SCHEDULE: STEP_RUN_NODE,
     STEP_RUN_NODE: STEP_WAITING,
 }
@@ -408,7 +414,16 @@ def _step_open_meeting(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
             "event": "room_opened",
             "room_id": room_id,
             "scope_id": sid,
+            "current_node_id": node_id,
+            "sop_display": sop_display,
             "userwork_updates": userwork_updates,
+            "chat_text": format_room_opened_chat(
+                room_id=room_id,
+                scope_id=sid,
+                userwork_updates=userwork_updates,
+                current_node_id=node_id,
+                sop_display=sop_display,
+            ),
             "flow_stage": "开启会议室",
             "log_type": "info",
             "agent_id": "system",
@@ -474,11 +489,72 @@ def _step_node_init(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
         ctx.room_state = rs
 
     pipe.mark_step_completed(STEP_NODE_INIT)
+    pipe.set_flow_step(
+        FLOW_STEP_NEXT[STEP_NODE_INIT],
+        reason="节点初始化完成，进入主控提示词组装",
+    )
+
+
+def _step_assemble_host_prompt(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
+    """第三步：组装小鲸主控提示词并写入协作会议流（完整展示）。"""
+    sid = ctx.scope_id
+    data = ctx.dev_status
+    if not data:
+        data = load_dev_status(sid) or {}
+    room_id = pipe.room_id or str((data.get("meeting_room") or {}).get("room_id") or "")
+    run_node = pipe.current_node_id or str(data.get("current_node_id") or "")
+    scope_type = ctx.scope_type
+    ticket_title = str(ctx.detail.get("ticket_title") or "")
+
+    if run_node in ("pending", ""):
+        pipe.mark_step_completed(STEP_ASSEMBLE_HOST_PROMPT)
+        pipe.set_flow_step(STEP_WAITING, reason="无有效节点，跳过主控提示词组装")
+        return
+
+    run_binding = resolve_node_binding(
+        run_node,
+        scope_type=scope_type,
+        scope_id=sid,
+        ticket_title=ticket_title,
+    )
+    run_binding["node_id"] = run_node
+
+    bundle = assemble_host_prompt_bundle(
+        scope_type=scope_type,
+        scope_id=sid,
+        node_id=run_node,
+        binding=run_binding,
+        ticket_title=ticket_title,
+    )
+    snapshot_path = save_host_prompt_snapshot(sid, bundle)
+    append_host_prompt_chat(
+        sid,
+        room_id=room_id,
+        scope_type=scope_type,
+        node_id=run_node,
+        binding=run_binding,
+        ticket_title=ticket_title,
+    )
+
+    pctx = pipe._data.get("context")
+    if not isinstance(pctx, dict):
+        pctx = {}
+    pctx["host_prompt"] = {
+        "node_id": run_node,
+        "snapshot_path": snapshot_path,
+        "system_chars": len(str(bundle.get("system_prompt_suffix") or "")),
+        "user_chars": len(str(bundle.get("user_prompt") or "")),
+        "skill_id": str(bundle.get("meeting_skill_id") or ""),
+        "host_profile_id": str(bundle.get("host_profile_id") or ""),
+    }
+    pipe._data["context"] = pctx
+
+    pipe.mark_step_completed(STEP_ASSEMBLE_HOST_PROMPT)
     if ctx.auto_run_first_node:
-        pipe.set_flow_step(STEP_RUN_NODE_SCHEDULE, reason="节点初始化完成，待调度执行")
+        pipe.set_flow_step(STEP_RUN_NODE_SCHEDULE, reason="主控提示词已组装，待调度执行")
     else:
         pipe.set_phase("waiting", sync_room_state=True)
-        pipe.set_flow_step(STEP_WAITING, reason="节点初始化完成，流程待机")
+        pipe.set_flow_step(STEP_WAITING, reason="主控提示词已组装，流程待机")
 
 
 def _step_run_node_schedule(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
@@ -518,6 +594,7 @@ def _step_run_node_schedule(pipe: MeetingPipeline, ctx: PipelineRunContext) -> N
 FLOW_STEP_HANDLERS: dict[str, StepHandler] = {
     STEP_OPEN_MEETING: _step_open_meeting,
     STEP_NODE_INIT: _step_node_init,
+    STEP_ASSEMBLE_HOST_PROMPT: _step_assemble_host_prompt,
     STEP_RUN_NODE_SCHEDULE: _step_run_node_schedule,
     # STEP_RUN_NODE: 仍由 orchestrator.run_current_node 执行，后续迁入
 }

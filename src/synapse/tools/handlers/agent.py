@@ -68,6 +68,7 @@ class AgentToolHandler:
         message = (params.get("message") or "").strip()
         reason = (params.get("reason") or "").strip()
         context = (params.get("context") or "").strip()
+        plan_item_id = (params.get("plan_item_id") or "").strip()
 
         if not agent_id:
             return "❌ agent_id is required"
@@ -81,6 +82,21 @@ class AgentToolHandler:
         session = getattr(self.agent, "_current_session", None)
         if session is None:
             return "❌ No active session — delegation requires a session context"
+
+        session_id = (
+            getattr(session, "id", None)
+            or getattr(session, "session_id", None)
+            or getattr(self.agent, "_current_session_id", None)
+            or ""
+        )
+
+        from synapse.rd_meeting.work_plan import check_delegation_allowed, mark_delegation_started
+
+        gate_err = check_delegation_allowed(
+            str(session_id), agent_id=agent_id, plan_item_id=plan_item_id
+        )
+        if gate_err:
+            return gate_err
 
         current_agent = (
             getattr(getattr(session, "context", None), "agent_profile_id", "default") or "default"
@@ -97,12 +113,6 @@ class AgentToolHandler:
         if reason:
             isolated_message += f"\n[委派原因] {reason}"
 
-        session_id = (
-            getattr(session, "id", None)
-            or getattr(session, "session_id", None)
-            or getattr(self.agent, "_current_session_id", None)
-            or ""
-        )
         started = time.monotonic()
         try:
             from synapse.rd_meeting.live import (
@@ -110,12 +120,16 @@ class AgentToolHandler:
                 record_delegation_started,
             )
 
+            mark_delegation_started(
+                str(session_id), agent_id=agent_id, plan_item_id=plan_item_id
+            )
             record_delegation_started(
                 str(session_id),
                 from_agent=current_agent,
                 to_agent=agent_id,
                 reason=reason,
                 task_preview=message[:280],
+                plan_item_id=plan_item_id,
             )
             result = await orchestrator.delegate(
                 session=session,
@@ -209,6 +223,24 @@ class AgentToolHandler:
             getattr(getattr(session, "context", None), "agent_profile_id", "default") or "default"
         )
 
+        session_id = (
+            getattr(session, "id", None)
+            or getattr(session, "session_id", None)
+            or getattr(self.agent, "_current_session_id", None)
+            or ""
+        )
+
+        from synapse.rd_meeting.work_plan import check_delegation_allowed
+
+        for task in tasks_param:
+            if not isinstance(task, dict):
+                continue
+            aid = (task.get("agent_id") or "").strip()
+            pid = (task.get("plan_item_id") or "").strip()
+            gate_err = check_delegation_allowed(str(session_id), agent_id=aid, plan_item_id=pid)
+            if gate_err:
+                return gate_err
+
         # Detect duplicate agent_ids — auto-spawn ephemeral clones
         # to avoid two coroutines sharing the same Agent instance.
         agent_ids = [(t.get("agent_id") or "").strip() for t in tasks_param]
@@ -227,6 +259,7 @@ class AgentToolHandler:
             agent_id = (task.get("agent_id") or "").strip()
             message = (task.get("message") or "").strip()
             reason = (task.get("reason") or "").strip()
+            plan_item_id = (task.get("plan_item_id") or "").strip()
             per_task_ctx = (task.get("context") or "").strip()
             task_context = "\n\n".join(filter(None, [global_context, per_task_ctx]))
 
@@ -270,6 +303,7 @@ class AgentToolHandler:
                                 "message": message,
                                 "reason": reason,
                                 "context": task_context,
+                                "plan_item_id": plan_item_id,
                             }
                         )
                         continue
@@ -281,6 +315,7 @@ class AgentToolHandler:
                     "message": message,
                     "reason": reason,
                     "context": task_context,
+                    "plan_item_id": plan_item_id,
                 }
             )
 
@@ -292,6 +327,7 @@ class AgentToolHandler:
             msg = task["message"]
             rsn = task["reason"]
             ctx = task.get("context", "")
+            pid = str(task.get("plan_item_id") or "").strip()
             if not aid or not msg:
                 return display or "?", "❌ agent_id and message are required"
 
@@ -319,13 +355,16 @@ class AgentToolHandler:
                     record_delegation_finished,
                     record_delegation_started,
                 )
+                from synapse.rd_meeting.work_plan import mark_delegation_started
 
+                mark_delegation_started(str(session_id), agent_id=display, plan_item_id=pid)
                 record_delegation_started(
                     str(session_id),
                     from_agent=current_agent,
                     to_agent=aid,
                     reason=rsn,
                     task_preview=msg[:280],
+                    plan_item_id=pid,
                 )
                 if parent_browser and parent_browser.is_ready:
                     try:

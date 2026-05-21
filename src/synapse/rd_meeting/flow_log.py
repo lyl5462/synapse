@@ -11,6 +11,7 @@ FLOW_LOG_PREFIX = "会议室流程日志"
 EVENT_FLOW_STAGE: dict[str, str] = {
     "room_opened": "开启会议室",
     "node_init": "节点初始化",
+    "host_prompt_assembled": "主控提示词组装",
     "node_started": "节点开始执行",
     "run_node_scheduled": "调度节点执行",
     "run_node_begin": "节点执行中",
@@ -19,6 +20,7 @@ EVENT_FLOW_STAGE: dict[str, str] = {
     "host_llm_end": "主控推理结束",
     "delegation_started": "委派协作",
     "delegation_finished": "协作反馈",
+    "work_plan_submitted": "工作安排计划",
     "human_gate": "人工门控",
     "node_pending_clarify": "会中澄清",
     "node_pending_confirm": "结果确认",
@@ -45,6 +47,7 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "system",
         "node_started",
         "node_init",
+        "host_prompt_assembled",
         "run_node_scheduled",
         "run_node_begin",
         "prewarm_workers",
@@ -53,6 +56,7 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "human_gate",
         "delegation_started",
         "delegation_finished",
+        "work_plan_submitted",
         "node_failed",
         "node_validation_failed",
         "hitl_approved",
@@ -211,8 +215,16 @@ def apply_flow_log_format(event: dict[str, Any]) -> dict[str, Any]:
     row = dict(event)
     et = str(row.get("event") or "")
     row["flow_stage"] = resolve_flow_stage(row)
+    chat_text = str(row.get("chat_text") or "").strip()
 
     existing = str(row.get("text") or row.get("message") or "").strip()
+    if et == "host_prompt_assembled" and existing and not is_flow_log_json(existing):
+        row["text"] = existing
+        row.pop("payload", None)
+        if chat_text:
+            row["chat_text"] = chat_text
+        return row
+
     if is_flow_log_json(existing):
         row["text"] = existing
         if et == "room_opened":
@@ -221,6 +233,8 @@ def apply_flow_log_format(event: dict[str, Any]) -> dict[str, Any]:
             _strip_event_fields(row, remove=_NODE_INIT_STRIP)
         else:
             row.pop("payload", None)
+        if chat_text:
+            row["chat_text"] = chat_text
         return row
 
     if et == "room_opened":
@@ -233,6 +247,8 @@ def apply_flow_log_format(event: dict[str, Any]) -> dict[str, Any]:
         row["text"] = _generic_event_text(row)
         row.pop("payload", None)
 
+    if chat_text:
+        row["chat_text"] = chat_text
     return row
 
 

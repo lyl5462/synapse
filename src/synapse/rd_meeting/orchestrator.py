@@ -165,6 +165,14 @@ def build_node_prompt(
     if phase_hint:
         parts.append(phase_hint)
     parts.append(
+        "\n## 工作安排计划（强制）\n"
+        "在**首次** `delegate_to_agent` / `delegate_parallel` 之前，必须先调用 "
+        "`submit_meeting_work_plan`：\n"
+        "1. 参考 §3 能力卡片与上方「会议目标」，列出每项 `agent_id` / `task` / `reason`；\n"
+        "2. 提交计划后系统会写入会议室日志，再按 plan 逐条委派（建议带 `plan_item_id`）；\n"
+        "3. 已开始委派后不可再改计划；无需人工审批计划。\n"
+    )
+    parts.append(
         "\n请按"
         "「拆分目标 → delegate Worker → 检查反馈契合度/真实性/准确性 → 多轮迭代 → 综合输出」"
         "的循环完成本节点。"
@@ -788,6 +796,7 @@ class MeetingRoomOrchestrator:
             nm[node_id] = {"started_at": _now_iso(), "seconds": 0, "tokens": 0}
         room_state["node_metrics"] = nm
         rework = str(room_state.pop("rework_instruction", "") or "").strip()
+        room_state.pop("current_work_plan", None)
         save_room_state(sid, room_state)
         set_phase(sid, "running")
 

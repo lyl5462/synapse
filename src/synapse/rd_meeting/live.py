@@ -80,6 +80,7 @@ def record_delegation_started(
     to_agent: str,
     reason: str = "",
     task_preview: str = "",
+    plan_item_id: str = "",
 ) -> None:
     parsed = parse_rd_meeting_session(session_id)
     if not parsed:
@@ -91,11 +92,12 @@ def record_delegation_started(
     reason_txt = f"（{reason}）" if reason.strip() else ""
     preview = (task_preview or "").strip().replace("\n", " ")
     preview_txt = f"\n任务：{preview[:280]}" if preview else ""
+    plan_txt = f"\n计划项：{plan_item_id}" if (plan_item_id or "").strip() else ""
     append_meeting_live_event(
         scope_id,
         room_id=parsed["room_id"],
         event="delegation_started",
-        text=f"小鲸 → {to_label}：已委派协作{reason_txt}{preview_txt}",
+        text=f"小鲸 → {to_label}：已委派协作{reason_txt}{preview_txt}{plan_txt}",
         agent_id=from_agent or "host",
         log_type="info",
         extra={
@@ -103,6 +105,7 @@ def record_delegation_started(
             "from_agent": from_agent,
             "reason": reason,
             "task_preview": preview[:500],
+            "plan_item_id": (plan_item_id or "").strip(),
         },
     )
     _touch_agents_active(scope_id, parsed["room_id"], to_agent, "worker", "delegating")

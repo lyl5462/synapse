@@ -54,6 +54,13 @@ AGENT_TOOLS = [
                     "type": "string",
                     "description": "委派原因（可选，用于日志和追踪）",
                 },
+                "plan_item_id": {
+                    "type": "string",
+                    "description": (
+                        "研发会议室：对应 submit_meeting_work_plan.items[].id（可选但推荐），"
+                        "便于日志关联"
+                    ),
+                },
                 "model": {
                     "type": "string",
                     "enum": ["fast", "default", "capable"],
@@ -222,6 +229,10 @@ AGENT_TOOLS = [
                             "reason": {
                                 "type": "string",
                                 "description": "委派原因（可选）",
+                            },
+                            "plan_item_id": {
+                                "type": "string",
+                                "description": "研发会议室：对应 submit_meeting_work_plan.items[].id（可选）",
                             },
                             "context": {
                                 "type": "string",
