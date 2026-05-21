@@ -168,22 +168,16 @@ class MeetingRoomContext:
     prompt_supplement: str = ""
 
     def template_vars(self) -> dict[str, str]:
+        """仅流程/路径类占位符；议程与工单数据只在 ``DYNAMIC_MEETING_CONTEXT``。"""
         return {
             "ROLE": self.role,
-            "SCOPE_TYPE": self.scope_type or "demand",
-            "SCOPE_ID": self.scope_id,
-            "TICKET_TITLE": self.ticket_title or self.scope_id,
-            "NODE_ID": self.node_id,
-            "NODE_NAME": self.node_name,
-            "NODE_INTENT": self.node_intent,
-            "STAGE_ID": str(self.stage_id),
-            "STAGE_NAME": self.stage_name,
             "HOST_PROFILE_ID": self.host_profile_id,
             "HOST_PROFILE_NAME": self.host_profile_name,
             "HOST_LLM_ENDPOINT": self.host_llm_endpoint or DEFAULT_LLM_ENDPOINT_KEY,
             "WORKER_LLM_ENDPOINT": self.worker_llm_endpoint or DEFAULT_LLM_ENDPOINT_KEY,
             "ARCHIVE_DIR": self.archive_dir,
-            "CAPABILITY_CARDS": "{CAPABILITY_CARDS}",
+            "STAGE_ID": str(self.stage_id),
+            "NODE_ID": self.node_id,
             "DYNAMIC_MEETING_CONTEXT": "{DYNAMIC_MEETING_CONTEXT}",
         }
 
@@ -218,14 +212,70 @@ def _resolve_profile(profile_id: str) -> AgentProfile | None:
     return None
 
 
-def _short_skill_names(skills: Iterable[str], limit: int = 6) -> list[str]:
+_SKILL_LABEL_CACHE: dict[str, str | None] = {}
+
+
+def _normalize_skill_id(skill_ref: str) -> str:
+    norm = str(skill_ref).strip()
+    if not norm:
+        return ""
+    return norm.split("@", 1)[-1] if "@" in norm else norm
+
+
+def resolve_skill_label(skill_id: str) -> str | None:
+    """从 SKILL.md frontmatter 读取 ``label``（与 Setup Center 展示一致）。"""
+    sid = _normalize_skill_id(skill_id)
+    if not sid:
+        return None
+    if sid in _SKILL_LABEL_CACHE:
+        return _SKILL_LABEL_CACHE[sid]
+    label: str | None = None
+    path = find_meeting_skill_file(sid)
+    if path is not None:
+        try:
+            from synapse.skills.parser import skill_parser
+
+            parsed = skill_parser.parse_file(path)
+            raw = parsed.metadata.label
+            if raw and str(raw).strip():
+                label = str(raw).strip()
+        except Exception as exc:
+            logger.debug("resolve skill label %s failed: %s", sid, exc)
+    _SKILL_LABEL_CACHE[sid] = label
+    return label
+
+
+def format_skill_entry(skill_ref: str) -> str:
+    """展示用：``skill_id（label）``；无 label 时仅 id。"""
+    sid = _normalize_skill_id(skill_ref)
+    if not sid:
+        return ""
+    label = resolve_skill_label(sid)
+    if label:
+        return f"{sid}（{label}）"
+    return sid
+
+
+def format_skill_entries(skills: Iterable[str], *, limit: int = 0) -> list[str]:
     out: list[str] = []
     for s in skills:
-        norm = str(s).strip()
-        if not norm:
+        entry = format_skill_entry(str(s))
+        if not entry:
             continue
-        short = norm.split("@", 1)[-1] if "@" in norm else norm
-        out.append(short)
+        out.append(entry)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+def _short_skill_names(skills: Iterable[str], limit: int = 6) -> list[str]:
+    """兼容旧调用：仅返回 skill id（不含 label）。"""
+    out: list[str] = []
+    for s in skills:
+        sid = _normalize_skill_id(str(s))
+        if not sid:
+            continue
+        out.append(sid)
         if len(out) >= limit:
             break
     return out
@@ -238,7 +288,7 @@ def _format_capability_card(
     llm_endpoint: str,
 ) -> str:
     name = profile.get_display_name() or profile.name or profile.id
-    skills = _short_skill_names(profile.skills or [])
+    skills = format_skill_entries(profile.skills or [], limit=6)
     desc = (profile.description or "").strip()
     custom = (profile.custom_prompt or "").strip()
 
@@ -304,11 +354,11 @@ def build_capability_cards(
 
 
 _HOST_HIDE_SECTION = re.compile(
-    r"^## 5\. 协作智能体（Worker）的协作规范.*?(?=^## 6\.)",
+    r"^## 4\. 协作智能体（Worker）的协作规范.*?(?=^## 5\.)",
     re.MULTILINE | re.DOTALL,
 )
 _WORKER_HIDE_SECTION = re.compile(
-    r"^## 4\. 小鲸（Host）的工作循环.*?(?=^## 5\.)",
+    r"^## 3\. 小鲸（Host）的工作循环.*?(?=^## 4\.)",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -323,10 +373,14 @@ def trim_skill_for_role(skill_body: str, role: Role) -> str:
 
 
 def render_skill(skill_body: str, variables: dict[str, str]) -> str:
-    """安全填充模板变量：仅替换 `{KEY}`，遇到未知变量时保留占位以提示用户。"""
+    """填充 SKILL 占位符；``DYNAMIC_MEETING_CONTEXT`` 最后注入，避免污染四段式正文。"""
+    dynamic = variables.get("DYNAMIC_MEETING_CONTEXT")
+    procedural = {k: v for k, v in variables.items() if k != "DYNAMIC_MEETING_CONTEXT"}
     rendered = skill_body
-    for key, value in variables.items():
+    for key, value in procedural.items():
         rendered = rendered.replace("{" + key + "}", str(value))
+    if dynamic is not None:
+        rendered = rendered.replace("{DYNAMIC_MEETING_CONTEXT}", str(dynamic))
     return rendered
 
 
@@ -369,12 +423,7 @@ def build_room_skill_prompt(
 
     variables = context.template_vars()
     variables["DYNAMIC_MEETING_CONTEXT"] = dynamic
-    rendered = render_skill(body, variables)
-    rendered = rendered.replace(
-        "{CAPABILITY_CARDS}",
-        "（协作智能体能力已并入 §0 动态上下文「一、(4)」，此处不再重复展开。）",
-    )
-    return rendered
+    return render_skill(body, variables)
 
 
 def _self_profile_id_for_context(context: MeetingRoomContext) -> str | None:

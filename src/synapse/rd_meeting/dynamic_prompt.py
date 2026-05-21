@@ -5,24 +5,16 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from synapse.agents.profile import AgentProfile
-from synapse.rd_meeting.hitl_form import format_hitl_schema_for_prompt
 from synapse.rd_meeting.init_context import build_node_init_log_data, normalize_node_init_log_data
 from synapse.rd_meeting.paths import archive_root
-from synapse.rd_meeting.room_skill import DEFAULT_LLM_ENDPOINT_KEY, resolve_agent_profile
+from synapse.rd_meeting.room_skill import (
+    DEFAULT_LLM_ENDPOINT_KEY,
+    format_skill_entries,
+    resolve_agent_profile,
+)
 from synapse.rd_sop.nodes import node_display_name
 
 ScopeType = Literal["demand", "task"]
-
-
-def _all_skill_names(profile: AgentProfile) -> list[str]:
-    out: list[str] = []
-    for s in profile.skills or []:
-        norm = str(s).strip()
-        if not norm:
-            continue
-        short = norm.split("@", 1)[-1] if "@" in norm else norm
-        out.append(short)
-    return out
 
 
 def _format_worker_block(
@@ -36,7 +28,7 @@ def _format_worker_block(
     desc = (profile.description or "").strip()
     if desc:
         lines.append(f"- 简介：{desc}")
-    skills = _all_skill_names(profile)
+    skills = format_skill_entries(profile.skills or [])
     if skills:
         lines.append(f"- 技能：{', '.join(skills)}")
     custom = (profile.custom_prompt or "").strip()
@@ -48,26 +40,9 @@ def _format_worker_block(
     return "\n".join(lines)
 
 
-def _human_confirm_block(binding: dict[str, Any]) -> str:
-    if binding.get("human_confirm"):
-        lines = [
-            "状态：**开启**（语义见本 SKILL §1.2）",
-            "- 会议期间：可将协作智能体关键中间产物整理后提交用户审阅，支持多轮交互",
-            "- 会议结果：输出「待确认总结」后由用户表单确认，**通过后才**归档并推进下一节点",
-            "- 异常：超时、质量/真实度不达标、风险不可控时**必须**人工介入（与开关无关）",
-        ]
-        schema_txt = format_hitl_schema_for_prompt(binding.get("hitl_form_schema"))
-        if schema_txt:
-            lines.append("- 结果确认表单字段预览：")
-            lines.append(schema_txt)
-        return "\n".join(lines)
-    return "\n".join(
-        [
-            "状态：**关闭**",
-            "- 会议期间与结果收敛由主控自主决策，不必为常规中间产物请示用户",
-            "- 异常：仍须使用 `whalecloud-dev-tool-ask-user` 请求人工介入",
-        ]
-    )
+def _human_confirm_line(binding: dict[str, Any]) -> str:
+    """四段式 (3) 仅保留开关；细则统一在 SKILL §1.2，避免与动态段重复。"""
+    return "**开启**（细则见本 SKILL §1.2）" if binding.get("human_confirm") else "**关闭**（细则见本 SKILL §1.2）"
 
 
 def _format_section_order(order: dict[str, Any]) -> str:
@@ -187,8 +162,7 @@ def build_dynamic_meeting_context(
         "(2) **会议目标**：",
         intent,
         "",
-        "(3) **人工确认（human_confirm）**：",
-        _human_confirm_block(binding),
+        f"(3) **人工确认（human_confirm）**：{_human_confirm_line(binding)}",
         "",
         "(4) **协作智能体**：",
         workers_body,

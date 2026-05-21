@@ -48,7 +48,7 @@ def test_skill_file_exists_in_repo():
 def test_load_skill_body_strips_frontmatter():
     body = load_meeting_skill_body(DEFAULT_MEETING_SKILL_ID)
     assert "## 1. 节点会议目标" in body
-    assert "## 7. 不变量" in body
+    assert "## 6. 不变量" in body
     assert "name: whalecloud-dev-tool-meeting-room" not in body, "front-matter 应被去除"
 
 
@@ -57,11 +57,11 @@ def test_trim_skill_for_role_hides_other_perspective():
     host_view = trim_skill_for_role(body, "host")
     worker_view = trim_skill_for_role(body, "worker")
 
-    assert "## 4. 小鲸（Host）的工作循环" in host_view
-    assert "## 5. 协作智能体（Worker）的协作规范" not in host_view
+    assert "## 3. 小鲸（Host）的工作循环" in host_view
+    assert "## 4. 协作智能体（Worker）的协作规范" not in host_view
 
-    assert "## 5. 协作智能体（Worker）的协作规范" in worker_view
-    assert "## 4. 小鲸（Host）的工作循环" not in worker_view
+    assert "## 4. 协作智能体（Worker）的协作规范" in worker_view
+    assert "## 3. 小鲸（Host）的工作循环" not in worker_view
 
 
 def test_build_capability_cards_lists_host_and_workers(host_binding):
@@ -91,7 +91,22 @@ def test_build_capability_cards_excludes_self_for_worker(host_binding):
     assert "角色：host" in cards, "Host 卡片对 Worker 仍然可见"
 
 
-def test_build_room_skill_prompt_renders_context_vars(host_binding):
+def test_build_room_skill_prompt_renders_context_vars(host_binding, monkeypatch):
+    monkeypatch.setattr(
+        "synapse.rd_meeting.init_context.resolve_product_for_meeting",
+        lambda *_a, **_k: (
+            {"locator_code": "ok", "prod": "p1", "repos": [], "docs": []},
+            {"synapse_url": "http://127.0.0.1:10001"},
+        ),
+    )
+    monkeypatch.setattr(
+        "synapse.rd_meeting.init_context._scope_row",
+        lambda *_a, **_k: {"demand_no": "21878317", "demand_title": "演示工单", "prod": "p1"},
+    )
+    monkeypatch.setattr(
+        "synapse.rd_meeting.userwork_sync.load_scope_work_order_context",
+        lambda *_a, **_k: {"demand_no": "21878317", "demand_title": "演示工单", "prod": "p1"},
+    )
     ctx = make_context(
         role="host",
         binding=host_binding,
@@ -100,22 +115,22 @@ def test_build_room_skill_prompt_renders_context_vars(host_binding):
         ticket_title="演示工单",
         archive_dir="/tmp/work/21878317/archive/1/boundary",
     )
-    rendered = build_room_skill_prompt(ctx)
+    rendered = build_room_skill_prompt(ctx, binding=host_binding)
 
     assert "{ROLE}" not in rendered
     assert "host" in rendered
     assert "21878317" in rendered
-    assert "演示工单" in rendered
+    assert "\u6f14\u793a\u5de5\u5355" in rendered
     assert "边界确认" in rendered
     assert "reasoning-heavy" in rendered
     assert "worker-default" in rendered
     assert "## 1. 节点会议目标" in rendered
-    assert "## 4. 小鲸（Host）的工作循环" in rendered
-    assert "## 5. 协作智能体（Worker）的协作规范" not in rendered
+    assert "## 3. 小鲸（Host）的工作循环" in rendered
+    assert "## 4. 协作智能体（Worker）的协作规范" not in rendered
     assert "本产品为账务中心" in rendered, "运营补充应出现在四段式第一节"
     assert "## 一、本 SOP 环节工作信息" in rendered
     assert "{DYNAMIC_MEETING_CONTEXT}" not in rendered
-    assert "协作智能体能力已并入" in rendered or "(4) **协作智能体**" in rendered
+    assert rendered.count("## 二、工单信息") == 1, "工单段不应在 SKILL 正文中重复出现"
 
 
 def test_build_room_skill_prompt_worker_view(host_binding):
@@ -128,8 +143,8 @@ def test_build_room_skill_prompt_worker_view(host_binding):
         archive_dir="/tmp/work/21878317/archive/1/boundary",
     )
     rendered = build_room_skill_prompt(ctx)
-    assert "## 5. 协作智能体（Worker）的协作规范" in rendered
-    assert "## 4. 小鲸（Host）的工作循环" not in rendered
+    assert "## 4. 协作智能体（Worker）的协作规范" in rendered
+    assert "## 3. 小鲸（Host）的工作循环" not in rendered
 
 
 def test_meeting_skill_preview_returns_metadata():

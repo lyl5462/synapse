@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, format_host_prompt_markdown
+from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, format_host_prompt_chat_display
 from synapse.rd_meeting.init_context import format_node_init_log
 from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.pipeline_chat import format_node_init_chat
@@ -76,7 +76,7 @@ def append_host_prompt_chat(
         binding=binding,
         ticket_title=ticket_title,
     )
-    display = format_host_prompt_markdown(bundle)
+    display = format_host_prompt_chat_display(bundle)
     host_id = str(binding.get("host_profile_id") or "default")
     append_history_event(
         scope_id,

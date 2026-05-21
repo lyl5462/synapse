@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, format_host_prompt_markdown
+from synapse.rd_meeting.host_prompt import assemble_host_prompt_bundle, format_host_prompt_chat_display
 from synapse.rd_meeting.pipeline_chat import format_event_chat_display, format_room_opened_chat
 from synapse.rd_meeting.room_runtime import history_to_chat_logs
 
@@ -40,7 +40,7 @@ def test_assemble_host_prompt_bundle_has_system_and_user(host_binding, monkeypat
         ),
     )
     monkeypatch.setattr(
-        "synapse.rd_meeting.userwork_sync._scope_row",
+        "synapse.rd_meeting.init_context._scope_row",
         lambda *_a, **_k: {
             "demand_no": "D1",
             "demand_title": "标题",
@@ -66,9 +66,11 @@ def test_assemble_host_prompt_bundle_has_system_and_user(host_binding, monkeypat
     assert "(4) **协作智能体**" in bundle["dynamic_context"]
     assert len(bundle["meeting_prompt"]) > 200
     assert "submit_meeting_work_plan" in bundle["user_prompt"]
-    md = format_host_prompt_markdown(bundle)
+    md = format_host_prompt_chat_display(bundle)
     assert "【步骤 3/3】" in md
-    assert "DYNAMIC_MEETING_CONTEXT" in md or "## 一、本 SOP 环节工作信息" in md
+    assert "## 一、本 SOP 环节工作信息" in md
+    assert "此处不重复" in md
+    assert md.count("## 二、工单信息") == 1
 
 
 def test_chat_display_three_pipeline_steps():

@@ -9,12 +9,7 @@ from synapse.rd_meeting.dev_status import load_dev_status
 from synapse.rd_meeting.dynamic_prompt import build_dynamic_meeting_context, build_meeting_user_turn_prompt
 from synapse.rd_meeting.init_context import build_node_init_log_data
 from synapse.rd_meeting.paths import scope_dir
-from synapse.rd_meeting.room_skill import (
-    build_room_skill_prompt,
-    load_meeting_skill_body,
-    make_context,
-    meeting_skill_preview,
-)
+from synapse.rd_meeting.room_skill import build_room_skill_prompt, load_meeting_skill_body, make_context
 from synapse.rd_sop.nodes import node_display_name, stage_id_for_node_id
 
 ScopeType = Literal["demand", "task"]
@@ -93,43 +88,46 @@ def assemble_host_prompt_bundle(
     }
 
 
-def format_host_prompt_markdown(bundle: dict[str, Any]) -> str:
-    """协作会议流：展示四段式动态上下文 + SKILL 规范（注入后全文）。"""
+def format_host_prompt_chat_display(bundle: dict[str, Any]) -> str:
+    """协作会议流：只展示四段式数据段（SKILL 规范已在同条系统提示内，不重复粘贴）。"""
     dynamic_txt = str(bundle.get("dynamic_context") or "").strip()
-    meeting_txt = str(bundle.get("meeting_prompt") or "").strip()
+    meeting_len = len(str(bundle.get("meeting_prompt") or ""))
     user_txt = str(bundle.get("user_prompt") or "").strip()
     skill_id = str(bundle.get("meeting_skill_id") or "—")
-    preview = meeting_skill_preview(skill_id) if skill_id != "—" else {}
 
     parts = [
         "【步骤 3/3】主控智能体（小鲸）提示词已组装",
         "",
-        "动态数据**仅**通过 `whalecloud-dev-tool-meeting-room` SKILL 的 `{DYNAMIC_MEETING_CONTEXT}` 注入；",
-        "以下先展示四段式正文，再附完整系统提示（含 SKILL 规范）。",
-        "",
-        "---",
+        f"数据注入：`{skill_id}` → §0 `{{DYNAMIC_MEETING_CONTEXT}}`（下列四段式**仅展示一次**）。",
+        f"协作规范（§1～§7）已写入系统提示，约 {meeting_len} 字，此处不重复。",
         "",
         dynamic_txt or "（四段式上下文为空）",
         "",
         "---",
-        "",
-        f"## 附：完整系统提示（SKILL `{skill_id}`"
-        f"{' · 已加载' if preview.get('exists') else ' · 兜底'} · {preview.get('length', len(meeting_txt))} 字）",
-        "",
-        "```markdown",
-        meeting_txt or "（空）",
-        "```",
-        "",
-        "## 附：首轮 User 消息（触发执行）",
-        "",
-        "```",
+        "**首轮 User 触发**：",
         user_txt or "（空）",
-        "```",
-        "",
-        "---",
-        f"统计：动态段 {len(dynamic_txt)} 字 · 系统提示总长 {len(meeting_txt)} 字",
+        f" · 系统提示总长约 {meeting_len} 字",
     ]
     return "\n".join(parts)
+
+
+def format_host_prompt_snapshot(bundle: dict[str, Any]) -> str:
+    """落盘：完整系统提示（含四段式 + SKILL），供排查。"""
+    meeting_txt = str(bundle.get("meeting_prompt") or "").strip()
+    user_txt = str(bundle.get("user_prompt") or "").strip()
+    return "\n".join(
+        [
+            "# 主控系统提示（meeting-room SKILL 注入后）",
+            "",
+            meeting_txt or "（空）",
+            "",
+            "---",
+            "",
+            "# 首轮 User",
+            "",
+            user_txt or "（空）",
+        ]
+    )
 
 
 def save_host_prompt_snapshot(scope_id: str, bundle: dict[str, Any]) -> str:
@@ -139,5 +137,5 @@ def save_host_prompt_snapshot(scope_id: str, bundle: dict[str, Any]) -> str:
         return ""
     path = scope_dir(sid) / "host_prompt_snapshot.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(format_host_prompt_markdown(bundle), encoding="utf-8")
+    path.write_text(format_host_prompt_snapshot(bundle), encoding="utf-8")
     return str(path)
