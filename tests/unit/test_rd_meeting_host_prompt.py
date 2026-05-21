@@ -60,13 +60,15 @@ def test_assemble_host_prompt_bundle_has_system_and_user(host_binding, monkeypat
         binding=host_binding,
         ticket_title="标题",
     )
-    assert len(bundle["system_prompt_suffix"]) > 200
-    assert "研发会议室议程" in bundle["user_prompt"]
-    assert "工作安排计划" in bundle["user_prompt"]
+    assert len(bundle["dynamic_context"]) > 100
+    assert "## 一、本 SOP 环节工作信息" in bundle["dynamic_context"]
+    assert "## 二、工单信息" in bundle["dynamic_context"]
+    assert "(4) **协作智能体**" in bundle["dynamic_context"]
+    assert len(bundle["meeting_prompt"]) > 200
+    assert "submit_meeting_work_plan" in bundle["user_prompt"]
     md = format_host_prompt_markdown(bundle)
     assert "【步骤 3/3】" in md
-    assert "## 四、系统提示注入" in md
-    assert "```markdown" in md
+    assert "DYNAMIC_MEETING_CONTEXT" in md or "## 一、本 SOP 环节工作信息" in md
 
 
 def test_chat_display_three_pipeline_steps():

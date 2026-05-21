@@ -112,7 +112,10 @@ def test_build_room_skill_prompt_renders_context_vars(host_binding):
     assert "## 1. 节点会议目标" in rendered
     assert "## 4. 小鲸（Host）的工作循环" in rendered
     assert "## 5. 协作智能体（Worker）的协作规范" not in rendered
-    assert "本产品为账务中心" in rendered, "运营补充应被追加"
+    assert "本产品为账务中心" in rendered, "运营补充应出现在四段式第一节"
+    assert "## 一、本 SOP 环节工作信息" in rendered
+    assert "{DYNAMIC_MEETING_CONTEXT}" not in rendered
+    assert "协作智能体能力已并入" in rendered or "(4) **协作智能体**" in rendered
 
 
 def test_build_room_skill_prompt_worker_view(host_binding):

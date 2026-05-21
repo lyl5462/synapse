@@ -7,7 +7,7 @@ import logging
 
 from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.dev_status import load_dev_status
-from synapse.rd_meeting.hitl_form import fallback_exception_hitl_schema, normalize_hitl_schema
+from synapse.rd_meeting.hitl_form import resolve_hitl_schema_for_gate
 from synapse.rd_meeting.live import parse_rd_meeting_session, scope_id_for_room_id
 from synapse.rd_meeting.phase import set_phase
 from synapse.rd_sop.nodes import stage_id_for_node_id
@@ -41,11 +41,11 @@ def schedule_delegation_failure_gate(
                 scope_type=scope_type,
                 scope_id=scope_id,
             )
-            schema = normalize_hitl_schema(
-                fallback_exception_hitl_schema(
-                    node_id,
-                    reason=f"委派 {to_agent} 失败：{(error_text or '')[:300]}",
-                )
+            schema = resolve_hitl_schema_for_gate(
+                binding,
+                dynamic_schema=None,
+                reason=f"委派 {to_agent} 失败：{(error_text or '')[:300]}",
+                intervention_kind="exception",
             )
             stage_id = int(binding.get("stage_id") or stage_id_for_node_id(node_id))
             orch = MeetingRoomOrchestrator()

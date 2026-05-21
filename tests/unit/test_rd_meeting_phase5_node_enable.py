@@ -141,7 +141,7 @@ def test_infer_clarify_hitl_schema_from_scope_file(tmp_path, monkeypatch):
     assert out["questions"][0]["title"] == "业务目标"
 
 
-def test_extract_hitl_from_agent_output_fence():
+def test_extract_hitl_from_agent_output_rejects_legacy_fence():
     schema = {"type": "questionnaire", "version": "1.0", "questions": [{"id": "q1", "type": "text", "title": "t"}]}
     body = (
         "# 进展\n请确认。\n\n"
@@ -150,10 +150,8 @@ def test_extract_hitl_from_agent_output_fence():
         + "\n```"
     )
     gate = extract_hitl_from_agent_output(body)
-    assert gate.explicit is True
-    assert gate.clean_body.startswith("# 进展")
-    assert gate.schema is not None
-    assert gate.schema.get("questions")
+    assert gate.explicit is False
+    assert gate.schema is None
 
 
 def test_extract_hitl_from_agent_output_html_kind():

@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from synapse.agents.profile import AgentProfile, get_profile_store
-from synapse.rd_meeting.runtime_context import build_meeting_runtime_context_section
 from synapse.rd_sop.nodes import node_display_name, stage_name_for_id
 
 logger = logging.getLogger(__name__)
@@ -185,10 +184,16 @@ class MeetingRoomContext:
             "WORKER_LLM_ENDPOINT": self.worker_llm_endpoint or DEFAULT_LLM_ENDPOINT_KEY,
             "ARCHIVE_DIR": self.archive_dir,
             "CAPABILITY_CARDS": "{CAPABILITY_CARDS}",
+            "DYNAMIC_MEETING_CONTEXT": "{DYNAMIC_MEETING_CONTEXT}",
         }
 
 
 # ─── 能力卡片 ───────────────────────────────────────────────────────────
+
+
+def resolve_agent_profile(profile_id: str) -> AgentProfile | None:
+    """解析参会智能体 Profile（供 dynamic_prompt 等模块使用）。"""
+    return _resolve_profile(profile_id)
 
 
 def _resolve_profile(profile_id: str) -> AgentProfile | None:
@@ -329,44 +334,46 @@ def build_room_skill_prompt(
     context: MeetingRoomContext,
     *,
     skill_body: str | None = None,
+    init_context: dict[str, Any] | None = None,
+    binding: dict[str, Any] | None = None,
+    sop_node_display: str = "",
 ) -> str:
-    """生成可拼进系统提示词或节点 prompt 的会议室 SKILL 片段。"""
+    """生成会议室唯一动态注入：SKILL 规范 + 四段式 ``{DYNAMIC_MEETING_CONTEXT}``。"""
+    from synapse.rd_meeting.dynamic_prompt import build_dynamic_meeting_context
+
     body = skill_body if skill_body is not None else load_meeting_skill_body(context.meeting_skill_id)
     body = trim_skill_for_role(body, context.role)
 
-    cards = build_capability_cards(
-        host_profile_id=context.host_profile_id,
-        worker_profile_ids=context.worker_profile_ids,
-        host_llm_endpoint=context.host_llm_endpoint,
-        worker_llm_endpoint=context.worker_llm_endpoint,
-        exclude_self_id=None
-        if context.role == "host"
-        else _self_profile_id_for_context(context),
+    bind = dict(binding) if binding else {
+        "node_id": context.node_id,
+        "node_name": context.node_name,
+        "stage_id": context.stage_id,
+        "stage_name": context.stage_name,
+        "node_intent": context.node_intent,
+        "host_profile_id": context.host_profile_id,
+        "worker_profile_ids": context.worker_profile_ids,
+        "host_llm_endpoint_key": context.host_llm_endpoint,
+        "worker_llm_endpoint_key": context.worker_llm_endpoint,
+        "meeting_skill_id": context.meeting_skill_id,
+        "prompt_supplement": context.prompt_supplement,
+        "human_confirm": False,
+    }
+
+    dynamic = build_dynamic_meeting_context(
+        binding=bind,
+        init_data=init_context,
+        scope_type=context.scope_type,  # type: ignore[arg-type]
+        scope_id=context.scope_id,
+        sop_node_display=sop_node_display or context.node_name,
     )
 
     variables = context.template_vars()
+    variables["DYNAMIC_MEETING_CONTEXT"] = dynamic
     rendered = render_skill(body, variables)
-    rendered = rendered.replace("{CAPABILITY_CARDS}", cards)
-
-    suffix = (context.prompt_supplement or "").strip()
-    if suffix:
-        rendered = f"{rendered}\n\n---\n\n## 运营补充（本节点）\n\n{suffix}\n"
-
-    runtime_ctx = build_meeting_runtime_context_section(
-        scope_type=context.scope_type,
-        scope_id=context.scope_id,
-        ticket_title=context.ticket_title,
-        node_id=context.node_id,
-        stage_id=context.stage_id,
+    rendered = rendered.replace(
+        "{CAPABILITY_CARDS}",
+        "（协作智能体能力已并入 §0 动态上下文「一、(4)」，此处不再重复展开。）",
     )
-    if runtime_ctx:
-        rendered = f"{rendered}\n\n---\n\n{runtime_ctx}\n"
-
-    if context.role == "host":
-        ask_body = load_ask_user_skill_body().strip()
-        if ask_body:
-            rendered = f"{rendered}\n\n---\n\n{ask_body}\n"
-
     return rendered
 
 

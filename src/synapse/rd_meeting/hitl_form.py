@@ -24,12 +24,7 @@ QUESTIONNAIRE_VERSION = "1.0"
 # 智能体输出中的 HITL 问卷标记（与技能 whalecloud-dev-tool-ask-user 对齐）
 HITL_MARKER_BEGIN = "<!-- hitl-questionnaire"
 HITL_MARKER_END = "<!-- /hitl-questionnaire -->"
-HITL_FENCE_LANG = "hitl-questionnaire"
 
-_HITL_FENCE_RE = re.compile(
-    rf"```\s*{re.escape(HITL_FENCE_LANG)}[^\n]*\n(.*?)```",
-    re.DOTALL | re.IGNORECASE,
-)
 _HITL_HTML_BLOCK_RE = re.compile(
     r"<!--\s*hitl-questionnaire(?P<attrs>[^>]*)-->\s*"
     r"(?:```(?:json)?\s*\n)?(?P<body>.*?)(?:```\s*)?"
@@ -82,9 +77,8 @@ def _is_valid_hitl_schema(data: dict[str, Any]) -> bool:
 def extract_hitl_from_agent_output(text: str) -> HitlGateFromReport:
     """从智能体 Markdown 回复中提取 HITL 问卷块。
 
-    支持：
-    - HTML 注释包裹：``<!-- hitl-questionnaire kind=interactive -->`` … ``<!-- /hitl-questionnaire -->``
-    - 围栏代码块：`` ```hitl-questionnaire `` … `` ``` ``
+    仅支持 HTML 注释包裹：
+    ``<!-- hitl-questionnaire kind=interactive -->`` … ``<!-- /hitl-questionnaire -->``
     """
     body = str(text or "")
     schema: dict[str, Any] | None = None
@@ -103,15 +97,6 @@ def extract_hitl_from_agent_output(text: str) -> HitlGateFromReport:
             kind = k or kind
             await_confirm = ac if ac is not None else await_confirm
             break
-
-    if schema is None:
-        for m in _HITL_FENCE_RE.finditer(body):
-            parsed = _loads_hitl_json(m.group(1))
-            if parsed and _is_valid_hitl_schema(parsed):
-                schema = parsed
-                explicit = True
-                span = m.span()
-                break
 
     clean = body
     if span is not None:
@@ -189,7 +174,7 @@ def infer_clarify_hitl_schema(
     scope_id: str = "",
     node_id: str = "req_clarify",
 ) -> dict[str, Any] | None:
-    """会中澄清门控：从主控/协作产出推断动态问卷，避免一律使用兜底模板。"""
+    """会中澄清门控：从主控/协作产出或工单 ``.questions.json`` 解析问卷 schema。"""
     gate = extract_hitl_from_agent_output(report_body)
     if gate.schema:
         return gate.schema
@@ -212,10 +197,14 @@ def resolve_hitl_schema_for_gate(
     *,
     dynamic_schema: dict[str, Any] | None,
     reason: str = "",
-    force_fallback: bool = False,
     intervention_kind: str = "interactive",
 ) -> dict[str, Any] | None:
-    """门控展示用 schema：智能体动态问卷优先；会中与结果确认使用不同兜底模板。"""
+    """门控展示用 schema：仅使用智能体/协作产出或节点显式配置的 questionnaire。
+
+    ``interactive`` / ``exception`` 不提供系统内置题目；``result_confirm`` 在无动态问卷时
+    可使用节点默认结果确认模板（归档验收结构化字段）。
+    """
+    del reason  # 异常说明写入 gate reason，不用于生成题目
     if dynamic_schema:
         return dynamic_schema
     preset = binding.get("hitl_form_schema")
@@ -223,118 +212,14 @@ def resolve_hitl_schema_for_gate(
         return normalize_hitl_schema(preset)
     node_id = str(binding.get("node_id") or "")
     kind = (intervention_kind or "interactive").strip().lower()
-    if force_fallback and node_id:
-        return normalize_hitl_schema(fallback_exception_hitl_schema(node_id, reason=reason))
-    if kind == "interactive" and node_id:
-        return default_interactive_hitl_form_schema(node_id)
+    if kind in ("interactive", "exception"):
+        return None
     if kind == "result_confirm" and node_id and binding.get("human_confirm"):
         return default_hitl_form_schema(node_id)
     if node_id and binding.get("human_confirm") and kind not in ("interactive", "exception"):
         return default_hitl_form_schema(node_id)
     return None
 
-
-def default_interactive_hitl_form_schema(node_id: str) -> dict[str, Any]:
-    """会中请示用户的兜底问卷（非结果确认）；优先引导业务澄清而非归档验收。"""
-    entry = get_node_manifest_entry(node_id)
-    name = str(entry.get("name") if entry else node_display_name(node_id))
-    intent = str(
-        entry.get("intent") if entry else binding_intent_hint(node_id)
-    ).strip()
-    questions = _interactive_questions_for_node(node_id, node_name=name, intent=intent)
-    return {
-        "type": QUESTIONNAIRE_TYPE,
-        "version": QUESTIONNAIRE_VERSION,
-        "title": f"{name} — 会中澄清",
-        "description": (
-            (intent or f"请就节点「{name}」当前议题补充信息，便于小鲸继续安排协作智能体。")
-            + " 若题目与当前讨论不符，请先在对话区说明；主控应通过技能 "
-            "whalecloud-dev-tool-ask-user 输出定制化 ``hitl-questionnaire`` 问卷。"
-        ),
-        "render": {
-            "layout": "stepped",
-            "showOverallProgress": True,
-            "accent": "emerald",
-            "animate": True,
-        },
-        "questions": questions,
-    }
-
-
-def binding_intent_hint(node_id: str) -> str:
-    entry = get_node_manifest_entry(node_id)
-    return str(entry.get("intent") if entry else "")
-
-
-def _interactive_questions_for_node(
-    node_id: str,
-    *,
-    node_name: str,
-    intent: str,
-) -> list[dict[str, Any]]:
-    """会中交互兜底题目：按节点略作区分，避免与结果确认问卷雷同。"""
-    intent_hint = intent.strip() or f"完成「{node_name}」的会议目标"
-    if node_id == "req_clarify":
-        raw = [
-            build_question(
-                qid="biz_background",
-                qtype="textarea",
-                title="业务背景与目标",
-                context="请补充需求来源、业务目标、用户场景，或纠正小鲸/协作智能体理解偏差。",
-                input_enabled=True,
-                required=False,
-            ),
-            build_question(
-                qid="scope_boundary",
-                qtype="textarea",
-                title="范围与边界",
-                context="本需求包含/不包含哪些能力？有无版本、环境、依赖系统约束？",
-                input_enabled=True,
-                required=False,
-            ),
-            build_question(
-                qid="open_questions",
-                qtype="textarea",
-                title="待澄清问题（可多行）",
-                context=(
-                    "列出仍需产品/业务确认的问题；若小鲸已给出问题列表，可在此逐条作答或标注「已确认/待跟进」。"
-                ),
-                input_enabled=True,
-                required=False,
-            ),
-            build_question(
-                qid="priority",
-                qtype="single",
-                title="优先级与时限",
-                context="当前需求的紧急程度？",
-                options=_letter_options(
-                    ["P0 — 阻塞交付", "P1 — 本迭代必须", "P2 — 可排期", "暂不确定"]
-                ),
-                input_enabled=True,
-                required=False,
-            ),
-        ]
-        return attach_question_progress(raw)
-
-    raw = [
-        build_question(
-            qid="context_gap",
-            qtype="textarea",
-            title="需补充的上下文",
-            context=f"围绕「{node_name}」与会议目标「{intent_hint}」，请补充小鲸尚未掌握的信息。",
-            input_enabled=True,
-            required=False,
-        ),
-        build_question(
-            qid="directive",
-            qtype="textarea",
-            title="给主控的指令",
-            context="希望小鲸下一步如何安排协作智能体？可指定重点、约束或跳过项。",
-            input_enabled=True,
-            required=False,
-        ),
-    ]
-    return attach_question_progress(raw)
 
 def _option_style_for(qtype: QuestionType) -> OptionStyle:
     if qtype == "multiple":
@@ -477,9 +362,7 @@ def _default_questions_for_node(node_id: str, *, node_name: str, intent: str) ->
 
 
 def default_hitl_form_schema(node_id: str) -> dict[str, Any]:
-    """节点结束后的「结果确认」问卷（归档验收）；需求澄清节点会中阶段勿用此模板。"""
-    if node_id == "req_clarify":
-        return default_interactive_hitl_form_schema(node_id)
+    """节点结束后的「结果确认」问卷（归档验收）；会中澄清须由智能体技能产出 questionnaire。"""
     entry = get_node_manifest_entry(node_id)
     name = str(entry.get("name") if entry else node_display_name(node_id))
     intent = str(entry.get("intent") if entry else "")
@@ -518,66 +401,17 @@ def normalize_hitl_schema(schema: dict[str, Any] | None) -> dict[str, Any] | Non
     return out
 
 
-def fallback_exception_hitl_schema(
-    node_id: str,
-    *,
-    reason: str = "",
-) -> dict[str, Any]:
-    """异常/委派失败等场景的兜底问卷（P0/P3）。"""
-    name = node_display_name(node_id)
-    reason_txt = (reason or "执行异常，需人工裁决").strip()[:500]
-    questions = attach_question_progress(
-        [
-            build_question(
-                qid="situation",
-                qtype="textarea",
-                title="当前情况",
-                context=reason_txt,
-                input_enabled=True,
-                required=False,
-            ),
-            build_question(
-                qid="decision",
-                qtype="single",
-                title="下一步",
-                context="请选择如何处理本节点。",
-                options=_value_options(
-                    [
-                        ("retry", "重试 — 按当前上下文继续执行"),
-                        ("rework", "返工 — 按补充说明重新跑本节点"),
-                        ("skip", "跳过 — 标记风险并推进（慎用）"),
-                    ]
-                ),
-                required=True,
-            ),
-            build_question(
-                qid="comment",
-                qtype="textarea",
-                title="补充说明",
-                context="可选：给智能体的具体指令。",
-                required=False,
-            ),
-        ]
-    )
-    return {
-        "type": QUESTIONNAIRE_TYPE,
-        "version": QUESTIONNAIRE_VERSION,
-        "title": f"{name} — 异常人工介入",
-        "description": reason_txt,
-        "render": {"layout": "stepped", "showOverallProgress": True, "accent": "violet", "animate": True},
-        "questions": questions,
-    }
-
-
 def resolve_hitl_form_schema(
     node_id: str,
     *,
     node_override: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """人工确认关闭时返回 None；开启时返回有效 schema（questionnaire 优先）。"""
+    """节点 binding 预置 schema：仅显式配置或结果确认默认模板；会中澄清不在此生成。"""
     custom = node_override.get("hitl_form_schema")
     if isinstance(custom, dict) and custom.get("questions"):
         return normalize_hitl_schema(custom)
+    if node_id == "req_clarify":
+        return None
     return default_hitl_form_schema(node_id)
 
 

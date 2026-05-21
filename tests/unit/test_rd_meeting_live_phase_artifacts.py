@@ -11,9 +11,8 @@ import pytest
 from synapse.rd_meeting.artifacts import validate_archive_outputs, write_node_deliverables
 from synapse.rd_meeting.hitl_form import (
     default_hitl_form_schema,
-    default_interactive_hitl_form_schema,
-    fallback_exception_hitl_schema,
     normalize_hitl_schema,
+    resolve_hitl_form_schema,
     resolve_hitl_schema_for_gate,
 )
 from synapse.rd_meeting.participants import build_meeting_participants
@@ -67,15 +66,6 @@ def test_history_includes_delegation_events() -> None:
     assert "委派" in logs[0]["text"]
 
 
-def test_fallback_exception_schema() -> None:
-    schema = normalize_hitl_schema(
-        fallback_exception_hitl_schema("req_clarify", reason="超时")
-    )
-    assert schema.get("questions")
-    blob = json.dumps(schema, ensure_ascii=False)
-    assert "超时" in blob
-
-
 def test_write_node_deliverables_and_validate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sid = "test-scope-deliverables"
     monkeypatch.setattr("synapse.rd_meeting.paths.scope_dir", lambda s: tmp_path / s)
@@ -126,14 +116,8 @@ def test_record_delegation_started_appends_history(
         mock_append.assert_called_once()
 
 
-def test_req_clarify_non_final_uses_clarify_questions_not_quality_gate() -> None:
-    from synapse.rd_meeting.orchestrator import _looks_like_final_delivery
-
-    assert not _looks_like_final_delivery("req_clarify", "还在整理需求，请稍候")
-    schema = default_hitl_form_schema("req_clarify")
-    qids = {q["id"] for q in schema.get("questions", [])}
-    assert "quality_check" not in qids
-    assert "biz_background" in qids or "open_questions" in qids
+def test_req_clarify_binding_has_no_builtin_interactive_schema() -> None:
+    assert resolve_hitl_form_schema("req_clarify", node_override={}) is None
 
 
 def test_interactive_vs_result_confirm_schema() -> None:
@@ -145,13 +129,37 @@ def test_interactive_vs_result_confirm_schema() -> None:
     result = resolve_hitl_schema_for_gate(
         diff_binding, dynamic_schema=None, intervention_kind="result_confirm"
     )
-    assert interactive and result
-    assert interactive.get("title", "").find("会中") >= 0 or "澄清" in interactive.get("title", "")
-    assert "decision" in {q["id"] for q in (result.get("questions") or [])}
-    iq = {q["id"] for q in (interactive.get("questions") or [])}
+    assert interactive is None
+    assert result is not None
     rq = {q["id"] for q in (result.get("questions") or [])}
-    assert "biz_background" in iq or "open_questions" in iq
     assert "decision" in rq and "quality_check" in rq
+
+
+def test_interactive_gate_uses_agent_schema_only() -> None:
+    dynamic = {
+        "type": "questionnaire",
+        "version": "1.0",
+        "questions": [{"id": "q1", "type": "text", "title": "澄清点"}],
+    }
+    binding = {"node_id": "req_clarify", "human_confirm": True}
+    out = resolve_hitl_schema_for_gate(
+        binding, dynamic_schema=dynamic, intervention_kind="interactive"
+    )
+    assert out is not None
+    assert out["questions"][0]["id"] == "q1"
+
+
+def test_exception_gate_has_no_builtin_schema() -> None:
+    binding = {"node_id": "req_clarify", "human_confirm": True}
+    assert (
+        resolve_hitl_schema_for_gate(
+            binding,
+            dynamic_schema=None,
+            reason="委派失败",
+            intervention_kind="exception",
+        )
+        is None
+    )
 
 
 def test_build_meeting_participants_dedupes_host() -> None:

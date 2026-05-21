@@ -83,6 +83,6 @@ def test_pipeline_file_created_on_open_flow(monkeypatch, tmp_path):
     assert STEP_ASSEMBLE_HOST_PROMPT in (pipe.data.get("steps_completed") or [])
     ctx_host = pipe.data.get("context", {}).get("host_prompt")
     assert isinstance(ctx_host, dict)
-    assert ctx_host.get("system_chars", 0) > 0
-    assert ctx_host.get("user_chars", 0) > 0
+    assert ctx_host.get("dynamic_chars", 0) > 0
+    assert ctx_host.get("meeting_prompt_chars", 0) > 0
     assert detail.get("pipeline", {}).get("flow_step") == STEP_WAITING

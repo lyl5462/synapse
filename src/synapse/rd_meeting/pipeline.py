@@ -542,7 +542,8 @@ def _step_assemble_host_prompt(pipe: MeetingPipeline, ctx: PipelineRunContext) -
     pctx["host_prompt"] = {
         "node_id": run_node,
         "snapshot_path": snapshot_path,
-        "system_chars": len(str(bundle.get("system_prompt_suffix") or "")),
+        "dynamic_chars": len(str(bundle.get("dynamic_context") or "")),
+        "meeting_prompt_chars": len(str(bundle.get("meeting_prompt") or "")),
         "user_chars": len(str(bundle.get("user_prompt") or "")),
         "skill_id": str(bundle.get("meeting_skill_id") or ""),
         "host_profile_id": str(bundle.get("host_profile_id") or ""),

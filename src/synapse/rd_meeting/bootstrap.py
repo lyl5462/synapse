@@ -47,7 +47,9 @@ def append_node_init_chat(
             "scope_type": scope_type,
             "scope_id": scope_id,
             "text": text,
-            "chat_text": format_node_init_chat(scope_type, scope_id, node_id=node_id),
+            "chat_text": format_node_init_chat(
+                scope_type, scope_id, node_id=node_id, binding=binding
+            ),
             "agent_id": host_id,
             "log_type": "info",
             "participants": participants,

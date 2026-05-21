@@ -18,14 +18,15 @@ from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
 from synapse.rd_meeting.hitl_form import (
     HitlGateFromReport,
     extract_hitl_from_agent_output,
-    format_hitl_schema_for_prompt,
     infer_clarify_hitl_schema,
     resolve_hitl_schema_for_gate,
 )
 from synapse.rd_meeting.notifications import schedule_human_intervention_notify
 from synapse.rd_meeting.paths import archive_root, scope_dir
 from synapse.rd_meeting.participants import build_meeting_participants
-from synapse.rd_meeting.phase import phase_prompt_hint, set_phase
+from synapse.rd_meeting.dynamic_prompt import build_meeting_user_turn_prompt
+from synapse.rd_meeting.init_context import build_node_init_log_data
+from synapse.rd_meeting.phase import set_phase
 from synapse.rd_meeting.room_runtime import (
     append_history_event,
     load_room_state,
@@ -37,7 +38,6 @@ from synapse.rd_meeting.room_skill import (
     load_meeting_skill_body,
     make_context,
 )
-from synapse.rd_meeting.runtime_context import runtime_context_for_binding
 from synapse.rd_meeting.user_context import drain_user_context_for_prompt
 from synapse.rd_meeting.userwork_sync import patch_userwork_summary
 from synapse.rd_meeting.validation import validate_node_output
@@ -101,84 +101,9 @@ def build_node_prompt(
     binding: dict[str, Any],
     ticket_title: str = "",
 ) -> str:
-    """构建给小鲸（Host）的本节点 user prompt。
-
-    SKILL 主体通过 ``_custom_prompt_suffix`` 注入到系统提示，这里只放
-    "本节点议程要点 + Worker 阵容"，避免双倍注入。
-    """
-    name = node_display_name(node_id)
-    node_intent = str(binding.get("node_intent") or binding.get("intent") or "")
-    supplement = str(binding.get("prompt_supplement") or "").strip()
-    workers = [w for w in (binding.get("worker_profile_ids") or []) if str(w).strip()]
-    parts = [
-        f"# 研发会议室议程：{name}",
-        f"- scope: {scope_type} / {scope_id}",
-        f"- node_id: {node_id}",
-    ]
-    if ticket_title:
-        parts.append(f"- 工单标题: {ticket_title}")
-    if workers:
-        parts.append("- 可分派的协作智能体: " + ", ".join(workers))
-    if node_intent:
-        parts.append(f"\n## 会议目标\n{node_intent}")
-    runtime_ctx = runtime_context_for_binding(
-        binding,
-        scope_type=scope_type,
-        scope_id=scope_id,
-        ticket_title=ticket_title,
-    )
-    if runtime_ctx:
-        parts.append(f"\n{runtime_ctx}")
-    if binding.get("human_confirm"):
-        schema_txt = format_hitl_schema_for_prompt(binding.get("hitl_form_schema"))
-        parts.append(
-            "\n## 人工确认（本节点已开启 `human_confirm`）\n"
-            "**会议期间**：可将协作智能体关键中间产物（如需求澄清问题列表、风险清单）"
-            "主动整理后提交给用户审阅，支持多轮人机交互；关闭此开关时由你自主决策、不必逐条请示。\n"
-            "**会议结果**：协作收敛后输出「待确认总结」（含 `# 交付结论` 与验收字样）；"
-            "系统将暂停并把总结呈现给用户填写确认表单。"
-            "**仅用户确认通过后**才写入归档产物并推进下一节点（与下一节点类型无关）；"
-            "若用户返工，按其意见重新执行本节点。\n"
-            "**异常**：超时、质量/真实度无法达标、风险不可控等，**无论本开关是否开启**都必须主动请求人工介入。"
-        )
-        if schema_txt:
-            parts.append(f"\n### 结果确认表单字段\n{schema_txt}")
-        parts.append(
-            "\n### 动态人机问卷（技能 `whalecloud-dev-tool-ask-user`）\n"
-            "会议期间向用户收集**需求澄清/选项/确认**时：\n"
-            "1. 先 ``delegate_to_agent`` 让协作智能体（如需求专家）产出澄清问题；\n"
-            "2. 将协作产出整理为 questionnaire JSON，在回复末尾附带 "
-            "``<!-- hitl-questionnaire kind=interactive -->`` 标记块；\n"
-            "3. 题目必须来自当前议题与协作智能体产出，**禁止**依赖系统默认兜底问卷。\n"
-            "未附带有效问卷时，系统只会展示通用模板，视为未完成 ask-user 流程。"
-        )
-    else:
-        parts.append(
-            "\n## 人工确认（本节点已关闭 `human_confirm`）\n"
-            "会议期间与结果收敛均由你自主决策，不必为常规中间产物请示用户。"
-            "但若出现超时、质量/真实度不达标、不可控风险等**异常**，仍必须主动请求人工介入。"
-            "此时请使用技能 `whalecloud-dev-tool-ask-user` 输出带 ``hitl-questionnaire`` 标记的问卷 JSON。"
-        )
-    if supplement:
-        parts.append(f"\n## 运营补充\n{supplement}")
-    phase_hint = phase_prompt_hint(scope_id, human_confirm=bool(binding.get("human_confirm")))
-    if phase_hint:
-        parts.append(phase_hint)
-    parts.append(
-        "\n## 工作安排计划（强制）\n"
-        "在**首次** `delegate_to_agent` / `delegate_parallel` 之前，必须先调用 "
-        "`submit_meeting_work_plan`：\n"
-        "1. 参考 §3 能力卡片与上方「会议目标」，列出每项 `agent_id` / `task` / `reason`；\n"
-        "2. 提交计划后系统会写入会议室日志，再按 plan 逐条委派（建议带 `plan_item_id`）；\n"
-        "3. 已开始委派后不可再改计划；无需人工审批计划。\n"
-    )
-    parts.append(
-        "\n请按"
-        "「拆分目标 → delegate Worker → 检查反馈契合度/真实性/准确性 → 多轮迭代 → 综合输出」"
-        "的循环完成本节点。"
-        "\n最终交付物以 Markdown 形式归档（包含一级标题与「结论/完成/交付」字样）。"
-    )
-    return "\n".join(parts)
+    """主控首轮 user 消息（议程数据均在 meeting-room SKILL 四段式动态上下文）。"""
+    _ = scope_type, scope_id, node_id, binding, ticket_title
+    return build_meeting_user_turn_prompt()
 
 
 def _skip_node_report_body(node_id: str) -> str:
@@ -310,7 +235,21 @@ class MeetingRoomOrchestrator:
             ctx.worker_profile_ids = [self_profile_id] + [
                 w for w in ctx.worker_profile_ids if w != self_profile_id
             ]
-        suffix = build_room_skill_prompt(ctx, skill_body=skill_body)
+        nid = str(binding.get("node_id") or "")
+        init_data = build_node_init_log_data(
+            scope_type,  # type: ignore[arg-type]
+            scope_id,
+            node_id=nid,
+        )
+        dev = load_dev_status(scope_id)
+        sop_display = str(dev.get("sop_node_display") or "") if dev else ""
+        suffix = build_room_skill_prompt(
+            ctx,
+            skill_body=skill_body,
+            init_context=init_data,
+            binding=binding,
+            sop_node_display=sop_display,
+        )
         agent._custom_prompt_suffix = suffix
         agent_ctx = getattr(agent, "_context", None)
         if agent_ctx is not None and hasattr(agent, "_build_system_prompt"):
@@ -927,7 +866,7 @@ class MeetingRoomOrchestrator:
                             binding,
                             dynamic_schema=None,
                             reason=err,
-                            force_fallback=True,
+                            intervention_kind="exception",
                         ),
                         intervention_kind="exception",
                     )
@@ -1017,7 +956,7 @@ class MeetingRoomOrchestrator:
                     binding,
                     dynamic_schema=None,
                     reason="; ".join(validation.errors),
-                    force_fallback=True,
+                    intervention_kind="exception",
                 ),
                 pending_delivery={
                     "node_id": node_id,
@@ -1064,7 +1003,7 @@ class MeetingRoomOrchestrator:
                             + (
                                 f"动态问卷 {len((clarify_schema or {}).get('questions') or [])} 题"
                                 if clarify_schema
-                                else "使用默认兜底问卷（未解析到 ask-user / .questions.json）"
+                                else "未解析到有效问卷（需 ask-user / hitl-questionnaire 或 .questions.json）"
                             )
                         ),
                         "log_type": "info",
@@ -1090,12 +1029,11 @@ class MeetingRoomOrchestrator:
                     intervention_kind="interactive",
                 )
                 clarify_hint = (
-                    "小鲸已整理协作产出，请在下方的动态澄清问卷中作答；提交后将续跑本节点。"
+                    "小鲸已整理协作产出，请在下方的澄清问卷中作答；提交后将续跑本节点。"
                     if clarify_schema
                     else (
-                        "小鲸已整理当前议题，请在下方的会中澄清问卷中补充信息；"
-                        "（未检测到 ask-user 动态问卷，建议主控下次附带 hitl-questionnaire）"
-                        "提交后将续跑本节点。"
+                        "未检测到有效澄清问卷。请小鲸通过技能 whalecloud-dev-tool-ask-user "
+                        "输出 ``hitl-questionnaire`` 后再次提交；亦可先在对话区说明，再重跑本节点。"
                     )
                 )
                 append_history_event(

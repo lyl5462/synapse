@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from synapse.rd_meeting.flow_log import flow_log_to_text
-from synapse.rd_meeting.host_prompt import _format_node_init_sections_markdown
+from synapse.rd_meeting.dynamic_prompt import build_dynamic_meeting_context
 from synapse.rd_meeting.init_context import (
     build_node_init_log_data,
     normalize_node_init_log_data,
@@ -48,17 +48,31 @@ def format_node_init_chat(
     scope_id: str,
     *,
     node_id: str = "",
+    binding: dict | None = None,
 ) -> str:
-    """【步骤 2/3】节点初始化（工单 + 产品 + 系统）。"""
+    """【步骤 2/3】节点初始化（二/三/四段预览）。"""
     data = build_node_init_log_data(scope_type, scope_id, node_id=node_id)  # type: ignore[arg-type]
-    body = _format_node_init_sections_markdown(data)
+    bind = binding or {"node_id": node_id, "stage_id": 0, "node_intent": ""}
+    sections = build_dynamic_meeting_context(
+        binding=bind,
+        init_data=data,
+        scope_type=scope_type,  # type: ignore[arg-type]
+        scope_id=scope_id,
+    )
+    # 仅展示继承段（二～四）
+    tail = sections
+    for marker in ("## 二、", "## 三、", "## 四、"):
+        idx = tail.find(marker)
+        if idx >= 0:
+            tail = tail[idx:]
+            break
     return "\n".join(
         [
             "【步骤 2/3】节点初始化",
             "",
-            "已加载 userwork 工单上下文，并按 prod 完成统一服务产品定位：",
+            "已加载 userwork 工单上下文，并按 prod 完成统一服务产品定位（以下为四段式中的二～四段）：",
             "",
-            body,
+            tail.strip(),
         ]
     ).strip()
 
@@ -151,6 +165,10 @@ def format_event_chat_display(event: dict[str, Any]) -> str:
         if isinstance(obj, dict) and obj.get("message"):
             return str(obj["message"])
         if et == "node_init" and isinstance(obj, dict) and "order" in obj:
-            return _format_node_init_sections_markdown(normalize_node_init_log_data(obj))
+            return format_node_init_chat(
+                str(event.get("scope_type") or "demand"),
+                str(event.get("scope_id") or ""),
+                node_id=str(event.get("node_id") or ""),
+            )
         return flow_log_to_text(obj)
     return text

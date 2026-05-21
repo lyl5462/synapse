@@ -26,9 +26,9 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 
 ## 输出格式（强制）
 
-在面向用户的 Markdown 说明之后，**必须**追加问卷块（二选一，推荐 HTML 注释包裹）：
+在面向用户的 Markdown 说明之后，**必须**追加问卷块（HTML 注释包裹 + JSON）：
 
-### 方式 A（推荐）：HTML 注释 + JSON
+### 输出格式：HTML 注释 + JSON
 
 ```markdown
 （面向用户的进展说明、待确认总结等，可含 `# 交付结论`）
@@ -51,14 +51,6 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 ```
 <!-- /hitl-questionnaire -->
 ```
-
-### 方式 B：围栏代码块
-
-````markdown
-```hitl-questionnaire
-{ ... 同上 JSON，单行 type 字段不可省略 ... }
-```
-````
 
 ### 标记属性
 
@@ -153,8 +145,9 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 
 ## 与会议室其它机制的关系
 
-- 节点配置 `human_confirm: true` 时，系统仍有**默认问卷**（`default_hitl_form_schema`）；本技能输出的 JSON **优先**覆盖默认 schema。
-- 未输出 `hitl-questionnaire` 标记时，行为与 `whalecloud-dev-tool-meeting-room` §1.2 一致（配置驱动默认表单）。
+- **会中澄清 / 异常介入**：问卷**仅**来自本技能输出的 `hitl-questionnaire`（或协作写入的 `.questions.json`）；系统**不会**生成默认题目。
+- **结果确认**（节点归档验收）：无动态问卷时可使用 `default_hitl_form_schema` 结构化字段；本技能输出仍优先覆盖。
+- 未输出有效 `hitl-questionnaire` 时，Setup Center 不展示表单，需在对话区说明或请主控重新产出问卷。
 - IM / 通用对话中的 `ask_user` **工具**与本技能**独立**；会议室场景请用本技能的 JSON 标记，以便 Setup Center 渲染统一表单。
 
 ---
