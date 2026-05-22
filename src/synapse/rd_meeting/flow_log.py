@@ -14,7 +14,6 @@ EVENT_FLOW_STAGE: dict[str, str] = {
     "host_prompt_assembled": "主控提示词组装",
     "node_started": "节点开始执行",
     "run_node_scheduled": "调度节点执行",
-    "run_node_begin": "节点执行中",
     "prewarm_workers": "预热协作智能体",
     "host_llm_begin": "主控推理开始",
     "host_llm_end": "主控推理结束",
@@ -33,7 +32,6 @@ EVENT_FLOW_STAGE: dict[str, str] = {
     "hitl_rejected": "确认驳回",
     "hitl_dynamic": "动态问卷",
     "user_context": "用户上下文",
-    "phase_change": "阶段切换",
     "system": "系统",
     "chat_message": "对话",
 }
@@ -48,7 +46,6 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "node_init",
         "host_prompt_assembled",
         "run_node_scheduled",
-        "run_node_begin",
         "prewarm_workers",
         "host_llm_begin",
         "host_llm_end",
@@ -65,7 +62,6 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "node_pending_clarify",
         "node_completed",
         "node_skipped",
-        "phase_change",
         "run_node_scheduled",
     }
 )

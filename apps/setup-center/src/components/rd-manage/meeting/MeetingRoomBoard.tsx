@@ -6,7 +6,6 @@ import {
   fetchMeetingRoomLive,
   fetchMeetingRooms,
   interveneMeetingRoom,
-  runMeetingRoomNode,
   type MeetingRoomChatLogWire,
   type MeetingRoomDetail,
   type MeetingRoomListItem,
@@ -16,6 +15,10 @@ import {
 import { consumeMeetingRoomFocus } from '../../../rd-meeting/focus';
 import { MeetingRoomConfigDrawer } from './MeetingRoomConfigDrawer';
 import { MeetingHitlForm, type HitlFormSchema } from './MeetingHitlForm';
+import {
+  MeetingAgentContextDrawer,
+  type AgentContextTarget,
+} from './MeetingAgentContextDrawer';
 import { toast } from 'sonner';
 import {
   NODE_TYPE_LABEL,
@@ -29,7 +32,7 @@ import { RequirementAnalysisPanel } from './panels/RequirementAnalysisPanel';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Bot, Cpu, FileText, TerminalSquare, AlertTriangle, ShieldAlert, Sparkles, 
-  Users, MessageSquare, CheckCircle2, ChevronRight, Hash, Activity, Send, Zap, Settings2, PlayCircle,
+  Users, MessageSquare, CheckCircle2, ChevronRight, Hash, Activity, Send, Zap, Settings2,
   Globe, Clock, Coins, BrainCircuit, Coffee, MoreHorizontal, CircleDashed, 
   Terminal, Code2, GitBranch, FileCode2, Play, User, Info, Network, Code, 
   TestTube, CheckSquare, Flame, TrendingUp, Loader2, AlertCircle, MessageSquareText, ClipboardCheck
@@ -203,27 +206,56 @@ function resolveSpeakerName(room: MeetingRoom, agentId: string): string {
 
 function mapLiveAgents(live: MeetingRoomLivePayload, roster: RoomAgent[] = []): RoomAgent[] {
   const rosterById = new Map(roster.map((a) => [a.id, a]));
-  const workers: RoomAgent[] = (live.sub_agents || []).map((s, i) => {
+  // 按 profile_id 合并多次委派产生的多条 sub_agent 记录，避免「分身」
+  const STATUS_RANK: Record<string, number> = {
+    running: 3,
+    delegating: 3,
+    failed: 2,
+    starting: 2,
+    idle: 1,
+    completed: 1,
+    cancelled: 0,
+    timeout: 2,
+  };
+  const merged = new Map<
+    string,
+    { name: string; status: string; current_tool_summary?: string }
+  >();
+  for (const [i, s] of (live.sub_agents || []).entries()) {
     const pid = String(s.profile_id || s.agent_id || `worker-${i}`);
-    const st = String(s.status || 'idle');
+    const st = String(s.status || 'idle').toLowerCase();
+    const prev = merged.get(pid);
+    const nextRank = STATUS_RANK[st] ?? 0;
+    const prevRank = prev ? STATUS_RANK[prev.status] ?? 0 : -1;
+    if (!prev || nextRank > prevRank) {
+      merged.set(pid, {
+        name: String(s.name || prev?.name || '').trim(),
+        status: st,
+        current_tool_summary: String(s.current_tool_summary || prev?.current_tool_summary || ''),
+      });
+    }
+  }
+  const workers: RoomAgent[] = Array.from(merged.entries()).map(([pid, info]) => {
     const uiStatus: RoomAgent['status'] =
-      st === 'running' || st === 'delegating' ? 'processing' : st === 'failed' ? 'error' : 'idle';
+      info.status === 'running' || info.status === 'delegating'
+        ? 'processing'
+        : info.status === 'failed' || info.status === 'timeout'
+          ? 'error'
+          : 'idle';
     const fromRoster = rosterById.get(pid);
-    const rawName = String(s.name || fromRoster?.name || '').trim();
     const name =
-      rawName && rawName !== pid
-        ? rawName
-        : live.participants?.find((p) => p.profile_id === pid)?.display_name ||
-          fromRoster?.name ||
-          '协作智能体';
+      (info.name && info.name !== pid && info.name) ||
+      live.participants?.find((p) => p.profile_id === pid)?.display_name ||
+      fromRoster?.name ||
+      '协作智能体';
     return {
       id: pid,
       name,
       role: '协作智能体',
-      avatarColor: 'bg-sky-500',
-      icon: <Cpu className="w-3 h-3" />,
+      avatarColor: fromRoster?.avatarColor || workerColor(pid),
+      icon: fromRoster?.icon || <Cpu className="w-3 h-3" />,
       status: uiStatus,
-      currentAction: String(s.current_tool_summary || s.status || ''),
+      currentAction: info.current_tool_summary || info.status || '',
     };
   });
   const hostStatus: RoomAgent['status'] = live.run_in_progress ? 'processing' : 'idle';
@@ -615,17 +647,48 @@ const AgentAvatar = ({
   agent,
   size = 'normal',
   showStatusBadge = true,
+  onClick,
 }: {
   agent: RoomAgent;
   size?: 'small' | 'normal' | 'large';
   /** 右上角状态角标（协作流对话框内默认关闭，避免与主头像叠两层图标） */
   showStatusBadge?: boolean;
+  /** 点击查看该智能体运行时上下文 */
+  onClick?: () => void;
 }) => {
   const isLarge = size === 'large';
   const sizeClasses = isLarge ? 'w-10 h-10' : size === 'small' ? 'w-6 h-6' : 'w-8 h-8';
 
-  return (
-    <div className="relative group/avatar">
+  const handleClick = onClick
+    ? (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onClick();
+      }
+    : undefined;
+
+  const content = (
+    <div
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-label={onClick ? `查看 ${agent.name} 上下文` : undefined}
+      onClick={handleClick}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      className={`relative inline-flex outline-none ${
+        onClick
+          ? 'cursor-pointer transition-transform duration-150 hover:-translate-y-0.5 hover:scale-105 focus-visible:ring-2 focus-visible:ring-blue-500/60 rounded-full'
+          : ''
+      }`}
+    >
       <div
         className={`${sizeClasses} rounded-full flex items-center justify-center text-white ${agent.avatarColor} border-2 border-background shadow-lg relative z-10 overflow-hidden`}
       >
@@ -659,6 +722,11 @@ const AgentAvatar = ({
         </div>
       ) : null}
     </div>
+  );
+
+  if (!onClick) return content;
+  return (
+    <Tooltip title={`${agent.name} · 点击查看上下文`}>{content}</Tooltip>
   );
 };
 
@@ -833,24 +901,24 @@ const InterventionDialog = ({
   open, 
   onClose,
   onIntervene,
-  onRunNode,
   onApprovePass,
-  runNodeBusy,
   approveBusy,
+  synapseApiBase,
 }: { 
   room: MeetingRoom | null; 
   open: boolean; 
   onClose: () => void;
   onIntervene: (text: string, options?: { resumeRun?: boolean }) => void;
-  onRunNode?: () => void;
   onApprovePass?: () => void;
-  runNodeBusy?: boolean;
   approveBusy?: boolean;
+  synapseApiBase?: string;
 }) => {
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [centerTab, setCenterTab] = useState<'detail' | 'hitl'>('detail');
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextAgent, setContextAgent] = useState<AgentContextTarget | null>(null);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const lastLogKeyRef = useRef('');
@@ -907,6 +975,17 @@ const InterventionDialog = ({
   }, [open, isTyping, scrollLogsToBottom]);
 
   if (!room) return null;
+
+  const openAgentContext = (agent: RoomAgent) => {
+    setContextAgent({
+      profileId: agent.id,
+      name: agent.name,
+      role: agent.role,
+      avatarColor: agent.avatarColor,
+      isHost: agent.id === HOST_PROFILE_ID || agent.role === '会议主持',
+    });
+    setContextOpen(true);
+  };
 
   const handleSend = () => {
     if (!inputText.trim()) return;
@@ -985,21 +1064,6 @@ const InterventionDialog = ({
             <p className="text-[10px] text-muted-foreground/80 mt-1 ml-4">
               共 {stageNodes.length} 个议题节点 · 点击查看产物
             </p>
-            {onRunNode ? (
-              <Button
-                size="small"
-                type="primary"
-                className="mt-3 ml-4"
-                icon={<PlayCircle className="h-3.5 w-3.5" />}
-                loading={runNodeBusy}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRunNode();
-                }}
-              >
-                执行当前节点
-              </Button>
-            ) : null}
           </div>
 
           {/* Agenda Items - only current stage nodes */}
@@ -1237,13 +1301,13 @@ const InterventionDialog = ({
                  <Avatar size="small" className="bg-muted text-[10px] ring-2 ring-background">我</Avatar>
                  <span className="mx-1 text-muted-foreground/70">|</span>
                  {room.agents.map(a => (
-                   <Tooltip key={a.id} title={`${a.name} · ${a.role}`}>
-                     <div
-                       className={`w-6 h-6 rounded-full flex items-center justify-center text-white text-[10px] ${a.avatarColor} ring-2 ring-background`}
-                     >
-                       {a.icon}
-                     </div>
-                   </Tooltip>
+                   <AgentAvatar
+                     key={a.id}
+                     agent={a}
+                     size="small"
+                     showStatusBadge={false}
+                     onClick={() => openAgentContext(a)}
+                   />
                  ))}
                </div>
             </div>
@@ -1263,7 +1327,12 @@ const InterventionDialog = ({
                 >
                   {!isUser && agent && (
                     <div className="shrink-0 mt-0.5">
-                      <AgentAvatar agent={agent} size="small" showStatusBadge={false} />
+                      <AgentAvatar
+                        agent={agent}
+                        size="small"
+                        showStatusBadge={false}
+                        onClick={() => openAgentContext(agent)}
+                      />
                     </div>
                   )}
                   <div className={`flex flex-col max-w-[85%] ${isUser ? 'items-end' : 'items-start'}`}>
@@ -1381,6 +1450,14 @@ const InterventionDialog = ({
         </div>
 
       </div>
+
+      <MeetingAgentContextDrawer
+        open={contextOpen}
+        onClose={() => setContextOpen(false)}
+        synapseApiBase={synapseApiBase || ''}
+        roomId={room.id}
+        agent={contextAgent}
+      />
     </Modal>
   );
 };
@@ -1393,7 +1470,6 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
   const [activeRoom, setActiveRoom] = useState<MeetingRoom | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
-  const [runNodeBusy, setRunNodeBusy] = useState(false);
   const [approveBusy, setApproveBusy] = useState(false);
 
   const reloadRooms = useCallback(async () => {
@@ -1476,25 +1552,6 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
       .catch(() => {
         /* 保留列表态数据 */
       });
-  };
-
-  const handleRunCurrentNode = () => {
-    if (!activeRoom) return;
-    const base = (synapseApiBase || '').trim();
-    if (!base) return;
-    setRunNodeBusy(true);
-    void runMeetingRoomNode(base, activeRoom.id, { sync: true })
-      .then((data) => {
-        const room = data.room ? mapDetailToRoom(data.room) : activeRoom;
-        setActiveRoom(room);
-        setRooms((prev) => prev.map((r) => (r.id === room.id ? room : r)));
-        toast.success('当前节点已执行');
-        void reloadRooms();
-      })
-      .catch((e) => {
-        toast.error(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => setRunNodeBusy(false));
   };
 
   const handleApprovePass = () => {
@@ -1621,10 +1678,9 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
           open={dialogOpen}
           onClose={() => setDialogOpen(false)}
           onIntervene={handleIntervene}
-          onRunNode={handleRunCurrentNode}
           onApprovePass={handleApprovePass}
-          runNodeBusy={runNodeBusy}
           approveBusy={approveBusy}
+          synapseApiBase={synapseApiBase}
         />
 
         <MeetingRoomConfigDrawer

@@ -117,12 +117,15 @@ def test_open_meeting_step1_userwork_and_init_log(monkeypatch, tmp_path):
         lambda p: ([{"prod": p, "version": "v", "repo_info": [], "doc_process": []}], ""),
     )
 
-    svc = MeetingRoomService()
-    detail = svc.open_meeting(
-        "demand", scope_id, prod="p", sync_userwork=True, auto_run_first_node=False
+    monkeypatch.setattr(
+        "synapse.rd_meeting.orchestrator.schedule_run_node",
+        lambda **_k: "room-key",
     )
 
-    assert detail.get("auto_run_started") is not True
+    svc = MeetingRoomService()
+    detail = svc.open_meeting("demand", scope_id, prod="p", sync_userwork=True)
+
+    assert detail.get("node_run_scheduled") is True
     saved = json.loads(uw_path.read_text(encoding="utf-8"))
     demand = saved["list"][0]
     assert demand["local_process_state"] == "处理中"

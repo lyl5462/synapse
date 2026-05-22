@@ -763,18 +763,6 @@ class MeetingRoomOrchestrator:
         if node_id == "pending":
             raise ValueError("invalid_current_node")
 
-        append_history_event(
-            sid,
-            {
-                "event": "run_node_begin",
-                "room_id": room_id,
-                "node_id": node_id,
-                "scope_type": scope_type,
-                "log_type": "info",
-                "agent_id": "system",
-            },
-        )
-
         skipped_nodes: list[str] = []
         for _ in range(_MAX_SKIP_CHAIN):
             binding = resolve_node_binding(
@@ -1351,31 +1339,6 @@ def schedule_run_node(
     existing = _running_tasks.get(key)
     if existing and not existing.done():
         return key
-
-    sid = scope_id.strip()
-    dev = load_dev_status(sid)
-    node_id = str(dev.get("current_node_id") or "pending") if dev else "pending"
-    bind = resolve_node_binding(
-        node_id,
-        scope_type=scope_type,
-        scope_id=sid,
-        ticket_title=ticket_title,
-    )
-    host_id = str(bind.get("host_profile_id") or "default")
-    from synapse.rd_meeting.pipeline_chat import format_run_node_scheduled_chat
-
-    append_history_event(
-        sid,
-        {
-            "event": "run_node_scheduled",
-            "room_id": room_id,
-            "scope_type": scope_type,
-            "current_node_id": node_id,
-            "log_type": "info",
-            "agent_id": host_id,
-            "chat_text": format_run_node_scheduled_chat(),
-        },
-    )
 
     orch = MeetingRoomOrchestrator()
 

@@ -69,9 +69,13 @@ def test_pipeline_file_created_on_open_flow(monkeypatch, tmp_path):
             {"synapse_url": "http://h:10001", "gitnexus_url": "http://h:11011", "gnx_cache_base_dir": "/gnx"},
         ),
     )
+    monkeypatch.setattr(
+        "synapse.rd_meeting.orchestrator.schedule_run_node",
+        lambda **_k: "room-key",
+    )
 
     svc = MeetingRoomService()
-    detail = svc.open_meeting("demand", scope_id, prod="myprod", auto_run_first_node=False)
+    detail = svc.open_meeting("demand", scope_id, prod="myprod")
 
     ppath = meeting_pipeline_path(scope_id)
     assert ppath.is_file()

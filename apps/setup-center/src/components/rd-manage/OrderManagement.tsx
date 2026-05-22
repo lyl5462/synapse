@@ -1171,7 +1171,6 @@ export const OrderManagement: React.FC<{
       const detail = await openMeetingRoom(synapseApiBase, scopeType, scopeId, {
         prod,
         promoteToProcessing: true,
-        autoRunFirstNode: false,
       });
       setOpenMeetingPickerOpen(false);
       setOpenMeetingPending(null);

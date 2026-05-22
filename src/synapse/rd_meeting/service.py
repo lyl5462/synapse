@@ -7,8 +7,11 @@ import re
 import uuid
 from typing import Any, Literal
 
+from synapse.rd_meeting.agent_context_probe import (
+    collect_meeting_agent_contexts,
+    dump_meeting_agent_contexts,
+)
 from synapse.rd_meeting.binding import list_resolved_bindings, resolve_node_binding
-from synapse.rd_meeting.participants import build_meeting_participants
 from synapse.rd_meeting.config_store import (
     DEFAULT_MEETING_SKILL_ID,
     load_meeting_room_config,
@@ -22,13 +25,20 @@ from synapse.rd_meeting.dev_status import (
     save_dev_status,
     should_list_in_meeting_rooms,
 )
+from synapse.rd_meeting.hitl_submission import (
+    format_hitl_form_instruction,
+    load_archive_delivery_body,
+    parse_hitl_form_text,
+    record_hitl_submission_locked,
+)
 from synapse.rd_meeting.live import collect_live_sub_agents
 from synapse.rd_meeting.orchestrator import (
     MeetingRoomOrchestrator,
     is_room_run_in_progress,
     schedule_run_node,
 )
-from synapse.rd_meeting.paths import iter_work_order_directories, scope_dir
+from synapse.rd_meeting.participants import build_meeting_participants
+from synapse.rd_meeting.paths import iter_work_order_directories
 from synapse.rd_meeting.phase import get_phase
 from synapse.rd_meeting.pipeline import MeetingPipeline
 from synapse.rd_meeting.room_runtime import (
@@ -42,23 +52,15 @@ from synapse.rd_meeting.room_runtime import (
     sync_room_state_from_dev,
 )
 from synapse.rd_meeting.room_skill import meeting_skill_preview
-from synapse.rd_meeting.hitl_submission import (
-    format_hitl_form_instruction,
-    load_archive_delivery_body,
-    parse_hitl_form_text,
-    record_hitl_submission_locked,
-)
 from synapse.rd_meeting.user_context import (
     append_user_context_pending,
     is_hitl_form_submission,
 )
-from synapse.rd_meeting.validation import validate_node_output
 from synapse.rd_meeting.userwork_sync import build_title_index, patch_userwork_summary
+from synapse.rd_meeting.validation import validate_node_output
 from synapse.rd_sop.manifest import list_manifest_stages
 from synapse.rd_sop.nodes import (
     node_display_name,
-    resolve_sop_raw_to_node_id,
-    stage_id_for_node_id,
     stage_name_for_id,
 )
 
@@ -129,32 +131,6 @@ class MeetingRoomService:
     def resolve_binding(self, node_id: str) -> dict[str, Any]:
         return resolve_node_binding(node_id)
 
-    def start_run_current_node(
-        self,
-        room_id: str,
-        *,
-        agent_pool: Any | None = None,
-        dry_run: bool | None = None,
-    ) -> dict[str, Any]:
-        ctx = self._room_context(room_id)
-        if ctx is None:
-            raise ValueError("meeting_room_not_found")
-        if is_room_run_in_progress(room_id):
-            return {**ctx, "run_status": "already_running"}
-
-        from synapse.rd_meeting.pipeline import mark_pipeline_host_run_started
-
-        mark_pipeline_host_run_started(ctx["scope_id"])
-        schedule_run_node(
-            scope_type=ctx["scope_type"],
-            scope_id=ctx["scope_id"],
-            room_id=room_id,
-            ticket_title=str(ctx.get("ticket_title") or ""),
-            agent_pool=agent_pool,
-            dry_run=dry_run,
-        )
-        return {**ctx, "run_status": "started"}
-
     async def run_current_node_sync(
         self,
         room_id: str,
@@ -203,6 +179,43 @@ class MeetingRoomService:
     def get_by_room_id(self, room_id: str) -> dict[str, Any] | None:
         return self.get_room_detail(room_id)
 
+    @staticmethod
+    def _resolve_orchestrator(agent_pool: Any | None = None) -> Any | None:
+        try:
+            from synapse.main import _orchestrator
+
+            if _orchestrator is not None:
+                return _orchestrator
+        except (ImportError, AttributeError):
+            pass
+        if agent_pool is not None:
+            return getattr(agent_pool, "orchestrator", None)
+        return None
+
+    def get_agent_contexts(
+        self,
+        room_id: str,
+        *,
+        agent_pool: Any | None = None,
+        dump: bool = False,
+        message_char_limit: int = 12_000,
+    ) -> dict[str, Any] | None:
+        """探测会议室各 Agent 池实例的 system prompt / messages（调试监控用）。"""
+        detail = self.get_room_detail(room_id)
+        if detail is None:
+            return None
+        scope_id = str(detail.get("scope_id") or "")
+        orchestrator = self._resolve_orchestrator(agent_pool)
+        payload = collect_meeting_agent_contexts(
+            room_id,
+            agent_pool,
+            orchestrator=orchestrator,
+            message_char_limit=message_char_limit,
+        )
+        if dump and scope_id:
+            payload["dump_path"] = dump_meeting_agent_contexts(payload, scope_id=scope_id)
+        return payload
+
     def get_room_live(
         self,
         room_id: str,
@@ -218,15 +231,7 @@ class MeetingRoomService:
         room_state = detail.get("room_state") if isinstance(detail.get("room_state"), dict) else {}
         history = read_history(scope_id, limit=history_limit) if scope_id else []
 
-        orchestrator = None
-        try:
-            from synapse.main import _orchestrator
-
-            orchestrator = _orchestrator
-        except (ImportError, AttributeError):
-            pass
-        if orchestrator is None and agent_pool is not None:
-            orchestrator = getattr(agent_pool, "orchestrator", None)
+        orchestrator = self._resolve_orchestrator(agent_pool)
 
         host_session_id = f"rd_meeting:{room_id.strip()}:host"
         sub_agents: list[dict[str, Any]] = []
@@ -390,7 +395,7 @@ class MeetingRoomService:
         prod: str = "",
         sync_userwork: bool = True,
         promote_to_processing: bool = True,
-        auto_run_first_node: bool = False,
+        agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         sid = (scope_id or "").strip()
         if not sid:
@@ -411,11 +416,11 @@ class MeetingRoomService:
             prod=prod_key,
             sync_userwork=sync_userwork,
             promote_to_processing=promote_to_processing,
-            auto_run_first_node=auto_run_first_node,
+            agent_pool=agent_pool,
         )
         run_pipeline_until_waiting(ctx, initial_flow_step=STEP_OPEN_MEETING)
-        if ctx.auto_run_started:
-            ctx.detail["auto_run_started"] = True
+        if ctx.node_run_scheduled:
+            ctx.detail["node_run_scheduled"] = True
         return ctx.detail
 
     def intervene(

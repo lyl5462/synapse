@@ -301,6 +301,57 @@ export async function fetchMeetingRoomLive(
   );
 }
 
+export interface MeetingAgentContextTask {
+  task_id?: string;
+  status?: string;
+  iteration?: number;
+  tools_executed?: string[];
+  description_preview?: string;
+  usage_scene?: string;
+}
+
+export interface MeetingAgentContextEntry {
+  session_id: string;
+  profile_id: string;
+  role: 'host' | 'worker' | string;
+  preferred_endpoint?: string;
+  default_cwd?: string;
+  system_prompt?: string;
+  system_prompt_truncated?: boolean;
+  custom_prompt_suffix?: string;
+  custom_prompt_suffix_truncated?: boolean;
+  messages?: { role?: string; content?: unknown }[];
+  messages_count?: number;
+  messages_truncated?: boolean;
+  task?: MeetingAgentContextTask | null;
+  last_usage?: Record<string, unknown> | null;
+}
+
+export interface MeetingAgentContextsPayload {
+  room_id: string;
+  scope_id?: string | null;
+  host_session_id?: string;
+  agents: MeetingAgentContextEntry[];
+  sub_agents?: MeetingRoomLivePayload['sub_agents'];
+  probed_at?: string;
+  dump_path?: string;
+}
+
+export async function fetchMeetingAgentContexts(
+  synapseApiBase: string,
+  roomId: string,
+  options?: { messageCharLimit?: number },
+): Promise<MeetingAgentContextsPayload> {
+  const base = synapseApiBase.replace(/\/$/, '');
+  const params = new URLSearchParams();
+  if (options?.messageCharLimit != null) {
+    params.set('message_char_limit', String(options.messageCharLimit));
+  }
+  const qs = params.toString();
+  const path = `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/agent-contexts${qs ? `?${qs}` : ''}`;
+  return apiGet<MeetingAgentContextsPayload>(base, path);
+}
+
 export async function openMeetingRoom(
   synapseApiBase: string,
   scopeType: MeetingRoomScopeType,
@@ -308,7 +359,6 @@ export async function openMeetingRoom(
   options: {
     prod: string;
     promoteToProcessing?: boolean;
-    autoRunFirstNode?: boolean;
     syncUserwork?: boolean;
   },
 ): Promise<MeetingRoomDetail> {
@@ -323,7 +373,6 @@ export async function openMeetingRoom(
     prod,
     sync_userwork: options.syncUserwork ?? true,
     promote_to_processing: options.promoteToProcessing ?? true,
-    auto_run_first_node: options.autoRunFirstNode ?? false,
   });
 }
 
@@ -398,18 +447,6 @@ export async function putMeetingRoomConfig(
 ): Promise<MeetingRoomConfigPayload> {
   const base = synapseApiBase.replace(/\/$/, '');
   return apiPut<MeetingRoomConfigPayload>(base, '/api/dev/meeting-room-config', body);
-}
-
-export async function runMeetingRoomNode(
-  synapseApiBase: string,
-  roomId: string,
-  options?: { dryRun?: boolean; sync?: boolean },
-): Promise<{ result?: unknown; room?: MeetingRoomDetail; run_status?: string }> {
-  const base = synapseApiBase.replace(/\/$/, '');
-  return apiPost(base, `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/run-node`, {
-    dry_run: options?.dryRun,
-    sync: options?.sync ?? false,
-  });
 }
 
 export async function putDevStatus(

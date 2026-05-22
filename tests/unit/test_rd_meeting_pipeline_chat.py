@@ -46,7 +46,9 @@ def test_chat_logs_skip_pipeline_transition():
     assert history_to_chat_logs([ev]) == []
 
 
-def test_phase_change_waiting_visible():
+def test_phase_change_not_in_chat_visible():
+    """phase_change 不再写入 history；旧数据仍可按 chat_text 解析展示。"""
+    assert "phase_change" not in CHAT_VISIBLE_EVENTS
     ev = {
         "event": "phase_change",
         "to_phase": "waiting",
@@ -54,10 +56,7 @@ def test_phase_change_waiting_visible():
         "agent_id": "default",
         "ts": "2026-05-21T10:00:01",
     }
-    logs = history_to_chat_logs([ev])
-    assert len(logs) == 1
-    assert "【流程待机】" in logs[0]["text"]
-    assert logs[0]["agentId"] == "default"
+    assert history_to_chat_logs([ev]) == []
 
 
 def test_room_opened_prefers_process_chat_text():

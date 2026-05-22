@@ -26,17 +26,12 @@ STEP_NODE_INIT_SUMMARY = (
 STEP_HOST_PROMPT_SUMMARY = (
     "【步骤 3/3】主控提示词组装\n\n"
     "已将会诊室 SKILL 与四段式动态上下文写入小鲸系统提示；"
-    "待机后可触发「执行当前节点」开始主控推理。"
+    "将立即调度小鲸执行当前 SOP 节点。"
 )
 
 PHASE_WAITING_SUMMARY = (
     "【流程待机】\n\n"
     "会议室准备流程已完成，等待执行当前 SOP 节点或人工触发。"
-)
-
-STEP_RUN_NODE_SCHEDULE_SUMMARY = (
-    "【调度执行】\n\n"
-    "已提交当前 SOP 节点后台执行，主控将开始推理并按计划委派协作智能体。"
 )
 
 STEP_HOST_FIRST_CALL_SUMMARY = (
@@ -73,11 +68,6 @@ def format_phase_change_chat(*, to_phase: str) -> str | None:
     return None
 
 
-def format_run_node_scheduled_chat() -> str:
-    """可选步骤：调度节点执行。"""
-    return STEP_RUN_NODE_SCHEDULE_SUMMARY
-
-
 def format_host_first_call_chat(*, reused_prompt: bool = False) -> str:
     """步骤 4：主控首次 LLM 调用（流程说明）。"""
     return STEP_HOST_FIRST_CALL_REUSED_SUMMARY if reused_prompt else STEP_HOST_FIRST_CALL_SUMMARY
@@ -100,8 +90,6 @@ def format_event_chat_display(event: dict[str, Any]) -> str:
         return format_phase_change_chat(to_phase=str(event.get("to_phase") or "")) or ""
     if et == "work_plan_submitted":
         return str(event.get("text") or "").strip()
-    if et == "run_node_scheduled":
-        return format_run_node_scheduled_chat()
     if et == "host_llm_begin":
         reused = bool(event.get("reused_host_prompt_cache"))
         return format_host_first_call_chat(reused_prompt=reused)
