@@ -6173,9 +6173,13 @@ class Agent:
 
         # 使用已构建的系统提示词 (包含技能清单)
         # 技能清单已在初始化时注入到 _context.system 中
-        system_prompt = (
-            self._context.system
-            + """
+        # 研发会议室通过 _org_context 短路：system 已是 build_room_skill_prompt 产物，不再追加通用 Task Execution Strategy
+        if getattr(self, "_org_context", None):
+            system_prompt = self._context.system
+        else:
+            system_prompt = (
+                self._context.system
+                + """
 
 ## Task Execution Strategy
 
@@ -6187,7 +6191,7 @@ class Agent:
 4. **If no skill matches**: Use `skill-creator` skill to create one, then `load_skill` to load it
 
 永不放弃，直到任务完成！"""
-        )
+            )
 
         # === Plan 持久化：保存不含 Plan 的基础提示词，循环内动态追加 ===
         _base_system_prompt_task = system_prompt

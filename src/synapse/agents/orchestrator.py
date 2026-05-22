@@ -611,7 +611,34 @@ class AgentOrchestrator:
                 f"for {agent_profile_id}"
             )
 
-        agent = await self._pool.get_or_create(session.id, profile)
+        pool_session_id = session.id
+        try:
+            from synapse.rd_meeting.agent_prompt import (
+                ensure_meeting_agent_configured,
+                resolve_rd_meeting_pool_session_id,
+            )
+
+            pool_session_id = resolve_rd_meeting_pool_session_id(
+                session.id,
+                agent_profile_id,
+                depth=depth,
+            )
+        except Exception as exc:
+            logger.debug("rd_meeting pool session resolve skipped: %s", exc)
+
+        agent = await self._pool.get_or_create(pool_session_id, profile)
+
+        try:
+            from synapse.rd_meeting.agent_prompt import ensure_meeting_agent_configured
+
+            ensure_meeting_agent_configured(
+                agent,
+                session_id=session.id,
+                agent_profile_id=agent_profile_id,
+                depth=depth,
+            )
+        except Exception as exc:
+            logger.debug("ensure_meeting_agent_configured skipped: %s", exc)
 
         # Per-profile max_turns override → propagated to reasoning engine
         _max_turns_override: int | None = getattr(profile, "max_turns", None)
