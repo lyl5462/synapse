@@ -85,6 +85,14 @@ def record_hitl_submission_locked(
     kind = str(rs.get("intervention_kind") or "interactive").strip().lower()
     schema = rs.get("hitl_form_schema") if isinstance(rs.get("hitl_form_schema"), dict) else None
 
+    rules_meta: dict[str, str] | None
+    try:
+        from synapse.rd_meeting.room_skill import get_meeting_room_rules_meta
+
+        rules_meta = get_meeting_room_rules_meta()
+    except Exception:
+        rules_meta = None
+
     submission = {
         "locked": True,
         "submitted_at": _now_iso(),
@@ -92,6 +100,7 @@ def record_hitl_submission_locked(
         "raw_text": raw_text.strip(),
         "kind": kind,
         "schema_snapshot": schema,
+        "rules_meta": rules_meta,
     }
     rs["hitl_submission"] = submission
     rs["hitl_locked"] = True

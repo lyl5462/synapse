@@ -680,6 +680,8 @@ class AgentOrchestrator:
             "iteration": 0,
             "tools_executed": [],
             "tools_total": 0,
+            "skills_executed": [],
+            "skills_total": 0,
             "elapsed_s": 0,
             "last_progress_s": 0,
             "started_at": time.time(),
@@ -729,6 +731,7 @@ class AgentOrchestrator:
 
                 # Update live sub-agent state for frontend polling
                 tools_list = self._get_tools_executed(agent, session.id, session)
+                skills_list = self._get_skills_executed(agent, session.id, session)
                 idle_s = time.monotonic() - last_progress_time
 
                 _current_tool = tools_list[-1] if tools_list else ""
@@ -749,6 +752,8 @@ class AgentOrchestrator:
                     "iteration": fp[0] if fp[0] >= 0 else 0,
                     "tools_executed": tools_list[-5:],
                     "tools_total": len(tools_list),
+                    "skills_executed": skills_list[-20:],
+                    "skills_total": len(skills_list),
                     "elapsed_s": round(elapsed),
                     "last_progress_s": round(idle_s),
                     "current_tool_summary": _current_tool,
@@ -871,6 +876,8 @@ class AgentOrchestrator:
                 "iteration": state_entry.get("iteration", 0),
                 "tools_executed": state_entry.get("tools_executed", []),
                 "tools_total": state_entry.get("tools_total", 0),
+                "skills_executed": state_entry.get("skills_executed", []),
+                "skills_total": state_entry.get("skills_total", 0),
                 "elapsed_s": state_entry.get("elapsed_s", 0),
                 "last_progress_s": state_entry.get("last_progress_s", 0),
                 "started_at": state_entry.get("started_at", 0),
@@ -893,6 +900,24 @@ class AgentOrchestrator:
                 logger.info(f"[Orchestrator] Cleaned up ephemeral profile: {profile_id}")
         except Exception as e:
             logger.warning(f"[Orchestrator] Failed to cleanup ephemeral {profile_id}: {e}")
+
+    @staticmethod
+    def _get_skills_executed(agent: Any, session_id: str, session: Any = None) -> list[dict]:
+        """Return the list of SKILL invocations recorded by the agent in the current task.
+
+        Each item is a dict shaped like ``{"skill", "tool", "script"?, "ts"}``.
+        Empty list when the agent has no current task or never touched SKILL tools.
+        """
+        state = getattr(agent, "agent_state", None)
+        if state is None:
+            return []
+        task = state.get_task_for_session(session_id) if session_id else None
+        if task is None:
+            task = state.current_task
+        if task is None:
+            return []
+        skills = getattr(task, "skills_executed", None)
+        return list(skills) if skills else []
 
     @staticmethod
     def _get_tools_executed(agent: Any, session_id: str, session: Any = None) -> list[str]:
@@ -1230,6 +1255,8 @@ class AgentOrchestrator:
             "iteration": 0,
             "tools_executed": [],
             "tools_total": 0,
+            "skills_executed": [],
+            "skills_total": 0,
             "elapsed_s": 0,
             "from_agent": from_agent,
             "reason": reason or "",

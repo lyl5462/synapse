@@ -187,6 +187,8 @@ def collect_live_sub_agents(orchestrator: Any, host_session_id: str) -> list[dic
                 "iteration": st.get("iteration"),
                 "tools_executed": st.get("tools_executed"),
                 "tools_total": st.get("tools_total"),
+                "skills_executed": st.get("skills_executed"),
+                "skills_total": st.get("skills_total"),
                 "elapsed_s": st.get("elapsed_s"),
                 "tokens_used": st.get("tokens_used"),
                 "current_tool_summary": st.get("current_tool_summary"),

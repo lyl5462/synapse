@@ -146,6 +146,15 @@ class Settings(BaseSettings):
     )
     database_path: str = Field(default="data/agent.db", description="数据库路径")
 
+    # === RD 研发会议室 ===
+    # 会议室主持人提示词规则文件（绝对路径或相对 cwd）。
+    # 留空 → 使用 src/synapse/rd_meeting/prompts/meeting_room_rules.md。
+    # 私有化部署 / 多租户可指向自定义版本以覆盖默认规则。
+    rd_meeting_rules_path: str = Field(
+        default="",
+        description="会议室主持人提示词规则文件路径，留空使用内置 prompts/meeting_room_rules.md",
+    )
+
     # === 日志配置 ===
     log_level: str = Field(default="INFO", description="日志级别")
     log_dir: str = Field(default="logs", description="日志目录")

@@ -55,6 +55,7 @@ def _task_snapshot(agent: Any, session_id: str) -> dict[str, Any] | None:
         "status": status,
         "iteration": int(getattr(task, "iteration", 0) or 0),
         "tools_executed": list(getattr(task, "tools_executed", None) or []),
+        "skills_executed": list(getattr(task, "skills_executed", None) or []),
         "description_preview": str(getattr(task, "description", "") or "")[:500],
         "usage_scene": str(getattr(task, "usage_scene", "") or ""),
     }

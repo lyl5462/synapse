@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections.abc import Iterable
@@ -31,6 +32,9 @@ Role = Literal["host", "worker"]
 
 DEFAULT_ASK_USER_SKILL_ID = "whalecloud-dev-tool-ask-user"
 DEFAULT_LLM_ENDPOINT_KEY = "default"
+
+# 默认会议室规则文件名（与本模块同级 prompts/ 目录）
+_DEFAULT_RULES_FILENAME = "meeting_room_rules.md"
 
 
 # ─── SKILL.md 定位（仅供 ask-user 等真正的外部 SKILL 使用） ────────────
@@ -100,8 +104,81 @@ def load_ask_user_skill_body(skill_id: str = DEFAULT_ASK_USER_SKILL_ID) -> str:
 
 
 def get_meeting_room_rules() -> str:
-    """返回会议室通用规范正文（内嵌常量，不再涉及 SKILL 加载）。"""
-    return _MEETING_ROOM_RULES
+    """返回会议室通用规范正文。
+
+    优先级：
+    1. ``settings.rd_meeting_rules_path``（私有化 / 多租户场景可指向自定义规则文件）
+    2. 本模块同级 ``prompts/meeting_room_rules.md``（随仓库发布的默认版本）
+    3. 兜底常量 ``_MEETING_ROOM_RULES_FALLBACK``（极端情况下仍保证 host prompt 不空）
+
+    读取结果带 LRU 缓存。如需在运行时强制重载，调用
+    :func:`reload_meeting_room_rules`。
+    """
+    text, _ = _load_meeting_room_rules()
+    return text
+
+
+def get_meeting_room_rules_meta() -> dict[str, str]:
+    """返回当前生效规则的元数据：``source`` / ``sha256[:12]`` / ``length``。
+
+    供调试 / 审计使用——例如把 hash 一并写进 ``hitl_submission.schema_snapshot``，
+    便于复盘"那次会议跑成那样时用的是哪一版规则"。
+    """
+    text, source = _load_meeting_room_rules()
+    digest = hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return {"source": source, "sha256": digest, "length": str(len(text))}
+
+
+def reload_meeting_room_rules() -> dict[str, str]:
+    """清除规则缓存，下次取用时重新读盘。返回新的元数据。"""
+    _load_meeting_room_rules.cache_clear()  # type: ignore[attr-defined]
+    return get_meeting_room_rules_meta()
+
+
+def _resolve_rules_path() -> Path | None:
+    """按优先级解析规则文件路径。"""
+    try:
+        from synapse.config import settings
+
+        override = getattr(settings, "rd_meeting_rules_path", "") or ""
+        if isinstance(override, str) and override.strip():
+            p = Path(override).expanduser()
+            if p.is_file():
+                return p
+            logger.warning(
+                "settings.rd_meeting_rules_path=%r not found, falling back to bundled rules",
+                override,
+            )
+    except Exception as exc:
+        logger.debug("settings.rd_meeting_rules_path lookup skipped: %s", exc)
+
+    bundled = Path(__file__).resolve().parent / "prompts" / _DEFAULT_RULES_FILENAME
+    if bundled.is_file():
+        return bundled
+    return None
+
+
+def _load_meeting_room_rules_uncached() -> tuple[str, str]:
+    """实际读盘逻辑，返回 (text, source_label)。"""
+    path = _resolve_rules_path()
+    if path is not None:
+        try:
+            text = path.read_text(encoding="utf-8")
+            return text, str(path)
+        except OSError as exc:
+            logger.warning("read meeting room rules %s failed: %s", path, exc)
+    return _MEETING_ROOM_RULES_FALLBACK, "<fallback:embedded>"
+
+
+try:
+    from functools import lru_cache
+
+    @lru_cache(maxsize=1)
+    def _load_meeting_room_rules() -> tuple[str, str]:  # type: ignore[no-redef]
+        return _load_meeting_room_rules_uncached()
+except Exception:  # pragma: no cover - lru_cache 总是可用，仅作防御
+    def _load_meeting_room_rules() -> tuple[str, str]:  # type: ignore[no-redef]
+        return _load_meeting_room_rules_uncached()
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -117,7 +194,7 @@ def _strip_frontmatter(text: str) -> str:
     return text
 
 
-# ─── 内置主持人流程规则 ────────────────────────────────────────────────
+# ─── 内置主持人流程规则（兜底正文） ────────────────────────────────────
 #
 # 仅 Host（小鲸）会在 system prompt 中加载这段「会议室流程与规则」。
 # Worker 的边界与协作要点已经在 `build_meeting_runtime_header` 的「协作专家职责」
@@ -125,7 +202,12 @@ def _strip_frontmatter(text: str) -> str:
 #
 # 与运行时头、与「系统信息」（工单/产品/系统）之间**不允许重复**：
 # 身份/工单/产品/会议目标/人工确认开关/能力卡片都已展示，本文只讲流程与判定规则。
-_MEETING_ROOM_RULES = """## 会议室流程与规则（主持人专属）
+#
+# 真正生效的规则文本由 :func:`get_meeting_room_rules` 从外部 Markdown 加载
+# （``prompts/meeting_room_rules.md`` 或 ``settings.rd_meeting_rules_path``）。
+# 下面这份内嵌字符串只在外部文件读取失败时作兜底，**修改时请同步外部 .md**，
+# 避免两份漂移。
+_MEETING_ROOM_RULES_FALLBACK = """## 会议室流程与规则（主持人专属）
 
 ### 1. 节点成功标准
 
@@ -290,6 +372,10 @@ _MEETING_ROOM_RULES = """## 会议室流程与规则（主持人专属）
 
 > 违反任一不变量视为节点未完成，归档校验会拒绝该产物。
 """
+
+# 向后兼容：旧代码 / 测试用例可能 import 这个名字。
+# 新代码请改用 :func:`get_meeting_room_rules`。
+_MEETING_ROOM_RULES = _MEETING_ROOM_RULES_FALLBACK
 
 
 # ─── 数据结构 ───────────────────────────────────────────────────────────

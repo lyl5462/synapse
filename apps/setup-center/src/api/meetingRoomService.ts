@@ -264,6 +264,8 @@ export interface MeetingRoomLivePayload {
     iteration?: number;
     tools_executed?: string[];
     tools_total?: number;
+    skills_executed?: SkillExecutionEntry[];
+    skills_total?: number;
     elapsed_s?: number;
     current_tool_summary?: string;
   }[];
@@ -288,11 +290,23 @@ export async function fetchMeetingRoomLive(
   );
 }
 
+export interface SkillExecutionEntry {
+  /** SKILL 名称，如 `whalecloud-dev-tool-doc-generate` */
+  skill: string;
+  /** 触发本次 SKILL 调用的具体工具，如 `run_skill_script` / `get_skill_info` */
+  tool?: string;
+  /** 仅 `run_skill_script` 时有值：调用的脚本文件名 */
+  script?: string;
+  /** Wall-clock 时间戳（秒），由后端写入 */
+  ts?: number;
+}
+
 export interface MeetingAgentContextTask {
   task_id?: string;
   status?: string;
   iteration?: number;
   tools_executed?: string[];
+  skills_executed?: SkillExecutionEntry[];
   description_preview?: string;
   usage_scene?: string;
 }

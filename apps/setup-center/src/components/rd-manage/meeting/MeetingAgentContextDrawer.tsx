@@ -24,6 +24,7 @@ import {
   fetchMeetingAgentContexts,
   type MeetingAgentContextEntry,
   type MeetingAgentContextsPayload,
+  type SkillExecutionEntry,
 } from '../../../api/meetingRoomService';
 
 export interface AgentContextTarget {
@@ -298,6 +299,176 @@ function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; va
   );
 }
 
+interface SkillAggRow {
+  skill: string;
+  count: number;
+  lastTs: number;
+  lastScript: string;
+  tools: string[];
+  scripts: string[];
+}
+
+function aggregateSkills(items: SkillExecutionEntry[]): SkillAggRow[] {
+  const map = new Map<string, SkillAggRow>();
+  for (const it of items || []) {
+    const key = (it.skill || '').trim();
+    if (!key) continue;
+    const existing = map.get(key);
+    const ts = Number(it.ts || 0);
+    if (!existing) {
+      map.set(key, {
+        skill: key,
+        count: 1,
+        lastTs: ts,
+        lastScript: (it.script || '').trim(),
+        tools: it.tool ? [it.tool] : [],
+        scripts: it.script ? [it.script] : [],
+      });
+      continue;
+    }
+    existing.count += 1;
+    if (ts > existing.lastTs) {
+      existing.lastTs = ts;
+      if (it.script) existing.lastScript = it.script;
+    }
+    if (it.tool && !existing.tools.includes(it.tool)) existing.tools.push(it.tool);
+    if (it.script && !existing.scripts.includes(it.script)) existing.scripts.push(it.script);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    if (b.count !== a.count) return b.count - a.count;
+    return b.lastTs - a.lastTs;
+  });
+}
+
+function formatRelativeTime(ts: number): string {
+  if (!ts) return '';
+  const diff = Math.max(0, Date.now() / 1000 - ts);
+  if (diff < 60) return `${Math.round(diff)}s 前`;
+  if (diff < 3600) return `${Math.round(diff / 60)}m 前`;
+  if (diff < 86400) return `${Math.round(diff / 3600)}h 前`;
+  return `${Math.round(diff / 86400)}d 前`;
+}
+
+/** 「已使用 SKILL」聚合卡片：按 skill 分组，count desc，前 8 条 + 折叠剩余。 */
+function SkillUsageCard({ entries }: { entries: SkillExecutionEntry[] }) {
+  const [showAll, setShowAll] = useState(false);
+  const rows = useMemo(() => aggregateSkills(entries || []), [entries]);
+  const total = entries?.length || 0;
+
+  if (!rows.length) {
+    return (
+      <div className="rounded-xl border border-border/60 bg-[color:var(--panel,#1c1c1f)]/60 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border/40 flex items-center gap-2 text-xs font-medium text-foreground/90">
+          <Sparkles className="w-3 h-3 text-amber-400" />
+          <span>已使用 SKILL</span>
+          <span className="font-mono text-[10px] text-muted-foreground/70">0 次</span>
+        </div>
+        <p className="p-4 text-xs text-muted-foreground text-center">
+          本任务暂未触发 SKILL 类工具（
+          <span className="font-mono">get_skill_info</span>
+          {' / '}
+          <span className="font-mono">run_skill_script</span> 等）
+        </p>
+      </div>
+    );
+  }
+
+  const maxCount = rows[0].count;
+  const visible = showAll ? rows : rows.slice(0, 8);
+  const hidden = rows.length - visible.length;
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-[color:var(--panel,#1c1c1f)]/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/40 flex items-center gap-2 text-xs font-medium text-foreground/90">
+        <Sparkles className="w-3 h-3 text-amber-400" />
+        <span>已使用 SKILL</span>
+        <span className="font-mono text-[10px] text-muted-foreground/70">
+          {rows.length} 个 · 共 {total} 次
+        </span>
+      </div>
+      <div className="p-3 space-y-2">
+        {visible.map((row) => {
+          const pct = Math.max(8, Math.round((row.count / Math.max(1, maxCount)) * 100));
+          return (
+            <div
+              key={row.skill}
+              className="group relative rounded-lg border border-border/40 bg-muted/10 hover:bg-muted/20 transition-colors px-2.5 py-2"
+            >
+              {/* 频次背景条 */}
+              <div
+                className="absolute inset-y-0 left-0 rounded-lg bg-gradient-to-r from-amber-500/15 via-amber-500/8 to-transparent pointer-events-none"
+                style={{ width: `${pct}%` }}
+              />
+              <div className="relative flex items-center gap-2 flex-wrap">
+                <Terminal className="w-3 h-3 text-amber-400 shrink-0" />
+                <span
+                  className="font-mono text-[11.5px] text-foreground/95 truncate max-w-[260px]"
+                  title={row.skill}
+                >
+                  {row.skill}
+                </span>
+                <span className="text-[10px] font-semibold text-amber-300/95 font-mono">
+                  ×{row.count}
+                </span>
+                {row.lastTs ? (
+                  <span className="text-[10px] text-muted-foreground/70 font-mono">
+                    {formatRelativeTime(row.lastTs)}
+                  </span>
+                ) : null}
+                <Tooltip title="复制 skill 名">
+                  <button
+                    type="button"
+                    onClick={() => copy(row.skill)}
+                    className="ml-auto opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-foreground p-0.5 transition-opacity"
+                  >
+                    <Copy className="w-3 h-3" />
+                  </button>
+                </Tooltip>
+              </div>
+              {(row.lastScript || row.scripts.length > 1 || row.tools.length > 1) && (
+                <div className="relative flex items-center gap-1.5 mt-1 text-[10px] text-muted-foreground/85 font-mono flex-wrap">
+                  {row.lastScript ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-200/90 border border-amber-500/20">
+                      <FileCode2 className="w-2.5 h-2.5" />
+                      {row.lastScript}
+                      {row.scripts.length > 1 ? (
+                        <span className="opacity-70">+{row.scripts.length - 1}</span>
+                      ) : null}
+                    </span>
+                  ) : null}
+                  {row.tools.length > 0 ? (
+                    <span className="text-muted-foreground/70">
+                      via {row.tools.join(', ')}
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {hidden > 0 && !showAll ? (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="w-full text-[11px] text-muted-foreground hover:text-foreground py-1 rounded border border-dashed border-border/40 hover:border-border transition-colors"
+          >
+            展开剩余 {hidden} 个 SKILL
+          </button>
+        ) : null}
+        {showAll && rows.length > 8 ? (
+          <button
+            type="button"
+            onClick={() => setShowAll(false)}
+            className="w-full text-[11px] text-muted-foreground hover:text-foreground py-1 rounded border border-dashed border-border/40 hover:border-border transition-colors"
+          >
+            收起
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function MeetingAgentContextDrawer({
   open,
   onClose,
@@ -442,6 +613,16 @@ export function MeetingAgentContextDrawer({
               value={(entry.task?.tools_executed || []).length || '—'}
             />
             <Stat
+              icon={<Sparkles className="w-3 h-3" />}
+              label="SKILL"
+              value={(() => {
+                const arr = entry.task?.skills_executed || [];
+                if (!arr.length) return '—';
+                const unique = new Set(arr.map((s) => s.skill)).size;
+                return `${arr.length}·${unique}`;
+              })()}
+            />
+            <Stat
               icon={<FileCode2 className="w-3 h-3" />}
               label="System"
               value={(entry.system_prompt || '').length.toLocaleString()}
@@ -485,19 +666,28 @@ export function MeetingAgentContextDrawer({
             }
           >
             {subEntries.length ? (
-              <div className="mt-4 mx-auto max-w-md text-left rounded-xl border border-border/60 bg-muted/20 p-3 text-[11px] space-y-1">
-                <div className="text-xs font-medium text-foreground/90 mb-1.5 flex items-center gap-1">
-                  <Activity className="w-3 h-3" /> 委派子任务历史（{subEntries.length}）
-                </div>
-                {subEntries.map((s, i) => (
-                  <div key={i} className="flex items-center justify-between gap-2 font-mono">
-                    <span>{s.status || 'idle'}</span>
-                    <span className="text-muted-foreground">iter={s.iteration ?? 0}</span>
-                    <span className="text-muted-foreground truncate flex-1 text-right">
-                      {s.current_tool_summary || ''}
-                    </span>
+              <div className="mt-4 mx-auto max-w-md text-left space-y-3">
+                <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-[11px] space-y-1">
+                  <div className="text-xs font-medium text-foreground/90 mb-1.5 flex items-center gap-1">
+                    <Activity className="w-3 h-3" /> 委派子任务历史（{subEntries.length}）
                   </div>
-                ))}
+                  {subEntries.map((s, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 font-mono">
+                      <span>{s.status || 'idle'}</span>
+                      <span className="text-muted-foreground">iter={s.iteration ?? 0}</span>
+                      <span className="text-muted-foreground truncate flex-1 text-right">
+                        {s.current_tool_summary || ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {(() => {
+                  const merged: SkillExecutionEntry[] = [];
+                  for (const s of subEntries) {
+                    for (const item of s.skills_executed || []) merged.push(item);
+                  }
+                  return merged.length ? <SkillUsageCard entries={merged} /> : null;
+                })()}
               </div>
             ) : null}
           </Empty>
@@ -531,6 +721,9 @@ export function MeetingAgentContextDrawer({
                     mono={false}
                     maxHeight={180}
                   />
+                ) : null}
+                {view === 'all' ? (
+                  <SkillUsageCard entries={entry.task?.skills_executed || []} />
                 ) : null}
               </>
             )}

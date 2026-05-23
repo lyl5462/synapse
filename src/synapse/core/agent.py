@@ -163,6 +163,21 @@ SMALL_CTX_CORE_TOOLS = {
     "ask_user",
     "get_tool_info",
 }
+# SKILL 类工具集合：调用这些工具时 input.skill_name 表征被使用的 SKILL，
+# 用于在 TaskState.skills_executed 中聚合"近期使用的 SKILL"。
+# 仅取**实际触发 SKILL 执行**的核心动词，list/search 等仅做发现，不计入。
+_SKILL_AWARE_TOOL_NAMES = frozenset(
+    {
+        "get_skill_info",
+        "run_skill_script",
+        "get_skill_reference",
+        "read_skill_file",
+        "reload_skill",
+        "unload_skill",
+    }
+)
+
+
 # 中等上下文窗口模型额外包含的工具
 MEDIUM_CTX_EXTRA_TOOLS = {
     "add_memory",
@@ -968,6 +983,29 @@ class Agent:
                     result_content = result_str
 
                 logger.info(f"[Tool] {tool_name} → {result_str}")
+
+                # 记录 SKILL 类工具调用（供能力卡片 / 上下文 Drawer 聚合展示）。
+                # 串行/并行下 list.append 均原子安全（CPython GIL），顺序不严格但统计用足够。
+                if tool_name in _SKILL_AWARE_TOOL_NAMES:
+                    try:
+                        _skill_arg = (
+                            str(tool_input.get("skill_name") or "").strip()
+                            if isinstance(tool_input, dict)
+                            else ""
+                        )
+                        if _skill_arg and self.agent_state and self.agent_state.current_task:
+                            _script_arg = ""
+                            if isinstance(tool_input, dict):
+                                _script_arg = str(tool_input.get("script_name") or "").strip()
+                            self.agent_state.current_task.record_skill_execution(
+                                tool_name=tool_name,
+                                skill_name=_skill_arg,
+                                script_name=_script_arg,
+                            )
+                    except Exception as _skill_track_exc:  # pragma: no cover
+                        logger.debug(
+                            "record_skill_execution failed for %s: %s", tool_name, _skill_track_exc
+                        )
 
                 if capture_delivery_receipts and tool_name == "deliver_artifacts" and result_str:
                     try:

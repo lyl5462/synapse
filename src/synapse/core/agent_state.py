@@ -138,6 +138,10 @@ class TaskState:
     consecutive_tool_rounds: int = 0
     tools_executed: list[str] = field(default_factory=list)
     tools_executed_in_task: bool = False
+    # 每项形如 {"skill": str, "tool": str, "script"?: str, "ts": float}
+    # 仅在调用 SKILL 相关工具（get_skill_info / run_skill_script / list_skill_scripts /
+    # reload_skill / skill_status / unload_skill / read_skill_file）时追加。
+    skills_executed: list[dict[str, Any]] = field(default_factory=list)
     delivery_receipts: list[dict] = field(default_factory=list)
 
     # ForceToolCall 控制
@@ -270,6 +274,7 @@ class TaskState:
         self.tools_executed_in_task = False
         self.verify_incomplete_count = 0
         self.tools_executed = []
+        self.skills_executed = []
         self.consecutive_tool_rounds = 0
         self.recent_tool_signatures = []
         self.no_confirmation_text_count = 0
@@ -279,6 +284,33 @@ class TaskState:
         if tool_names:
             self.tools_executed_in_task = True
             self.tools_executed.extend(tool_names)
+
+    def record_skill_execution(
+        self,
+        *,
+        tool_name: str,
+        skill_name: str,
+        script_name: str = "",
+    ) -> None:
+        """记录一次 SKILL 类工具调用（用于能力卡片 / 上下文 Drawer 聚合）。
+
+        - 仅在 ``skill_name`` 非空时落项；
+        - ``ts`` 为 wall-clock 时间戳（秒），便于前端做"最近一次使用"展示。
+        """
+        sname = (skill_name or "").strip()
+        if not sname:
+            return
+        import time as _time
+
+        entry: dict[str, Any] = {
+            "skill": sname,
+            "tool": (tool_name or "").strip(),
+            "ts": _time.time(),
+        }
+        script = (script_name or "").strip()
+        if script:
+            entry["script"] = script
+        self.skills_executed.append(entry)
 
     def record_tool_signature(self, signature: str) -> None:
         """记录工具签名用于循环检测"""
