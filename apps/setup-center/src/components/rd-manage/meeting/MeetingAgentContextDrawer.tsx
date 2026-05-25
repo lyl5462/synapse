@@ -13,7 +13,6 @@ import {
   FileCode2,
   Hash,
   Loader2,
-  MessageSquareText,
   RefreshCw,
   ScrollText,
   Sparkles,
@@ -914,22 +913,6 @@ export function MeetingAgentContextDrawer({
     return out;
   }, [processingHistory]);
 
-  const messages = useMemo<NormalizedMessage[]>(() => {
-    if (!entry?.messages?.length) return [];
-    return entry.messages.map((m, i) => normalizeMessage(m as Record<string, unknown>, i));
-  }, [entry?.messages]);
-
-  const filteredMessages = useMemo(() => {
-    if (roleFilter === 'all') return messages;
-    return messages.filter((m) => m.role === roleFilter);
-  }, [messages, roleFilter]);
-
-  const roleCounts = useMemo(() => {
-    const out: Partial<Record<MsgRole, number>> = {};
-    for (const m of messages) out[m.role] = (out[m.role] || 0) + 1;
-    return out;
-  }, [messages]);
-
   const avatarColor = agent?.isHost ? 'bg-violet-500' : agent?.avatarColor || 'bg-sky-500';
 
   return (
@@ -996,9 +979,9 @@ export function MeetingAgentContextDrawer({
         {entry ? (
           <div className="px-5 pb-3 flex flex-wrap gap-2">
             <Stat
-              icon={<MessageSquareText className="w-3 h-3" />}
-              label="消息"
-              value={entry.messages_count ?? messages.length}
+              icon={<ScrollText className="w-3 h-3" />}
+              label="处理记录"
+              value={processingHistory.length || '—'}
             />
             <Stat
               icon={<Activity className="w-3 h-3" />}

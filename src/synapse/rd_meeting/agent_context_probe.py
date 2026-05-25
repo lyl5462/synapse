@@ -4,17 +4,10 @@
 
 from __future__ import annotations
 
-
-
 import json
-
 import logging
-
 from datetime import datetime
-
 from typing import Any
-
-
 
 from synapse.rd_meeting.agent_activity import (
     aggregate_tools_and_skills,
@@ -25,10 +18,7 @@ from synapse.rd_meeting.agent_activity import (
 from synapse.rd_meeting.agent_session import host_session_id
 from synapse.rd_meeting.dev_status import load_dev_status
 from synapse.rd_meeting.live import scope_id_for_room_id
-
 from synapse.rd_meeting.paths import scope_dir
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -387,12 +377,6 @@ def _resolve_system_prompt(agent: Any) -> str:
             logger.debug("probe _build_system_prompt failed: %s", exc)
 
     return ""
-
-
-
-
-
-    return merged
 
 
 

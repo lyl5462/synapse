@@ -263,6 +263,8 @@ def record_host_human_input(
         detail=detail,
     )
 
+
+def resolve_binding_for_profile(
     scope_id: str,
     node_id: str,
     profile_id: str,
