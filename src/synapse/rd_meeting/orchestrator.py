@@ -302,6 +302,7 @@ class MeetingRoomOrchestrator:
         sync_userwork: bool = True,
         advance: bool = True,
         ticket_title: str = "",
+        agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         sid = scope_id.strip()
         dev = load_dev_status(sid)
@@ -373,6 +374,21 @@ class MeetingRoomOrchestrator:
                 local_process_state=str(dev.get("local_process_state") or "").strip() or None,
             )
 
+        # 节点完成 + 已推进到下一节点 → 异步触发 node_finish → init → assemble → schedule_run_node
+        # 让 SOP 流程自动接力，不再依赖人工再次"一键开会"。
+        if advance and next_id:
+            try:
+                from synapse.rd_meeting.pipeline import schedule_node_finish
+
+                schedule_node_finish(
+                    scope_type=scope_type,  # type: ignore[arg-type]
+                    scope_id=sid,
+                    ticket_title=ticket_title,
+                    agent_pool=agent_pool,
+                )
+            except Exception as exc:
+                logger.warning("schedule_node_finish after node_complete failed: %s", exc)
+
         return {"dev_status": dev, "room_state": room_state, "next_node_id": next_id}
 
     def on_node_skipped(
@@ -384,6 +400,7 @@ class MeetingRoomOrchestrator:
         node_id: str,
         ticket_title: str = "",
         sync_userwork: bool = True,
+        agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         """配置关闭的节点：不写 LLM，归档跳过说明并立即推进。"""
         sid = scope_id.strip()
@@ -422,6 +439,7 @@ class MeetingRoomOrchestrator:
             sync_userwork=sync_userwork,
             advance=True,
             ticket_title=ticket_title,
+            agent_pool=agent_pool,
         )
 
     def _gate_from_tool_questionnaire(
@@ -657,6 +675,7 @@ class MeetingRoomOrchestrator:
         comment: str = "",
         ticket_title: str = "",
         sync_userwork: bool = True,
+        agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         """人工确认待归档总结：通过则写入产物并推进；拒绝则清除 pending 并返工。"""
         sid = scope_id.strip()
@@ -722,6 +741,7 @@ class MeetingRoomOrchestrator:
             sync_userwork=sync_userwork,
             advance=True,
             ticket_title=ticket_title,
+            agent_pool=agent_pool,
         )
 
         rs = load_room_state(sid) or {}
@@ -783,6 +803,7 @@ class MeetingRoomOrchestrator:
                 node_id=node_id,
                 ticket_title=ticket_title,
                 sync_userwork=True,
+                agent_pool=agent_pool,
             )
             next_id = skip_out.get("next_node_id")
             if not next_id:
@@ -1321,6 +1342,7 @@ class MeetingRoomOrchestrator:
             duration_seconds=duration,
             advance=True,
             ticket_title=ticket_title,
+            agent_pool=agent_pool,
         )
         if skipped_nodes:
             out["skipped_nodes"] = skipped_nodes

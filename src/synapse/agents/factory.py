@@ -576,6 +576,19 @@ class AgentInstancePool:
             if entry.skills_version >= current_version:
                 entry.touch()
                 return entry.agent
+            # 研发会议室白名单：notify_skills_changed 不强制让正在使用的会议室 Agent 重建，
+            # 否则会议节点跑到一半技能变更（install/load/reload/enable）就会丢上下文。
+            # 仅在 Agent 完全空闲（无活跃任务）时才允许升级；否则推迟到下次显式 idle reap。
+            if session_id.startswith("rd_meeting:"):
+                astate = getattr(entry.agent, "agent_state", None)
+                has_active = getattr(astate, "has_active_task", False) if astate is not None else False
+                if has_active:
+                    logger.debug(
+                        f"Pool meeting agent has active task, skip skills_version upgrade: "
+                        f"session={session_id}, profile={profile.id}"
+                    )
+                    entry.touch()
+                    return entry.agent
             logger.info(
                 f"Pool agent stale (skills_version {entry.skills_version} < {current_version}), "
                 f"recreating: session={session_id}, profile={profile.id}"

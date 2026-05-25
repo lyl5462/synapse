@@ -392,6 +392,14 @@ class MeetingRoomService:
         promote_to_processing: bool = True,
         agent_pool: Any | None = None,
     ) -> dict[str, Any]:
+        """一键开会：
+
+        - 同步阶段（毫秒级）：写本地 dev_status / room_state / pipeline.json，立即返回 detail（含 room_id）。
+        - 异步阶段（后台）：补做外部 HTTP（产品 catalog 校验 + userwork 回写）、节点初始化、主控提示词组装、
+          调度首节点执行；过程通过 WebSocket 推送 ``meeting_room_pipeline`` 事件，前端订阅刷新即可。
+
+        若运行环境不在 async 循环里（同步测试 / CLI），则回退为完全同步执行，保持向后兼容。
+        """
         sid = (scope_id or "").strip()
         if not sid:
             raise ValueError("scope_id required")
@@ -400,10 +408,20 @@ class MeetingRoomService:
             raise ValueError("请选择产品（prod）")
 
         from synapse.rd_meeting.pipeline import (
+            STEP_NODE_INIT,
             STEP_OPEN_MEETING,
             PipelineRunContext,
             run_pipeline_until_waiting,
         )
+
+        try:
+            import asyncio
+
+            loop = asyncio.get_running_loop()
+            async_mode = True
+        except RuntimeError:
+            loop = None
+            async_mode = False
 
         ctx = PipelineRunContext(
             scope_type=scope_type,
@@ -412,11 +430,112 @@ class MeetingRoomService:
             sync_userwork=sync_userwork,
             promote_to_processing=promote_to_processing,
             agent_pool=agent_pool,
+            defer_external=async_mode,  # async 路径才异步外部调用
         )
+        # 同步部分：跑到 WAITING（含 open_meeting / node_init / assemble_host_prompt）
         run_pipeline_until_waiting(ctx, initial_flow_step=STEP_OPEN_MEETING)
         if ctx.node_run_scheduled:
             ctx.detail["node_run_scheduled"] = True
+
+        if async_mode:
+            ctx.detail["pipeline_async_pending"] = True
+            # 后台补做外部调用，完成后通过 WebSocket 推一条 pipeline 事件
+            try:
+                loop.create_task(
+                    self._open_meeting_async_tail(
+                        scope_type=scope_type,
+                        scope_id=sid,
+                        prod_key=prod_key,
+                        sync_userwork=sync_userwork,
+                        agent_pool=agent_pool,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("open_meeting async tail schedule failed: %s", exc)
         return ctx.detail
+
+    async def _open_meeting_async_tail(
+        self,
+        *,
+        scope_type: ScopeType,
+        scope_id: str,
+        prod_key: str,
+        sync_userwork: bool,
+        agent_pool: Any | None,
+    ) -> None:
+        """开门后异步补做：产品 catalog 校验 + userwork 回写。
+
+        失败通过 WebSocket 推 ``meeting_room_open_error``，由前端弹 toast；
+        成功推 ``meeting_room_pipeline_ready``，前端刷新会议室即可。
+        """
+        sid = (scope_id or "").strip()
+        try:
+            from synapse.rd_meeting.product_context import (
+                ensure_prod_in_catalog,
+                save_prod_catalog_to_pipeline,
+            )
+            from synapse.rd_meeting.userwork_sync import patch_userwork_summary
+            from synapse.rd_meeting.dev_status import load_dev_status
+
+            dev = load_dev_status(sid) or {}
+            sop_display = str(dev.get("sop_node_display") or "")
+            local = str(dev.get("local_process_state") or "处理中")
+
+            catalog_rows, catalog_err = ensure_prod_in_catalog(prod_key)
+            if catalog_err:
+                await self._broadcast_meeting_event(
+                    "meeting_room_open_error",
+                    {"scope_id": sid, "error": catalog_err, "stage": "catalog"},
+                )
+                return
+
+            save_prod_catalog_to_pipeline(sid, catalog_rows, selected_prod=prod_key)
+            if sync_userwork:
+                patch_userwork_summary(
+                    scope_type=scope_type,  # type: ignore[arg-type]
+                    scope_id=sid,
+                    sop_node=sop_display,
+                    local_process_state=local,
+                    prod=prod_key,
+                )
+
+            # 外部校验通过 → 调度首节点执行（同步路径下此调度发生在 _step_assemble_host_prompt 末尾）
+            try:
+                from synapse.rd_meeting.orchestrator import schedule_run_node
+
+                room_id = ""
+                mr = dev.get("meeting_room")
+                if isinstance(mr, dict):
+                    room_id = str(mr.get("room_id") or "")
+                if room_id:
+                    schedule_run_node(
+                        scope_type=str(scope_type),
+                        scope_id=sid,
+                        room_id=room_id,
+                        ticket_title=str(dev.get("ticket_title") or dev.get("demand_title") or ""),
+                        agent_pool=agent_pool,
+                    )
+            except Exception as exc:
+                logger.warning("schedule_run_node in async tail failed scope=%s: %s", sid, exc)
+
+            await self._broadcast_meeting_event(
+                "meeting_room_pipeline_ready",
+                {"scope_id": sid, "prod": prod_key},
+            )
+        except Exception as exc:
+            logger.exception("open_meeting async tail failed scope=%s: %s", sid, exc)
+            await self._broadcast_meeting_event(
+                "meeting_room_open_error",
+                {"scope_id": sid, "error": str(exc), "stage": "tail"},
+            )
+
+    async def _broadcast_meeting_event(self, event: str, data: dict[str, Any]) -> None:
+        try:
+            from synapse.api.routes.websocket import broadcast_event
+
+            await broadcast_event(event, data)
+        except Exception:
+            pass
 
     def intervene(
         self,
@@ -556,6 +675,7 @@ class MeetingRoomService:
                     approved=False,
                     comment=comment,
                     ticket_title=ticket_title,
+                    agent_pool=agent_pool,
                 )
                 out = self.get_room_detail(rid) or detail
                 out["resume_run_started"] = True
@@ -582,6 +702,7 @@ class MeetingRoomService:
                 approved=True,
                 comment=comment,
                 ticket_title=ticket_title,
+                agent_pool=agent_pool,
             )
             out = self.get_room_detail(rid) or detail
             out["hitl_locked"] = True

@@ -60,6 +60,7 @@ STEP_IDLE = "idle"
 STEP_OPEN_MEETING = "open_meeting"
 STEP_NODE_INIT = "node_init"
 STEP_ASSEMBLE_HOST_PROMPT = "assemble_host_prompt"
+STEP_NODE_FINISH = "node_finish"
 STEP_WAITING = "waiting"
 STEP_DONE = "done"
 
@@ -69,6 +70,7 @@ _VALID_FLOW_STEPS = frozenset(
         STEP_OPEN_MEETING,
         STEP_NODE_INIT,
         STEP_ASSEMBLE_HOST_PROMPT,
+        STEP_NODE_FINISH,
         STEP_WAITING,
         STEP_DONE,
     }
@@ -93,6 +95,7 @@ FLOW_STEP_LABEL: dict[str, str] = {
     STEP_OPEN_MEETING: "开启会议室",
     STEP_NODE_INIT: "节点初始化",
     STEP_ASSEMBLE_HOST_PROMPT: "主控提示词组装",
+    STEP_NODE_FINISH: "节点收尾",
     STEP_WAITING: "流程待机",
     STEP_DONE: "流程结束",
 }
@@ -102,6 +105,7 @@ FLOW_STEP_NEXT: dict[str, str] = {
     STEP_OPEN_MEETING: STEP_NODE_INIT,
     STEP_NODE_INIT: STEP_ASSEMBLE_HOST_PROMPT,
     STEP_ASSEMBLE_HOST_PROMPT: STEP_WAITING,
+    STEP_NODE_FINISH: STEP_NODE_INIT,
 }
 
 
@@ -268,6 +272,9 @@ class PipelineRunContext:
     room_state: dict[str, Any] | None = None
     detail: dict[str, Any] = field(default_factory=dict)
     node_run_scheduled: bool = False
+    # 异步开门模式：True 时 _step_open_meeting 跳过外部 HTTP（catalog/userwork patch），
+    # 由 service.open_meeting 在后台补做。让前端「一键开会」立刻拿到 room_id。
+    defer_external: bool = False
 
 
 StepHandler = Callable[[MeetingPipeline, PipelineRunContext], None]
@@ -367,28 +374,32 @@ def _step_open_meeting(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
     if not prod:
         raise ValueError("请选择产品（prod 不能为空）")
 
-    from synapse.rd_meeting.product_context import (
-        ensure_prod_in_catalog,
-        save_prod_catalog_to_pipeline,
-    )
-
-    catalog_rows, catalog_err = ensure_prod_in_catalog(prod)
-    if catalog_err:
-        raise ValueError(catalog_err)
-
-    userwork_updates: dict[str, str] = {}
-    if ctx.sync_userwork:
-        userwork_updates = patch_userwork_summary(
-            scope_type=scope_type,
-            scope_id=sid,
-            sop_node=sop_display,
-            local_process_state=local,
-            prod=prod,
-        )
+    userwork_updates: dict[str, str] = {"prod": prod}
+    if ctx.defer_external:
+        # 异步开门：跳过 HTTP 调用（catalog 校验 / userwork 回写），由后台异步任务补做。
+        # prod 暂存到 dev_status.meeting_room 以便后台任务使用。
+        data.setdefault("meeting_room", {})["prod"] = prod
+        save_dev_status(sid, data)
     else:
-        userwork_updates = {"prod": prod}
+        from synapse.rd_meeting.product_context import (
+            ensure_prod_in_catalog,
+            save_prod_catalog_to_pipeline,
+        )
 
-    save_prod_catalog_to_pipeline(sid, catalog_rows, selected_prod=prod)
+        catalog_rows, catalog_err = ensure_prod_in_catalog(prod)
+        if catalog_err:
+            raise ValueError(catalog_err)
+
+        if ctx.sync_userwork:
+            userwork_updates = patch_userwork_summary(
+                scope_type=scope_type,
+                scope_id=sid,
+                sop_node=sop_display,
+                local_process_state=local,
+                prod=prod,
+            )
+
+        save_prod_catalog_to_pipeline(sid, catalog_rows, selected_prod=prod)
 
     open_binding = resolve_node_binding(
         node_id,
@@ -471,6 +482,16 @@ def _step_node_init(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
         save_room_state(sid, rs)
         ctx.room_state = rs
 
+    # 提前预热当前节点的 Host + Worker，使前端 Drawer 在节点开始执行前就能看到 Agent 卡片
+    _schedule_prewarm_for_init(
+        scope_type=scope_type,
+        scope_id=sid,
+        room_id=room_id,
+        ticket_title=ticket_title,
+        binding=run_binding,
+        agent_pool=ctx.agent_pool,
+    )
+
     pipe.mark_step_completed(STEP_NODE_INIT)
     pipe.set_flow_step(
         FLOW_STEP_NEXT[STEP_NODE_INIT],
@@ -535,8 +556,12 @@ def _step_assemble_host_prompt(pipe: MeetingPipeline, ctx: PipelineRunContext) -
     pipe._data["context"] = pctx
 
     pipe.mark_step_completed(STEP_ASSEMBLE_HOST_PROMPT)
-    _schedule_current_node(pipe, ctx)
-    pipe.set_flow_step(STEP_WAITING, reason="主控提示词已组装并已调度节点执行")
+    if ctx.defer_external:
+        # 异步开门：首节点的 schedule_run_node 推迟到 async tail 校验完 prod 之后再触发
+        pipe.set_flow_step(STEP_WAITING, reason="主控提示词已组装，等待外部校验完成后调度节点")
+    else:
+        _schedule_current_node(pipe, ctx)
+        pipe.set_flow_step(STEP_WAITING, reason="主控提示词已组装并已调度节点执行")
 
 
 def _schedule_current_node(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
@@ -556,11 +581,114 @@ def _schedule_current_node(pipe: MeetingPipeline, ctx: PipelineRunContext) -> No
     ctx.detail["node_run_scheduled"] = True
 
 
+def _schedule_prewarm_for_init(
+    *,
+    scope_type: ScopeType,
+    scope_id: str,
+    room_id: str,
+    ticket_title: str,
+    binding: dict[str, Any],
+    agent_pool: Any | None,
+) -> None:
+    """节点 INIT 阶段调度后台 prewarm，让前端立刻看到 Agent 卡片，不阻塞 pipeline。"""
+    if agent_pool is None or not room_id:
+        return
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # 非 async 上下文（如纯同步测试），跳过
+
+    from synapse.rd_meeting.orchestrator import MeetingRoomOrchestrator
+
+    host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+    orch = MeetingRoomOrchestrator()
+
+    async def _runner() -> None:
+        try:
+            await orch._prewarm_meeting_room(
+                agent_pool=agent_pool,
+                room_id=room_id,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                ticket_title=ticket_title,
+                binding=binding,
+                host_profile_id=host_id,
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("prewarm at node_init failed scope=%s: %s", scope_id, exc)
+
+    try:
+        loop.create_task(_runner())
+    except Exception as exc:  # pragma: no cover
+        logger.debug("schedule prewarm task failed: %s", exc)
+
+
+def _step_node_finish(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
+    """节点收尾：清理 host messages / TaskState，写流日志；随后自动进入下一节点的 INIT。
+
+    本步骤由 ``schedule_node_finish`` 在 on_node_complete(advance=True) 之后异步触发。
+    `current_node_id` 此时已经是**下一个节点**（dev_status 已被 on_node_complete 推进）。
+    """
+    sid = ctx.scope_id
+    data = ctx.dev_status or load_dev_status(sid) or {}
+    next_node = pipe.current_node_id or str(data.get("current_node_id") or "")
+    pipe._data["current_node_id"] = next_node
+
+    room_id = pipe.room_id or str((data.get("meeting_room") or {}).get("room_id") or "")
+    agent_pool = ctx.agent_pool
+    if agent_pool is not None and room_id:
+        try:
+            from synapse.rd_meeting.agent_session import host_session_id
+
+            host_sid = host_session_id(room_id)
+            host_agent = None
+            if hasattr(agent_pool, "get_existing"):
+                host_agent = agent_pool.get_existing(host_sid)
+            if host_agent is not None:
+                # 清 host 节点内对话历史，避免下一节点的 messages 累积旧节点产出
+                ctx_msgs = getattr(getattr(host_agent, "_context", None), "messages", None)
+                if isinstance(ctx_msgs, list):
+                    ctx_msgs.clear()
+                astate = getattr(host_agent, "agent_state", None)
+                if astate is not None:
+                    try:
+                        astate.current_task = None  # type: ignore[assignment]
+                    except Exception:
+                        pass
+        except Exception as exc:  # pragma: no cover
+            logger.debug("node_finish cleanup host failed scope=%s: %s", sid, exc)
+
+    append_history_event(
+        sid,
+        {
+            "event": "node_finished",
+            "room_id": room_id,
+            "next_node_id": next_node,
+            "flow_stage": "节点收尾",
+            "log_type": "info",
+            "agent_id": _host_profile_id_for_scope(sid, node_id=next_node, scope_type=ctx.scope_type),
+        },
+    )
+
+    pipe.mark_step_completed(STEP_NODE_FINISH)
+    # 若没有下一个节点（next_node 为空 / "pending"），收尾后置 DONE，不再 INIT
+    if not next_node or next_node == "pending":
+        pipe.set_flow_step(STEP_DONE, reason="无下一节点，流程结束")
+    else:
+        pipe.set_flow_step(
+            FLOW_STEP_NEXT[STEP_NODE_FINISH],
+            reason=f"上一节点收尾完成，进入 {next_node} 初始化",
+        )
+
+
 # 流程标识 → 执行函数（主流程登记表，新增步骤在此挂载）
 FLOW_STEP_HANDLERS: dict[str, StepHandler] = {
     STEP_OPEN_MEETING: _step_open_meeting,
     STEP_NODE_INIT: _step_node_init,
     STEP_ASSEMBLE_HOST_PROMPT: _step_assemble_host_prompt,
+    STEP_NODE_FINISH: _step_node_finish,
 }
 
 
@@ -590,6 +718,71 @@ def run_pipeline_until_waiting(
         pipe.save()
     ctx.detail["pipeline"] = pipe.snapshot_for_api()
     return pipe
+
+
+def schedule_node_finish(
+    *,
+    scope_type: ScopeType,
+    scope_id: str,
+    agent_pool: Any | None = None,
+    ticket_title: str = "",
+) -> None:
+    """在 on_node_complete(advance=True) 之后异步推进：node_finish → node_init → assemble → schedule_run_node。
+
+    设计：on_node_complete 已经把 dev_status.current_node_id 推到下一个节点；本函数把
+    pipeline.flow_step 置为 STEP_NODE_FINISH 并跑 run_pipeline_until_waiting，让整条
+    SOP 自动接力下去，无需用户再次"一键开会"。
+    """
+    sid = (scope_id or "").strip()
+    if not sid:
+        return
+    try:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    def _do_advance() -> None:
+        try:
+            pipe = MeetingPipeline.load_or_create(sid, scope_type=scope_type)
+            pipe.set_flow_step(STEP_NODE_FINISH, reason="节点完成，自动推进至下一节点")
+            pipe.save()
+
+            from synapse.rd_meeting.service import MeetingRoomService
+
+            svc = MeetingRoomService()
+            dev = load_dev_status(sid) or {}
+            titles = build_title_index()
+            detail = svc._room_detail_payload(dev, sid, titles)
+
+            ctx = PipelineRunContext(
+                scope_type=scope_type,
+                scope_id=sid,
+                sync_userwork=True,
+                promote_to_processing=False,
+                prod=str(dev.get("meeting_room", {}).get("prod") or "") if isinstance(dev.get("meeting_room"), dict) else "",
+                agent_pool=agent_pool,
+                dev_status=dev,
+                detail=detail,
+            )
+            run_pipeline_until_waiting(ctx, initial_flow_step=STEP_NODE_FINISH)
+        except Exception as exc:  # pragma: no cover
+            logger.exception("schedule_node_finish failed scope=%s: %s", sid, exc)
+
+    if loop is not None:
+        try:
+            loop.create_task(_run_node_finish_coro(_do_advance))
+        except Exception as exc:  # pragma: no cover
+            logger.debug("schedule_node_finish create_task failed: %s", exc)
+            _do_advance()
+    else:
+        # 非 async 上下文（同步测试 / 命令行），直接执行
+        _do_advance()
+
+
+async def _run_node_finish_coro(fn: Callable[[], None]) -> None:
+    fn()
 
 
 def get_flow_step(scope_id: str) -> str:

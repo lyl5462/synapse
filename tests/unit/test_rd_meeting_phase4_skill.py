@@ -8,6 +8,7 @@ from synapse.rd_meeting.room_skill import (
     build_capability_cards,
     build_room_skill_prompt,
     get_meeting_room_rules,
+    get_meeting_room_rules_meta,
     make_context,
     trim_skill_for_role,
 )
@@ -35,14 +36,16 @@ def host_binding() -> dict:
     }
 
 
-def test_meeting_room_rules_is_builtin_no_external_file():
-    """会议室流程规则内嵌在 room_skill.py，与 SKILL 加载机制无关。"""
+def test_meeting_room_rules_loads_from_bundled_md():
+    """会议室流程规则来自 prompts/meeting_room_rules.md。"""
     body = get_meeting_room_rules()
-    assert body, "内置规则正文不应为空"
+    assert body, "规则正文不应为空"
     assert "## 会议室流程与规则" in body
     assert "### 1. 节点成功标准" in body
     assert "### 7. 不变量" in body
     assert "name: whalecloud-dev-tool-meeting-room" not in body, "不应再含 front-matter"
+    meta = get_meeting_room_rules_meta()
+    assert "meeting_room_rules.md" in meta["source"]
 
 
 def test_trim_skill_for_role_keeps_host_and_strips_worker():

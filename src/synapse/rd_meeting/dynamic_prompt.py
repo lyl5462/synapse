@@ -43,8 +43,6 @@ def _format_section_product(product: dict[str, Any]) -> str:
     lines: list[str] = []
     code = str(product.get("locator_code") or "").strip()
     msg = str(product.get("locator_message") or "").strip()
-    if code or msg:
-        lines.append(f"- 定位：{code or '—'} — {msg or '—'}")
     if product.get("prod"):
         lines.append(f"- prod：`{product['prod']}`")
     if product.get("version"):
@@ -172,15 +170,15 @@ def build_dynamic_meeting_context(
         "",
     ]
     sections_data = [
-        "## 二、工单信息（继承节点初始化）",
+        "## 二、工单信息",
         "",
         _format_section_order(order),
         "",
-        "## 三、产品信息（继承节点初始化）",
+        "## 三、产品信息",
         "",
         _format_section_product(product),
         "",
-        "## 四、系统信息（继承节点初始化）",
+        "## 四、系统信息",
         "",
         _format_section_system(
             system,
@@ -196,6 +194,5 @@ def build_dynamic_meeting_context(
 def build_meeting_user_turn_prompt() -> str:
     """主控首轮 user 消息：仅触发执行，上下文已在 SKILL 动态段。"""
     return (
-        "请依据系统提示中的「研发会议室通用规范」与「本场会议动态上下文（四段式）」"
-        "开始本 SOP 节点：先 `submit_meeting_work_plan`，再按能力边界委派协作智能体。"
+        "请严格参考系统提示词中的各项内容，按照会议室流程与规则开始本 SOP 节点工作，委派的所有任务不应该随机生成，必须围绕上下文(工单内容、用户反馈内容、协作智能体反馈内容)处理。需要注意，先 `submit_meeting_work_plan`，再按能力边界委派协作智能体。"
     )

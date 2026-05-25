@@ -6247,7 +6247,27 @@ class Agent:
 
         # === 关键：保存原始任务描述，用于模型切换时重置上下文 ===
         original_task_message = {"role": "user", "content": task.description}
-        messages = [original_task_message.copy()]
+
+        # 节点内复用对话历史（仅限研发会议室 _org_context=True 场景）：
+        # 同一节点的多次 LLM 调用（host_retry / 重派 / 续跑）累积 messages，节点切换由
+        # 调用方在 _step_node_init 显式 clear。其它路径保持原行为，避免影响普通 Agent。
+        _reuse_meeting_history = bool(getattr(self, "_org_context", False))
+        if _reuse_meeting_history:
+            prior = list(getattr(self._context, "messages", []) or [])
+            messages = prior + [original_task_message.copy()]
+        else:
+            messages = [original_task_message.copy()]
+
+        # === TaskState 注册：会议室路径原本不走 reasoning_engine.run，缺少 begin_task；
+        # 这里补一次，让 _run_one 内的 record_skill_execution / tools_executed 写入生效。===
+        if self.agent_state is not None:
+            try:
+                self.agent_state.begin_task(
+                    session_id=task.session_id or "",
+                    task_id=task.id,
+                )
+            except Exception as _bt_exc:  # pragma: no cover
+                logger.debug("agent_state.begin_task in execute_task failed: %s", _bt_exc)
 
         max_tool_iterations = settings.max_iterations  # Ralph Wiggum 模式：永不放弃
         iteration = 0
@@ -6377,7 +6397,12 @@ class Agent:
                         f"[ModelSwitch] Task {task.id}: Switching to {new_model}, resetting context. "
                         f"Discarding {len(messages) - 1} tool-related messages"
                     )
-                    messages = [original_task_message.copy()]
+                    if _reuse_meeting_history:
+                        # 会议室：保留跨轮对话历史，仅丢弃当轮工具调用
+                        prior_reset = list(getattr(self._context, "messages", []) or [])
+                        messages = prior_reset + [original_task_message.copy()]
+                    else:
+                        messages = [original_task_message.copy()]
 
                     # 添加模型切换说明 + tool-state revalidation barrier
                     messages.append(
@@ -6533,7 +6558,11 @@ class Agent:
                         logger.warning(
                             f"[ModelSwitch] Task {task.id}: Switching to {new_model} due to errors, resetting context"
                         )
-                        messages = [original_task_message.copy()]
+                        if _reuse_meeting_history:
+                            prior_reset = list(getattr(self._context, "messages", []) or [])
+                            messages = prior_reset + [original_task_message.copy()]
+                        else:
+                            messages = [original_task_message.copy()]
                         messages.append(
                             {
                                 "role": "user",
@@ -6739,6 +6768,19 @@ class Agent:
             logger.info(f"[Task:{task.id}] Retrospect scheduled (background)")
 
         task.mark_completed(final_response)
+
+        # 会议室节点内复用：把本轮 user + assistant 追加回 _context.messages，
+        # 使同一节点的后续 LLM 调用（自动重跑 / 续跑 / 重派）能看到此前的产出。
+        # 节点切换时由 _step_node_init 显式清空（见 pipeline.STEP_NODE_FINISH 处理）。
+        if _reuse_meeting_history:
+            try:
+                ctx_msgs = getattr(self._context, "messages", None)
+                if isinstance(ctx_msgs, list):
+                    ctx_msgs.append(original_task_message.copy())
+                    if final_response:
+                        ctx_msgs.append({"role": "assistant", "content": final_response})
+            except Exception as _msg_exc:  # pragma: no cover
+                logger.debug("append meeting messages failed: %s", _msg_exc)
 
         duration = time.time() - start_time
 
