@@ -7,16 +7,15 @@
 
 ## 产品关联仓库名（勿手填 `REPO_NAME`）
 
-用本技能（`whalecloud-dev-tool-base-scripts`）根目录下 `scripts/get_repo_info.py`（`--server-url` + `--prod`）从 SynapseService 拉取产品对应的 Git 仓库名列表，再作为 `gnx-tools.js --repo` 与 `--cache` 目录名。详见 [get_repo_info_readme.md](get_repo_info_readme.md)。
+用本技能（`whalecloud-dev-tool-base-scripts`）根目录下 `scripts/get_repo_info.py`（`--server-url` + `--prod`）从 SynapseService 拉取产品对应的 Git 仓库名列表，再作为 `gnx-tools.js --repo` 与 `--cache` 目录名。详见 [get_repo_info.md](get_repo_info.md)。
 
 ## 工程类型检测（与 SKILL Phase 0.1 对齐）
 
 在 `materialize` 完成后，可在同一 `$CACHE` 上运行：
 
-```powershell
-$BASE = "<BASE_SCRIPTS_DIR>"   # 技能 whalecloud-dev-tool-base-scripts 根目录（见该技能 SKILL.md）
-node "$BASE\scripts\gnx-tools.js" overview --url $GNX --repo $REPO --out "$CACHE\overview.json"
-node "$BASE\scripts\detect-project-kind.js" --cache $CACHE --overview "$CACHE\overview.json"
+```text
+run_skill_script(skill_name="whalecloud-dev-tool-base-scripts", script_name="gnx-tools.js", args=["overview", "--url", "<GITNEXUS_URL>", "--repo", "<REPO>", "--out", "<CACHE>/overview.json"])
+run_skill_script(skill_name="whalecloud-dev-tool-base-scripts", script_name="detect-project-kind.js", args=["--cache", "<CACHE>", "--overview", "<CACHE>/overview.json"])
 ```
 
 **勿用** `overview ... > file.json`（PowerShell 默认 UTF-16，`detect-project-kind` 虽已尽量兼容，仍建议 `--out` 写 UTF-8）。
@@ -76,14 +75,16 @@ node gnx-tools.js impact --url http://127.0.0.1:11011 --repo YOUR_REPO --target 
 $GNX = "http://127.0.0.1:11011"
 $REPO = "你的仓库键"   # 与 11001 图谱页 repo= 一致
 $CACHE = "$PWD\gnx-cache-test"
-$BASE = "<BASE_SCRIPTS_DIR>"   # 技能 whalecloud-dev-tool-base-scripts 根目录
 ```
 
 ### B. 拉缓存（唯一应大量访问 /api/file 的步骤）
 
-```powershell
-$BASE = "<BASE_SCRIPTS_DIR>"
-node "$BASE\scripts\gnx-tools.js" materialize --url $GNX --repo $REPO --cache $CACHE --max-files 300 --concurrency 6
+```text
+run_skill_script(
+  skill_name="whalecloud-dev-tool-base-scripts",
+  script_name="gnx-tools.js",
+  args=["materialize", "--url", "<GITNEXUS_URL>", "--repo", "<REPO>", "--cache", "<CACHE>", "--max-files", "300", "--concurrency", "6"]
+)
 ```
 
 预期：
