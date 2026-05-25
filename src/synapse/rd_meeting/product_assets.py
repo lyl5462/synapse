@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from synapse.rd_meeting.convert_to_utf8 import convert_directory_to_utf8
 from synapse.rd_meeting.devservice import read_devservice_host, unified_service_base_url
 from synapse.rd_meeting.paths import (
     meeting_pipeline_path,
@@ -98,6 +99,29 @@ def _run_git(args: list[str], *, cwd: Path | None = None, timeout: float = 600.0
     return True, out
 
 
+def _convert_repo_to_utf8(dest: Path) -> None:
+    """git 落盘后将仓库内文本文件统一转为 UTF-8（失败仅记日志，不影响落盘状态）。"""
+    try:
+        result = convert_directory_to_utf8(dest)
+    except Exception as exc:
+        logger.warning("repo utf8 convert failed for %s: %s", dest, exc)
+        return
+    stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+    converted = int(stats.get("converted") or 0)
+    errors = int(stats.get("error") or 0)
+    if converted or errors:
+        logger.info(
+            "repo utf8 convert %s: converted=%s already_utf8=%s skip_binary=%s errors=%s",
+            dest,
+            converted,
+            stats.get("already_utf8", 0),
+            stats.get("skip_binary", 0),
+            errors,
+        )
+    for rel, msg in (result.get("errors") or [])[:5]:
+        logger.warning("repo utf8 convert file failed %s/%s: %s", dest, rel, msg)
+
+
 def _materialize_repo(
     scope_id: str,
     repo: dict[str, Any],
@@ -134,6 +158,8 @@ def _materialize_repo(
             _run_git(["git", "-C", str(dest), "pull", "--ff-only"], timeout=300.0)
         entry["status"] = "ok" if ok else "failed"
         entry["error"] = "" if ok else detail
+        if ok:
+            _convert_repo_to_utf8(dest)
         return entry
 
     if dest.exists():
@@ -148,6 +174,8 @@ def _materialize_repo(
     ok, detail = _run_git(cmd, timeout=600.0)
     entry["status"] = "ok" if ok else "failed"
     entry["error"] = "" if ok else detail
+    if ok:
+        _convert_repo_to_utf8(dest)
     return entry
 
 

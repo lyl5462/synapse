@@ -4,7 +4,8 @@
 
     work/<scope>/agents/<node_id>/<profile_id>/activity.jsonl
 
-每条记录为 JSON 一行，``category`` 取 ``input`` | ``output`` | ``tool`` | ``skill``。
+每条记录为 JSON 一行，``category`` 取 ``input`` | ``output`` | ``tool`` | ``skill_load`` | ``skill_exec``
+（旧数据可能仍为 ``skill``，读取时会按 ``skill_tool`` 归一化）。
 写入失败仅打 warning，不阻断主流程。
 """
 
@@ -23,7 +24,7 @@ from synapse.rd_meeting.paths import agent_sop_node_dir, agent_sop_profile_dir
 
 logger = logging.getLogger(__name__)
 
-ActivityCategory = Literal["input", "output", "tool", "skill"]
+ActivityCategory = Literal["input", "output", "tool", "skill_load", "skill_exec", "skill"]
 InputSource = Literal["human", "system", "host"]
 
 _PREVIEW_LIMIT = 2_000
@@ -38,12 +39,45 @@ _SKILL_TOOLS = frozenset(
         "unload_skill",
     }
 )
+_SKILL_LOAD_TOOLS = frozenset(
+    {
+        "get_skill_info",
+        "get_skill_reference",
+        "read_skill_file",
+        "reload_skill",
+        "unload_skill",
+    }
+)
+_SKILL_EXEC_TOOLS = frozenset({"run_skill_script"})
+# instruction-only 技能加载后，下列工具调用视为在该技能上下文中执行
+_SKILL_CONTEXT_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "run_shell",
+        "grep",
+        "glob",
+        "list_dir",
+    }
+)
 
 _CATEGORY_LABELS: dict[str, str] = {
     "input": "接收输入",
     "output": "产出反馈",
     "tool": "调用工具",
-    "skill": "调用技能",
+    "skill_load": "加载技能",
+    "skill_exec": "执行技能",
+    "skill": "调用技能",  # 旧数据兼容
+}
+
+_SKILL_TOOL_LABELS: dict[str, str] = {
+    "get_skill_info": "加载技能说明",
+    "get_skill_reference": "加载技能参考",
+    "read_skill_file": "读取技能文件",
+    "run_skill_script": "执行技能脚本",
+    "reload_skill": "重载技能",
+    "unload_skill": "卸载技能",
 }
 
 _INPUT_SOURCE_LABELS: dict[str, str] = {
@@ -62,6 +96,81 @@ def _truncate(text: str, limit: int = _PREVIEW_LIMIT) -> str:
     if len(s) <= limit:
         return s
     return s[:limit] + f"\n…（已截断，原文 {len(s)} 字符）"
+
+
+def _skill_activity_category(skill_tool: str) -> str:
+    tool = (skill_tool or "").strip()
+    if tool in _SKILL_EXEC_TOOLS:
+        return "skill_exec"
+    if tool in _SKILL_LOAD_TOOLS:
+        return "skill_load"
+    return "skill_load"
+
+
+def _normalize_category(row: dict[str, Any]) -> str:
+    cat = str(row.get("category") or "")
+    if cat == "skill":
+        return _skill_activity_category(str(row.get("skill_tool") or ""))
+    return cat
+
+
+def _category_label_for_row(row: dict[str, Any]) -> str:
+    cat = _normalize_category(row)
+    skill_tool = str(row.get("skill_tool") or "").strip()
+    if cat in ("skill_load", "skill_exec", "skill") and skill_tool:
+        return _SKILL_TOOL_LABELS.get(skill_tool, _CATEGORY_LABELS.get(cat, cat))
+    return _CATEGORY_LABELS.get(cat, cat)
+
+
+def _result_indicates_failure(tool_name: str, result_preview: str) -> bool:
+    preview = str(result_preview or "").lstrip()
+    if not preview:
+        return False
+    if preview.startswith("❌"):
+        return True
+    if tool_name == "run_skill_script" and "脚本执行失败" in preview[:300]:
+        return True
+    return False
+
+
+def infer_tool_success(tool_name: str, result_preview: str, success: bool) -> bool:
+    """根据工具返回文本修正 success（execute_tool 常把失败当字符串返回）。"""
+    if not success:
+        return False
+    return not _result_indicates_failure(tool_name, result_preview)
+
+
+def _get_executing_skill(agent: Any) -> str:
+    return str(getattr(agent, "_rd_meeting_executing_skill", "") or "").strip()
+
+
+def _set_executing_skill(agent: Any, skill_name: str) -> None:
+    name = (skill_name or "").strip()
+    try:
+        agent._rd_meeting_executing_skill = name  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.debug("set executing skill failed: %s", exc)
+
+
+def _clear_executing_skill(agent: Any) -> None:
+    _set_executing_skill(agent, "")
+
+
+def _maybe_set_executing_skill_from_load(
+    agent: Any,
+    *,
+    skill_tool: str,
+    skill_name: str,
+    result_preview: str,
+    success: bool,
+) -> None:
+    if not success or skill_tool != "get_skill_info":
+        return
+    if not (skill_name or "").strip():
+        return
+    preview_lower = str(result_preview or "").lower()
+    if "instruction-only" in preview_lower or "no executable scripts" in preview_lower:
+        _set_executing_skill(agent, skill_name)
 
 
 def _safe_json(obj: Any, limit: int = _INPUT_JSON_LIMIT) -> Any:
@@ -335,23 +444,31 @@ def record_tool(
     result_preview: str = "",
     success: bool = True,
     duration_ms: int | None = None,
+    executing_skill_id: str = "",
 ) -> dict[str, Any] | None:
     name = (tool_name or "").strip()
     if not name:
         return None
+    esid = (executing_skill_id or "").strip()
+    display_title = name
+    if esid:
+        display_title = f"{name} · {esid}"
+    row: dict[str, Any] = {
+        "category": "tool",
+        "tool_name": name,
+        "tool_input": _safe_json(tool_input),
+        "result_preview": _truncate(result_preview),
+        "success": bool(success),
+        "duration_ms": duration_ms,
+        "display_title": display_title,
+    }
+    if esid:
+        row["executing_skill_id"] = esid
     return _append_row(
         binding["scope_id"],
         binding["node_id"],
         binding["profile_id"],
-        {
-            "category": "tool",
-            "tool_name": name,
-            "tool_input": _safe_json(tool_input),
-            "result_preview": _truncate(result_preview),
-            "success": bool(success),
-            "duration_ms": duration_ms,
-            "display_title": name,
-        },
+        row,
     )
 
 
@@ -368,22 +485,27 @@ def record_skill(
     sname = (skill_name or "").strip()
     if not sname:
         return None
+    stool = (skill_tool or "").strip()
+    scname = (script_name or "").strip()
+    category = _skill_activity_category(stool)
     title = sname
-    if script_name:
-        title = f"{sname} / {script_name}"
+    if scname:
+        title = f"{sname} / {scname}"
+    label = _SKILL_TOOL_LABELS.get(stool, _CATEGORY_LABELS.get(category, category))
     return _append_row(
         binding["scope_id"],
         binding["node_id"],
         binding["profile_id"],
         {
-            "category": "skill",
+            "category": category,
             "skill_name": sname,
-            "skill_tool": (skill_tool or "").strip(),
-            "script_name": (script_name or "").strip(),
+            "skill_tool": stool,
+            "script_name": scname,
             "result_preview": _truncate(result_preview),
             "success": bool(success),
             "duration_ms": duration_ms,
             "display_title": title,
+            "category_label": label,
         },
     )
 
@@ -407,6 +529,7 @@ def try_record_tool_from_agent(
     if not name:
         return
     try:
+        success = infer_tool_success(name, result_preview, success)
         if name in _SKILL_TOOLS:
             skill_name = ""
             script_name = ""
@@ -414,6 +537,16 @@ def try_record_tool_from_agent(
                 skill_name = str(tool_input.get("skill_name") or "").strip()
                 script_name = str(tool_input.get("script_name") or "").strip()
             if skill_name:
+                if name == "run_skill_script":
+                    _clear_executing_skill(agent)
+                elif name == "get_skill_info" and success:
+                    _maybe_set_executing_skill_from_load(
+                        agent,
+                        skill_tool=name,
+                        skill_name=skill_name,
+                        result_preview=result_preview,
+                        success=success,
+                    )
                 # 技能类工具只记 skill 行，避免与 tool 行重复展示（如 get_skill_info + 同名技能）
                 record_skill(
                     binding,
@@ -425,6 +558,9 @@ def try_record_tool_from_agent(
                     duration_ms=duration_ms,
                 )
                 return
+        executing_skill = ""
+        if name in _SKILL_CONTEXT_TOOLS:
+            executing_skill = _get_executing_skill(agent)
         record_tool(
             binding,
             tool_name=name,
@@ -432,6 +568,7 @@ def try_record_tool_from_agent(
             result_preview=result_preview,
             success=success,
             duration_ms=duration_ms,
+            executing_skill_id=executing_skill,
         )
     except Exception as exc:
         logger.debug("try_record_tool_from_agent failed: %s", exc)
@@ -492,36 +629,78 @@ def read_activity_log(
     return rows
 
 
+def _append_skill_aggregate(
+    skills: list[dict[str, Any]],
+    skill_seen: set[str],
+    *,
+    skill_name: str,
+    tool_name: str,
+    script_name: str = "",
+    ts_raw: Any = "",
+    kind: str = "exec",
+) -> None:
+    sname = (skill_name or "").strip()
+    if not sname:
+        return
+    key = "|".join([kind, sname, tool_name, script_name])
+    if key in skill_seen:
+        return
+    skill_seen.add(key)
+    try:
+        ts = datetime.fromisoformat(str(ts_raw)).timestamp()
+    except (TypeError, ValueError):
+        ts = 0.0
+    entry: dict[str, Any] = {
+        "skill": sname,
+        "tool": tool_name,
+        "script": script_name or None,
+        "ts": ts,
+        "kind": kind,
+    }
+    skills.append(entry)
+
+
 def aggregate_tools_and_skills(entries: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]]]:
     tools: list[str] = []
     skills: list[dict[str, Any]] = []
     skill_seen: set[str] = set()
     for row in entries:
-        cat = str(row.get("category") or "")
+        cat = _normalize_category(row)
+        ts_raw = row.get("ts") or ""
         if cat == "tool":
             name = str(row.get("tool_name") or "").strip()
             if name and name not in tools:
                 tools.append(name)
-        elif cat == "skill":
+            esid = str(row.get("executing_skill_id") or "").strip()
+            if esid:
+                _append_skill_aggregate(
+                    skills,
+                    skill_seen,
+                    skill_name=esid,
+                    tool_name=name,
+                    ts_raw=ts_raw,
+                    kind="instruction",
+                )
+        elif cat == "skill_exec":
             sname = str(row.get("skill_name") or "").strip()
-            if not sname:
-                continue
-            key = "|".join([sname, str(row.get("skill_tool") or ""), str(row.get("script_name") or "")])
-            if key in skill_seen:
-                continue
-            skill_seen.add(key)
-            ts_raw = row.get("ts") or ""
-            try:
-                ts = datetime.fromisoformat(str(ts_raw)).timestamp()
-            except (TypeError, ValueError):
-                ts = 0.0
-            skills.append(
-                {
-                    "skill": sname,
-                    "tool": str(row.get("skill_tool") or ""),
-                    "script": str(row.get("script_name") or "") or None,
-                    "ts": ts,
-                }
+            _append_skill_aggregate(
+                skills,
+                skill_seen,
+                skill_name=sname,
+                tool_name=str(row.get("skill_tool") or ""),
+                script_name=str(row.get("script_name") or ""),
+                ts_raw=ts_raw,
+                kind="exec",
+            )
+        elif cat == "skill_load":
+            sname = str(row.get("skill_name") or "").strip()
+            _append_skill_aggregate(
+                skills,
+                skill_seen,
+                skill_name=sname,
+                tool_name=str(row.get("skill_tool") or ""),
+                ts_raw=ts_raw,
+                kind="load",
             )
     return tools, skills
 
@@ -529,21 +708,25 @@ def aggregate_tools_and_skills(entries: list[dict[str, Any]]) -> tuple[list[str]
 def enrich_display(entry: dict[str, Any]) -> dict[str, Any]:
     """为前端补充展示字段。"""
     row = dict(entry)
-    cat = str(row.get("category") or "")
-    row.setdefault("category_label", _CATEGORY_LABELS.get(cat, cat))
-    if cat == "input":
+    normalized = _normalize_category(row)
+    if normalized != row.get("category"):
+        row["category"] = normalized
+    row.setdefault("category_label", _category_label_for_row(row))
+    if normalized == "input":
         src = str(row.get("source") or "")
         row.setdefault("source_label", _INPUT_SOURCE_LABELS.get(src, src))
     if not row.get("display_title"):
-        if cat == "tool":
-            row["display_title"] = str(row.get("tool_name") or "工具")
-        elif cat == "skill":
+        if normalized == "tool":
+            name = str(row.get("tool_name") or "工具")
+            esid = str(row.get("executing_skill_id") or "").strip()
+            row["display_title"] = f"{name} · {esid}" if esid else name
+        elif normalized in ("skill_load", "skill_exec", "skill"):
             sn = str(row.get("skill_name") or "")
             sc = str(row.get("script_name") or "")
             row["display_title"] = f"{sn} / {sc}" if sc else sn
-        elif cat == "output":
+        elif normalized == "output":
             row["display_title"] = str(row.get("title") or "产出")
-        elif cat == "input":
+        elif normalized == "input":
             row["display_title"] = str(row.get("title") or "输入")
     return row
 

@@ -747,6 +747,11 @@ class ToolExecutor:
                     except Exception:
                         pass
 
+                if success:
+                    from synapse.rd_meeting.agent_activity import infer_tool_success
+
+                    success = infer_tool_success(tool_name, result_str, success)
+
                 # 终端输出工具返回结果（便于调试与观察）
                 _preview = (
                     result_str if len(result_str) <= 800 else result_str[:800] + "\n... (已截断)"

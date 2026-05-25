@@ -649,11 +649,11 @@ def build_meeting_runtime_header(
         lines.append("- **`human_confirm: false` 时**：不发表单，由你自评收敛质量——若三项校验（契合度 / 真实性 / 准确性）有任一不通过、证据缺失、Worker 产出相互矛盾、或决策高影响，则**必须再迭代一轮**；三项全过且产出已覆盖「会议产出」清单时才能归档；自主迭代原则上**不超过 3 轮**，仍未收敛时升级为 `submit_hitl_questionnaire(kind=\"exception\", ...)` 请求人工介入。")
         lines.append("- 节点目标完成且通过自检后，按下方规范第 6 节归档到「本节点归档目录」（系统信息段已展示完整路径，并带阶段名 · 节点名便于识别）并报告结论。")
         lines.append("- **会议产出 = 归档文件名（硬约束）**：上方「会议产出」列出的就是本节点必须落盘的文件，归档文件名必须与之**逐字一致**（如 `需求澄清.md`、`模块功能.md`），**禁止**改名 / 加前后缀 / 用 `result.md` 替代；多文件时每一项都要落盘，且不能多出清单之外的文件。")
-        lines.append('- **必须走 `whalecloud-dev-tool-doc-generate` 生成产出物**：先 `get_skill_info(whalecloud-dev-tool-doc-generate)` 读 SKILL.md、确认 `templates/` 下存在与预期产出物**同名**的模板，再 `run_skill_script` 填模板落盘；若模板缺失或与本节点产出物不匹配，**立即** `submit_hitl_questionnaire(kind="exception", summary="doc-generate 缺少 <文件名> 模板，需人工补齐模板或调整产出物清单")` 请求人工介入，**禁止**自行手写 Markdown 兜底。')
+        lines.append('- **必须走 `whalecloud-dev-tool-doc-generate` 生成产出物**：先 `get_skill_info(whalecloud-dev-tool-doc-generate)` 读 SKILL.md、确认 `templates/` 下存在与预期产出物**同名**的模板，再 `write_file` 以utf8编码按模板落盘；若模板缺失或与本节点产出物不匹配，**立即** `submit_hitl_questionnaire(kind="exception", summary="doc-generate 缺少 <文件名> 模板，需人工补齐模板或调整产出物清单")` 请求人工介入，**禁止**自行手写 Markdown 兜底。')
         lines.append("- `human_confirm` 开启或出现异常 / 风险不可控时，必须调用 `submit_hitl_questionnaire`，**禁止伪造用户答复**，**禁止只口头宣称问卷已提交**。")
         lines.append("- 可用 worker 名单与能力边界见下方「参会能力卡片」（已排除你自己）；派单时 task 描述应指向卡片上的具体 skill / 能力，便于 Worker 加载对应 SKILL。")
         lines.append("- 派单时 `message` 只写编排指令（skill/Phase/边界/原文引用），**禁止**替 Worker 撰写方案描述或需求拆解框架；违规示例见规范 §3.0。")
-        lines.append("- 若你（Host）自身 Profile 也配置了技能且必须自行执行（Worker 不具备时），同样须先 `get_skill_info(skill_id)` 读取 SKILL.md，再 `run_skill_script` 或按 SKILL 指引用 shell / 读写工具执行，**禁止**跳过 SKILL 硬猜流程。")
+        lines.append("- 若你（Host）自身 Profile 也配置了技能且必须自行执行（Worker 不具备时），同样须先 `get_skill_info(skill_id)` 读取 SKILL.md，再按 SKILL 指引用 shell / 读写工具执行，需要调用技能的脚本时再执行`run_skill_script`, **禁止**跳过 SKILL 硬猜流程。")
     else:
         lines.append("## 协作专家职责")
         lines.append("- 必须熟悉本工单对应的产品信息（产品文档 / 仓库代码 / 历史工单），所有决策都要基于产品事实；缺少产品事实时可以拒绝或报错，**不得臆造**。")

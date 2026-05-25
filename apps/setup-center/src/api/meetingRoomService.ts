@@ -299,6 +299,8 @@ export interface SkillExecutionEntry {
   tool?: string;
   /** 仅 `run_skill_script` 时有值：调用的脚本文件名 */
   script?: string;
+  /** load=加载说明, exec=脚本执行, instruction=instruction-only 上下文工具 */
+  kind?: 'load' | 'exec' | 'instruction' | string;
   /** Wall-clock 时间戳（秒），由后端写入 */
   ts?: number;
 }
@@ -336,7 +338,7 @@ export interface ProcessingHistoryEntry {
   id?: string;
   seq?: number;
   ts?: string;
-  category: 'input' | 'output' | 'tool' | 'skill' | string;
+  category: 'input' | 'output' | 'tool' | 'skill_load' | 'skill_exec' | 'skill' | string;
   category_label?: string;
   display_title?: string;
   title?: string;
@@ -351,6 +353,7 @@ export interface ProcessingHistoryEntry {
   skill_name?: string;
   skill_tool?: string;
   script_name?: string;
+  executing_skill_id?: string;
   success?: boolean;
   duration_ms?: number;
   detail?: Record<string, unknown>;

@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
 from synapse.rd_meeting.agent_activity import (
     aggregate_tools_and_skills,
+    enrich_display,
+    infer_tool_success,
     read_activity_log,
     record_input,
     record_output,
     record_skill,
     record_tool,
     resolve_binding_for_profile,
+    set_agent_activity_binding,
+    try_record_tool_from_agent,
 )
 from synapse.rd_meeting.paths import agent_sop_profile_dir
 
@@ -40,18 +45,50 @@ def test_record_four_categories_and_read(activity_work):
     rows = read_activity_log("scope1", "node_a", "host_pid")
     assert len(rows) == 4
     cats = [r["category"] for r in rows]
-    assert cats == ["input", "output", "tool", "skill"]
+    assert cats == ["input", "output", "tool", "skill_load"]
 
     tools, skills = aggregate_tools_and_skills(rows)
     assert "read_file" in tools
-    assert any(s["skill"] == "whalecloud-dev-tool-doc-generate" for s in skills)
+    assert any(s["skill"] == "whalecloud-dev-tool-doc-generate" and s["kind"] == "load" for s in skills)
+
+
+def test_skill_exec_category_and_labels(activity_work):
+    binding = resolve_binding_for_profile("scope1", "node_a", "host_pid")
+    record_skill(
+        binding,
+        skill_name="my-skill",
+        skill_tool="run_skill_script",
+        script_name="generate.py",
+        result_preview="ok",
+    )
+    row = read_activity_log("scope1", "node_a", "host_pid")[0]
+    assert row["category"] == "skill_exec"
+    assert row["category_label"] == "执行技能脚本"
+    enriched = enrich_display(row)
+    assert enriched["category_label"] == "执行技能脚本"
+
+
+def test_enrich_display_legacy_skill_category(activity_work):
+    legacy = {
+        "category": "skill",
+        "skill_tool": "get_skill_info",
+        "skill_name": "doc-skill",
+    }
+    enriched = enrich_display(legacy)
+    assert enriched["category"] == "skill_load"
+    assert enriched["category_label"] == "加载技能说明"
+
+
+def test_infer_tool_success_run_skill_script_failure():
+    assert infer_tool_success(
+        "run_skill_script",
+        "❌ 脚本执行失败:\nno executable scripts",
+        True,
+    ) is False
+    assert infer_tool_success("run_skill_script", "✅ 脚本执行成功:\nok", True) is True
 
 
 def test_try_record_skill_tool_skips_duplicate_tool_row(activity_work, monkeypatch):
-    from unittest.mock import MagicMock
-
-    from synapse.rd_meeting.agent_activity import set_agent_activity_binding, try_record_tool_from_agent
-
     agent = MagicMock()
     agent._org_context = True
     set_agent_activity_binding(
@@ -67,14 +104,129 @@ def test_try_record_skill_tool_skips_duplicate_tool_row(activity_work, monkeypat
         agent,
         tool_name="get_skill_info",
         tool_input={"skill_name": "whalecloud-dev-tool-doc-generate"},
-        result_preview="skill body",
+        result_preview="**脚本**: instruction-only (no executable scripts)\nbody",
         success=True,
         duration_ms=10,
     )
     rows = read_activity_log("scope1", "node_a", "host_pid")
     assert len(rows) == 1
-    assert rows[0]["category"] == "skill"
+    assert rows[0]["category"] == "skill_load"
     assert rows[0]["skill_name"] == "whalecloud-dev-tool-doc-generate"
+    assert rows[0]["category_label"] == "加载技能说明"
+
+
+def test_executing_skill_id_on_context_tools(activity_work):
+    agent = MagicMock()
+    agent._org_context = True
+    agent._rd_meeting_executing_skill = "whalecloud-dev-tool-doc-generate"
+    set_agent_activity_binding(
+        agent,
+        scope_id="scope1",
+        node_id="node_a",
+        profile_id="host_pid",
+        host_profile_id="host_pid",
+        role="host",
+        room_id="room1",
+    )
+    try_record_tool_from_agent(
+        agent,
+        tool_name="run_shell",
+        tool_input={"command": "python gen.py"},
+        result_preview="exit 0",
+        success=True,
+        duration_ms=50,
+    )
+    rows = read_activity_log("scope1", "node_a", "host_pid")
+    assert len(rows) == 1
+    assert rows[0]["category"] == "tool"
+    assert rows[0]["executing_skill_id"] == "whalecloud-dev-tool-doc-generate"
+
+    tools, skills = aggregate_tools_and_skills(rows)
+    assert skills[0]["kind"] == "instruction"
+    assert skills[0]["skill"] == "whalecloud-dev-tool-doc-generate"
+
+
+def test_run_skill_script_failure_records_success_false(activity_work):
+    agent = MagicMock()
+    agent._org_context = True
+    set_agent_activity_binding(
+        agent,
+        scope_id="scope1",
+        node_id="node_a",
+        profile_id="host_pid",
+        host_profile_id="host_pid",
+        role="host",
+        room_id="room1",
+    )
+    try_record_tool_from_agent(
+        agent,
+        tool_name="run_skill_script",
+        tool_input={"skill_name": "doc-skill", "script_name": "generate.py"},
+        result_preview="❌ 脚本执行失败:\ninstruction-only",
+        success=True,
+        duration_ms=20,
+    )
+    row = read_activity_log("scope1", "node_a", "host_pid")[0]
+    assert row["category"] == "skill_exec"
+    assert row["success"] is False
+
+
+def test_instruction_only_load_sets_executing_skill(activity_work):
+    agent = MagicMock()
+    agent._org_context = True
+    set_agent_activity_binding(
+        agent,
+        scope_id="scope1",
+        node_id="node_a",
+        profile_id="host_pid",
+        host_profile_id="host_pid",
+        role="host",
+        room_id="room1",
+    )
+    try_record_tool_from_agent(
+        agent,
+        tool_name="get_skill_info",
+        tool_input={"skill_name": "doc-skill"},
+        result_preview="instruction-only (no executable scripts)",
+        success=True,
+        duration_ms=5,
+    )
+    assert agent._rd_meeting_executing_skill == "doc-skill"
+
+    try_record_tool_from_agent(
+        agent,
+        tool_name="run_shell",
+        tool_input={"command": "echo hi"},
+        result_preview="hi",
+        success=True,
+        duration_ms=5,
+    )
+    row = read_activity_log("scope1", "node_a", "host_pid")[-1]
+    assert row.get("executing_skill_id") == "doc-skill"
+
+
+def test_run_skill_script_clears_executing_skill(activity_work):
+    agent = MagicMock()
+    agent._org_context = True
+    agent._rd_meeting_executing_skill = "doc-skill"
+    set_agent_activity_binding(
+        agent,
+        scope_id="scope1",
+        node_id="node_a",
+        profile_id="host_pid",
+        host_profile_id="host_pid",
+        role="host",
+        room_id="room1",
+    )
+    try_record_tool_from_agent(
+        agent,
+        tool_name="run_skill_script",
+        tool_input={"skill_name": "doc-skill", "script_name": "x.py"},
+        result_preview="❌ fail",
+        success=True,
+        duration_ms=5,
+    )
+    assert agent._rd_meeting_executing_skill == ""
 
 
 def test_activity_jsonl_on_disk(activity_work):

@@ -4,6 +4,7 @@ import {
   Activity,
   ArrowDownToLine,
   ArrowUpFromLine,
+  BookOpen,
   Bot,
   BrainCircuit,
   ChevronDown,
@@ -46,7 +47,7 @@ interface Props {
   agent: AgentContextTarget | null;
 }
 
-type ActivityCategory = 'all' | 'input' | 'output' | 'tool' | 'skill';
+type ActivityCategory = 'all' | 'input' | 'output' | 'tool' | 'skill_load' | 'skill_exec' | 'skill';
 
 const ACTIVITY_CATEGORY_META: Record<
   Exclude<ActivityCategory, 'all'>,
@@ -73,6 +74,20 @@ const ACTIVITY_CATEGORY_META: Record<
     dot: 'bg-slate-300 shadow-[0_0_10px_rgba(203,213,225,0.35)]',
     glow: 'from-slate-400/15 via-slate-400/5 to-transparent',
   },
+  skill_load: {
+    label: '加载技能',
+    icon: <BookOpen className="w-3.5 h-3.5" />,
+    chip: 'bg-cyan-500/12 text-cyan-200 border-cyan-500/35',
+    dot: 'bg-cyan-400 shadow-[0_0_12px_rgba(34,211,238,0.55)]',
+    glow: 'from-cyan-500/20 via-cyan-500/5 to-transparent',
+  },
+  skill_exec: {
+    label: '执行技能',
+    icon: <Sparkles className="w-3.5 h-3.5" />,
+    chip: 'bg-amber-500/12 text-amber-200 border-amber-500/35',
+    dot: 'bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.55)]',
+    glow: 'from-amber-500/20 via-amber-500/5 to-transparent',
+  },
   skill: {
     label: '技能',
     icon: <Sparkles className="w-3.5 h-3.5" />,
@@ -89,9 +104,20 @@ function formatActivityTime(ts?: string): string {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function normalizeActivityCategory(category?: string): Exclude<ActivityCategory, 'all'> {
+  const c = (category || 'tool').trim();
+  if (c === 'skill') {
+    return 'skill_load';
+  }
+  if (c in ACTIVITY_CATEGORY_META) {
+    return c as Exclude<ActivityCategory, 'all'>;
+  }
+  return 'tool';
+}
+
 function ProcessingHistoryCard({ entry, isLast }: { entry: ProcessingHistoryEntry; isLast?: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const cat = (entry.category || 'tool') as Exclude<ActivityCategory, 'all'>;
+  const cat = normalizeActivityCategory(entry.category);
   const meta = ACTIVITY_CATEGORY_META[cat] || ACTIVITY_CATEGORY_META.tool;
   const title = entry.display_title || entry.title || meta.label;
   const summary = (entry.summary || entry.result_preview || '').trim();
@@ -130,6 +156,11 @@ function ProcessingHistoryCard({ entry, isLast }: { entry: ProcessingHistoryEntr
               ) : null}
               {entry.duration_ms != null && entry.duration_ms > 0 ? (
                 <span className="text-[10px] font-mono text-muted-foreground/70">{entry.duration_ms}ms</span>
+              ) : null}
+              {entry.executing_skill_id ? (
+                <Tag color="gold" className="text-[10px] leading-none m-0 px-1 py-0 font-mono">
+                  {entry.executing_skill_id}
+                </Tag>
               ) : null}
               {entry.success === false ? (
                 <Tag color="error" className="text-[10px] leading-none m-0 px-1 py-0">失败</Tag>
@@ -513,11 +544,21 @@ interface SkillAggRow {
   scripts: string[];
 }
 
+function isSkillExecEntry(it: SkillExecutionEntry): boolean {
+  const kind = (it.kind || '').trim();
+  if (kind === 'load') return false;
+  const tool = (it.tool || '').trim();
+  if (!kind && ['get_skill_info', 'get_skill_reference', 'read_skill_file'].includes(tool)) {
+    return false;
+  }
+  return Boolean((it.skill || '').trim());
+}
+
 function aggregateSkills(items: SkillExecutionEntry[]): SkillAggRow[] {
   const map = new Map<string, SkillAggRow>();
   for (const it of items || []) {
+    if (!isSkillExecEntry(it)) continue;
     const key = (it.skill || '').trim();
-    if (!key) continue;
     const existing = map.get(key);
     const ts = Number(it.ts || 0);
     if (!existing) {
@@ -557,8 +598,9 @@ function formatRelativeTime(ts: number): string {
 /** 「已使用 SKILL」聚合卡片：按 skill 分组，count desc，前 8 条 + 折叠剩余。 */
 function SkillUsageCard({ entries }: { entries: SkillExecutionEntry[] }) {
   const [showAll, setShowAll] = useState(false);
-  const rows = useMemo(() => aggregateSkills(entries || []), [entries]);
-  const total = entries?.length || 0;
+  const execEntries = useMemo(() => (entries || []).filter(isSkillExecEntry), [entries]);
+  const rows = useMemo(() => aggregateSkills(execEntries), [execEntries]);
+  const total = execEntries.length;
 
   if (!rows.length) {
     return (
@@ -569,10 +611,9 @@ function SkillUsageCard({ entries }: { entries: SkillExecutionEntry[] }) {
           <span className="font-mono text-[10px] text-muted-foreground/70">0 次</span>
         </div>
         <p className="p-4 text-xs text-muted-foreground text-center">
-          本任务暂未触发 SKILL 类工具（
-          <span className="font-mono">get_skill_info</span>
-          {' / '}
-          <span className="font-mono">run_skill_script</span> 等）
+          本任务暂未记录技能执行（
+          <span className="font-mono">run_skill_script</span>
+          {' / instruction-only 上下文工具调用等）
         </p>
       </div>
     );
@@ -914,14 +955,14 @@ export function MeetingAgentContextDrawer({
 
   const filteredHistory = useMemo(() => {
     if (categoryFilter === 'all') return processingHistory;
-    return processingHistory.filter((e) => e.category === categoryFilter);
+    return processingHistory.filter((e) => normalizeActivityCategory(e.category) === categoryFilter);
   }, [processingHistory, categoryFilter]);
 
   const categoryCounts = useMemo(() => {
     const out: Partial<Record<Exclude<ActivityCategory, 'all'>, number>> = {};
     for (const e of processingHistory) {
-      const c = e.category as Exclude<ActivityCategory, 'all'>;
-      if (c) out[c] = (out[c] || 0) + 1;
+      const c = normalizeActivityCategory(e.category);
+      out[c] = (out[c] || 0) + 1;
     }
     return out;
   }, [processingHistory]);
@@ -1147,7 +1188,7 @@ export function MeetingAgentContextDrawer({
                     {filteredHistory.length}/{processingHistory.length}
                   </span>
                   <div className="ml-auto flex items-center gap-1 flex-wrap">
-                    {(['all', 'input', 'output', 'tool', 'skill'] as const).map((c) => {
+                    {(['all', 'input', 'output', 'tool', 'skill_load', 'skill_exec'] as const).map((c) => {
                       const active = categoryFilter === c;
                       const count =
                         c === 'all'

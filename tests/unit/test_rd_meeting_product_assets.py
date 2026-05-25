@@ -12,7 +12,9 @@ from synapse.rd_meeting.paths import (
     sanitize_fs_segment,
     sanitize_work_order_segment,
 )
+from synapse.rd_meeting.convert_to_utf8 import convert_directory_to_utf8
 from synapse.rd_meeting.product_assets import (
+    _materialize_repo,
     bootstrap_product_assets,
     enrich_product_with_assets,
     fetch_prod_doc,
@@ -25,6 +27,35 @@ def test_sanitize_fs_segment_keeps_chinese_doc_type():
     assert sanitize_fs_segment("产品架构") == "产品架构"
     assert sanitize_fs_segment("产品需求") == "产品需求"
     assert sanitize_work_order_segment("产品架构") == "default"
+
+
+def test_convert_directory_to_utf8_converts_gbk(tmp_path):
+    src = tmp_path / "demo.txt"
+    src.write_bytes("中文内容".encode("gbk"))
+    result = convert_directory_to_utf8(tmp_path)
+    assert result["stats"]["converted"] == 1
+    assert src.read_text(encoding="utf-8") == "中文内容"
+
+
+def test_materialize_repo_converts_to_utf8_after_clone(monkeypatch, tmp_path):
+    scope_id = "utf8-scope"
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", lambda: tmp_path / "work")
+    dest = product_code_dir(scope_id, "demo")
+    dest.mkdir(parents=True)
+    (dest / ".git").mkdir()
+    (dest / "legacy.txt").write_bytes("编码测试".encode("gbk"))
+
+    monkeypatch.setattr(
+        "synapse.rd_meeting.product_assets._run_git",
+        lambda *args, **kwargs: (True, ""),
+    )
+
+    entry = _materialize_repo(
+        scope_id,
+        {"repo_name": "demo", "repo_url": "https://example.com/demo.git", "repo_branch": "main"},
+    )
+    assert entry["status"] == "ok"
+    assert (dest / "legacy.txt").read_text(encoding="utf-8") == "编码测试"
 
 
 def test_bootstrap_writes_code_and_doc(monkeypatch, tmp_path):
