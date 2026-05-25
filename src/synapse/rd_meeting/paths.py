@@ -9,6 +9,8 @@ from synapse.config import settings
 
 MAX_SEGMENT_LEN = 120
 _SKIP_WORK_ROOT_NAMES = frozenset({"userwork.json", "userwork.json.lock"})
+# Windows / POSIX 路径非法字符（保留中文等 Unicode 目录名）
+_FS_UNSAFE_SEGMENT_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def work_root() -> Path:
@@ -30,6 +32,23 @@ def sanitize_work_order_segment(raw: str) -> str:
     s = "".join(out).strip("_")
     if not s or s in (".", ".."):
         s = "default"
+    if len(s) > MAX_SEGMENT_LEN:
+        s = s[:MAX_SEGMENT_LEN]
+    return s
+
+
+def sanitize_fs_segment(raw: str, *, fallback: str = "default") -> str:
+    """路径段规范化：保留中文等 Unicode，仅去掉文件系统非法字符。
+
+    用于 ``doc_type``（如 ``产品架构``）、``repo_name`` 等可能含非 ASCII 的段。
+    ``sanitize_work_order_segment`` 仅保留 ``[a-zA-Z0-9_-]``，会把中文滤成空串 → ``default``。
+    """
+    t = (raw or "").strip() or fallback
+    base = t.replace("\\", "/").split("/")[-1] or t
+    s = _FS_UNSAFE_SEGMENT_RE.sub("_", base)
+    s = re.sub(r"_+", "_", s).strip("_").strip()
+    if not s or s in (".", ".."):
+        s = fallback
     if len(s) > MAX_SEGMENT_LEN:
         s = s[:MAX_SEGMENT_LEN]
     return s
@@ -86,8 +105,8 @@ def product_doc_root(scope_id: str) -> Path:
 
 
 def product_doc_dir(scope_id: str, doc_type: str) -> Path:
-    """单类文档目录：``work/<scope>/doc/<doc_type>/``。"""
-    seg = sanitize_work_order_segment(doc_type or "default")
+    """单类文档目录：``work/<scope>/doc/<doc_type>/``（保留中文 doc_type，如 ``产品架构``）。"""
+    seg = sanitize_fs_segment(doc_type or "default")
     return product_doc_root(scope_id) / seg
 
 

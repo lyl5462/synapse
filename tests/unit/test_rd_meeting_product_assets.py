@@ -6,7 +6,12 @@ import json
 
 import pytest
 
-from synapse.rd_meeting.paths import product_code_dir, product_doc_dir
+from synapse.rd_meeting.paths import (
+    product_code_dir,
+    product_doc_dir,
+    sanitize_fs_segment,
+    sanitize_work_order_segment,
+)
 from synapse.rd_meeting.product_assets import (
     bootstrap_product_assets,
     enrich_product_with_assets,
@@ -14,6 +19,12 @@ from synapse.rd_meeting.product_assets import (
     save_product_assets_to_pipeline,
 )
 from synapse.rd_meeting.room_skill import build_product_workspace_paths_section
+
+
+def test_sanitize_fs_segment_keeps_chinese_doc_type():
+    assert sanitize_fs_segment("产品架构") == "产品架构"
+    assert sanitize_fs_segment("产品需求") == "产品需求"
+    assert sanitize_work_order_segment("产品架构") == "default"
 
 
 def test_bootstrap_writes_code_and_doc(monkeypatch, tmp_path):
@@ -47,7 +58,7 @@ def test_bootstrap_writes_code_and_doc(monkeypatch, tmp_path):
         "synapse.rd_meeting.product_assets._materialize_doc",
         lambda sid, prod, doc: {
             "doc_type": doc["doc_type"],
-            "local_path": str(product_doc_dir(sid, doc["doc_type"])),
+            "local_path": str(product_doc_dir(sid, str(doc["doc_type"]))),
             "files": ["a.md"],
             "status": "ok" if doc["doc_type"] == "产品架构" else "skipped",
             "error": "",
