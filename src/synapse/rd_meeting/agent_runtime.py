@@ -14,6 +14,7 @@ MeetingRole = Literal["host", "worker"]
 # 任务级工具白名单（与 dev_iwhalecloud_knowledge 的 _slim_tools 同思路；不含 list_skills）
 MEETING_COMMON_TOOL_NAMES: frozenset[str] = frozenset(
     {
+        "create_todo",
         "run_shell",
         "read_file",
         "write_file",

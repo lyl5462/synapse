@@ -22,6 +22,8 @@ from synapse.rd_meeting.agent_runtime import (
 def test_meeting_tool_names_exclude_list_skills():
     host = meeting_tool_names_for_role("host")
     worker = meeting_tool_names_for_role("worker")
+    assert "create_todo" in host
+    assert "create_todo" in worker
     assert "list_skills" not in host
     assert "list_skills" not in worker
     assert "delegate_to_agent" in host
