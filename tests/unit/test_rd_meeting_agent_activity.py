@@ -293,7 +293,7 @@ def test_is_todo_block_preview_and_infer_failure():
     assert infer_tool_success("get_skill_info", preview, True) is False
 
 
-def test_skill_exec_chain_label(activity_work):
+def test_skill_exec_display_title(activity_work):
     binding = resolve_binding_for_profile("scope1", "node_a", "host_pid")
     record_skill(
         binding,
@@ -303,7 +303,8 @@ def test_skill_exec_chain_label(activity_work):
         result_preview="ok",
     )
     row = enrich_display(read_activity_log("scope1", "node_a", "host_pid")[0])
-    assert row["chain_label"] == "doc-skill → generate.py"
+    assert row["display_title"] == "doc-skill"
+    assert "chain_label" not in row
     assert row["category_label"] == "执行技能脚本"
 
 
@@ -340,7 +341,8 @@ def test_instruction_only_chain_on_context_tools(activity_work):
     row = read_activity_log("scope1", "node_a", "host_pid")[-1]
     assert row.get("executing_skill_id") == "doc-skill"
     assert row.get("executing_script_name") == "instruction-only"
-    assert row.get("chain_label") == "doc-skill → instruction-only"
+    assert row.get("display_title") == "doc-skill"
+    assert "chain_label" not in row
 
     tools, skills = aggregate_tools_and_skills(read_activity_log("scope1", "node_a", "host_pid"))
     instruction = [s for s in skills if s["kind"] == "instruction"]

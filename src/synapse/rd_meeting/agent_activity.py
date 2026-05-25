@@ -470,18 +470,6 @@ def record_output(
     )
 
 
-def _chain_label(skill_name: str, script_name: str = "") -> str:
-    skill = (skill_name or "").strip()
-    script = (script_name or "").strip()
-    if not skill:
-        return ""
-    if script == _INSTRUCTION_ONLY_SCRIPT:
-        return f"{skill} → instruction-only"
-    if script:
-        return f"{skill} → {script}"
-    return skill
-
-
 def record_tool(
     binding: dict[str, str],
     *,
@@ -498,10 +486,7 @@ def record_tool(
         return None
     esid = (executing_skill_id or "").strip()
     escript = (executing_script_name or "").strip()
-    display_title = name
-    chain = _chain_label(esid, escript)
-    if chain:
-        display_title = f"{name} · {chain}"
+    display_title = esid if esid else name
     row: dict[str, Any] = {
         "category": "tool",
         "tool_name": name,
@@ -515,8 +500,6 @@ def record_tool(
         row["executing_skill_id"] = esid
     if escript:
         row["executing_script_name"] = escript
-    if chain:
-        row["chain_label"] = chain
     return _append_row(
         binding["scope_id"],
         binding["node_id"],
@@ -541,9 +524,6 @@ def record_skill(
     stool = (skill_tool or "").strip()
     scname = (script_name or "").strip()
     category = _skill_activity_category(stool)
-    title = sname
-    if scname:
-        title = f"{sname} / {scname}"
     label = _SKILL_TOOL_LABELS.get(stool, _CATEGORY_LABELS.get(category, category))
     row: dict[str, Any] = {
         "category": category,
@@ -553,12 +533,9 @@ def record_skill(
         "result_preview": _truncate(result_preview),
         "success": bool(success),
         "duration_ms": duration_ms,
-        "display_title": title,
+        "display_title": sname,
         "category_label": label,
     }
-    chain = _chain_label(sname, scname)
-    if chain:
-        row["chain_label"] = chain
     return _append_row(
         binding["scope_id"],
         binding["node_id"],
@@ -819,34 +796,18 @@ def enrich_display(entry: dict[str, Any]) -> dict[str, Any]:
     if normalized == "input":
         src = str(row.get("source") or "")
         row.setdefault("source_label", _INPUT_SOURCE_LABELS.get(src, src))
-    if not row.get("chain_label"):
-        if normalized == "tool":
-            chain = _chain_label(
-                str(row.get("executing_skill_id") or ""),
-                str(row.get("executing_script_name") or ""),
-            )
-        elif normalized in ("skill_load", "skill_exec", "skill", "skill_load_blocked"):
-            chain = _chain_label(
-                str(row.get("skill_name") or ""),
-                str(row.get("script_name") or ""),
-            )
-        else:
-            chain = ""
-        if chain:
-            row["chain_label"] = chain
-    if not row.get("display_title"):
-        if normalized == "tool":
-            name = str(row.get("tool_name") or "工具")
-            chain = str(row.get("chain_label") or "").strip()
-            row["display_title"] = f"{name} · {chain}" if chain else name
-        elif normalized in ("skill_load", "skill_exec", "skill", "skill_load_blocked"):
-            sn = str(row.get("skill_name") or "")
-            sc = str(row.get("script_name") or "")
-            row["display_title"] = f"{sn} / {sc}" if sc else sn
-        elif normalized == "output":
+    # display_title 仅保留技能名或工具名，链式关系由前端用 executing_skill_id + tool_name 组合展示
+    esid = str(row.get("executing_skill_id") or "").strip()
+    if normalized == "tool":
+        row["display_title"] = esid if esid else str(row.get("tool_name") or row.get("display_title") or "工具")
+    elif normalized in ("skill_load", "skill_exec", "skill", "skill_load_blocked"):
+        row["display_title"] = str(row.get("skill_name") or row.get("display_title") or "")
+    elif not row.get("display_title"):
+        if normalized == "output":
             row["display_title"] = str(row.get("title") or "产出")
         elif normalized == "input":
             row["display_title"] = str(row.get("title") or "输入")
+    row.pop("chain_label", None)
     return row
 
 
