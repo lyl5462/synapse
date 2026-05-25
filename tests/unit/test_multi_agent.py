@@ -1570,6 +1570,32 @@ class TestEdgeCasesAndBugs:
         tools = AgentOrchestrator._get_tools_executed(agent, "s1")
         assert tools == []
 
+    def test_extract_progress_from_trace_fallback(self):
+        agent = MagicMock()
+        agent.agent_state = None
+        agent._last_finalized_trace = [
+            {"tool_calls": [{"name": "grep"}, {"name": "read_file"}]},
+            {"tool_calls": [{"name": "read_file"}]},
+        ]
+        tools, skills, iteration = AgentOrchestrator._extract_progress_from_agent(agent, "s1")
+        assert tools == ["grep", "read_file"]
+        assert iteration == 2
+
+    def test_refresh_sub_agent_progress_snapshot_preserves_tools(self):
+        orch = AgentOrchestrator.__new__(AgentOrchestrator)
+        orch._sub_agent_states = {
+            "k1": {"status": "running", "tools_executed": ["grep"], "tools_total": 1}
+        }
+        agent = MagicMock()
+        agent.agent_state = None
+        agent._last_finalized_trace = [
+            {"tool_calls": [{"name": "grep"}, {"name": "write_file"}]},
+        ]
+        orch._refresh_sub_agent_progress_snapshot("k1", agent, "s1")
+        snap = orch._sub_agent_states["k1"]
+        assert snap["tools_total"] >= 2
+        assert "write_file" in snap["tools_executed"]
+
 
 # ================================================================
 # Concurrency Stress Tests

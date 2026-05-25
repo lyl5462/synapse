@@ -126,3 +126,81 @@ def test_dump_meeting_agent_contexts_writes_file(synapse_work_home):
     path = dump_meeting_agent_contexts(payload, scope_id="21880001")
     assert path.endswith(".json")
     assert (synapse_work_home / "21880001" / "debug" / "agent_contexts").is_dir()
+
+
+def test_merge_task_with_sub_agents_combines_tools_and_skills():
+    from synapse.rd_meeting.agent_context_probe import _merge_task_with_sub_agents
+
+    merged = _merge_task_with_sub_agents(
+        {"tools_executed": ["read_file"], "skills_executed": [], "iteration": 1},
+        [
+            {
+                "status": "completed",
+                "iteration": 8,
+                "tools_executed": ["grep", "read_file"],
+                "tools_total": 12,
+                "skills_executed": [{"skill": "whalecloud-dev-tool-code-access", "tool": "get_skill_info"}],
+                "reason": "代码检索",
+            }
+        ],
+    )
+    assert merged is not None
+    assert "grep" in merged["tools_executed"]
+    assert merged["iteration"] == 8
+    assert merged["tools_total_hint"] == 12
+    assert len(merged["skills_executed"]) == 1
+
+
+def test_collect_merges_sub_agent_into_worker_probe():
+    class _MapAgentState:
+        def __init__(self, tasks: dict):
+            self._tasks = tasks
+            self.current_task = None
+
+        def get_task_for_session(self, sid: str):
+            return self._tasks.get(sid)
+
+    class _HostTask:
+        task_id = "host1234"
+        status = SimpleNamespace(value="acting")
+        iteration = 3
+        tools_executed = ["submit_meeting_work_plan", "delegate_to_agent"]
+        skills_executed = []
+        description = "host task"
+        usage_scene = "rd_meeting"
+
+    host_agent = _FakeAgent()
+    host_agent.agent_state = _MapAgentState({"rd_meeting:mr_1:host": _HostTask()})
+
+    worker_agent = _FakeAgent()
+    worker_agent.agent_state = _MapAgentState({})
+
+    pool = _FakePool(
+        [
+            _FakePoolEntry("rd_meeting:mr_1:host", "default", host_agent),
+            _FakePoolEntry("rd_meeting:mr_1:worker-a", "worker-a", worker_agent),
+        ]
+    )
+    sub_agents = [
+        {
+            "profile_id": "worker-a",
+            "status": "completed",
+            "iteration": 5,
+            "tools_executed": ["get_skill_info", "grep"],
+            "tools_total": 7,
+            "skills_executed": [{"skill": "whalecloud-dev-tool-code-access", "tool": "get_skill_info"}],
+            "reason": "调研代码",
+        }
+    ]
+
+    class _Orch:
+        def get_sub_agent_states(self, _sid):
+            return sub_agents
+
+    payload = collect_meeting_agent_contexts("mr_1", pool, orchestrator=_Orch())
+    worker = next(a for a in payload["agents"] if a["profile_id"] == "worker-a")
+    assert worker["task"]["tools_executed"]
+    assert "grep" in worker["task"]["tools_executed"]
+    assert worker["delegation_runs"]
+    host = next(a for a in payload["agents"] if a["profile_id"] == "default")
+    assert "delegate_to_agent" in host["task"]["tools_executed"]

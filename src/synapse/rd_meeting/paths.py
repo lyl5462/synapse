@@ -69,6 +69,26 @@ def archive_root(scope_id: str) -> Path:
     return scope_dir(scope_id) / "archive"
 
 
+def agents_root(scope_id: str) -> Path:
+    """工单维度的智能体沉淀根目录：``work/<scope>/agents/``。"""
+    return scope_dir(scope_id) / "agents"
+
+
+def agent_dir(scope_id: str, profile_id: str) -> Path:
+    """单个智能体目录：``work/<scope>/agents/<profile_id>/``。
+
+    ``profile_id`` 经 :func:`sanitize_work_order_segment` 规范化，避免越权写盘。
+    """
+    seg = sanitize_work_order_segment(profile_id or "default")
+    return agents_root(scope_id) / seg
+
+
+def agent_node_dir(scope_id: str, profile_id: str, node_id: str) -> Path:
+    """智能体按节点分桶的目录：``.../<profile_id>/nodes/<node_id>/``。"""
+    nseg = sanitize_work_order_segment(node_id or "pending")
+    return agent_dir(scope_id, profile_id) / "nodes" / nseg
+
+
 def is_work_order_directory(path: Path, *, work: Path | None = None) -> bool:
     root = work or work_root()
     if not path.is_dir():

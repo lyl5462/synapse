@@ -711,59 +711,61 @@ class AgentOrchestrator:
                 fp = self._get_progress_fingerprint(agent, session.id, session)
                 if fp != last_fingerprint:
                     last_fingerprint = fp
-                    last_progress_time = time.monotonic()
-                    logger.debug(
-                        f"[Orchestrator] Agent {agent_profile_id} progress: "
-                        f"iter={fp[0]}, status={fp[1]}, tools={fp[2]}, "
-                        f"elapsed={elapsed:.0f}s"
-                    )
-                    self._log_delegation(
-                        {
-                            "event": "progress",
-                            "agent": agent_profile_id,
-                            "session": str(getattr(session, "session_key", session.id)),
-                            "iter": fp[0],
-                            "status": fp[1],
-                            "tools_count": fp[2],
-                            "elapsed_s": round(elapsed),
-                        }
-                    )
-
-                # Update live sub-agent state for frontend polling
-                tools_list = self._get_tools_executed(agent, session.id, session)
-                skills_list = self._get_skills_executed(agent, session.id, session)
-                idle_s = time.monotonic() - last_progress_time
-
-                _current_tool = tools_list[-1] if tools_list else ""
-
-                _tokens_used = 0
-                try:
-                    _re = getattr(agent, "reasoning_engine", None)
-                    if _re is not None:
-                        _tokens_used = getattr(
-                            getattr(_re, "_budget", None), "tokens_used", 0
+                    # 子任务结束后 agent_state 会被 reset，fingerprint 变为 (-1,"",0)；
+                    # 此时勿用空数据覆写已采集的 tools/skills。
+                    if fp[0] >= 0:
+                        last_progress_time = time.monotonic()
+                        logger.debug(
+                            f"[Orchestrator] Agent {agent_profile_id} progress: "
+                            f"iter={fp[0]}, status={fp[1]}, tools={fp[2]}, "
+                            f"elapsed={elapsed:.0f}s"
                         )
-                except Exception:
-                    pass
+                        self._log_delegation(
+                            {
+                                "event": "progress",
+                                "agent": agent_profile_id,
+                                "session": str(getattr(session, "session_key", session.id)),
+                                "iter": fp[0],
+                                "status": fp[1],
+                                "tools_count": fp[2],
+                                "elapsed_s": round(elapsed),
+                            }
+                        )
 
-                self._sub_agent_states[state_key] = {
-                    **self._sub_agent_states.get(state_key, {}),
-                    "status": "running",
-                    "iteration": fp[0] if fp[0] >= 0 else 0,
-                    "tools_executed": tools_list[-5:],
-                    "tools_total": len(tools_list),
-                    "skills_executed": skills_list[-20:],
-                    "skills_total": len(skills_list),
-                    "elapsed_s": round(elapsed),
-                    "last_progress_s": round(idle_s),
-                    "current_tool_summary": _current_tool,
-                    "tokens_used": _tokens_used,
-                }
+                        tools_list, skills_list, iter_n = self._extract_progress_from_agent(
+                            agent, session.id
+                        )
+                        _current_tool = tools_list[-1] if tools_list else ""
 
-                self._broadcast_sub_state_change(
-                    state_key, "running", self._sub_agent_states[state_key]
-                )
+                        _tokens_used = 0
+                        try:
+                            _re = getattr(agent, "reasoning_engine", None)
+                            if _re is not None:
+                                _tokens_used = getattr(
+                                    getattr(_re, "_budget", None), "tokens_used", 0
+                                )
+                        except Exception:
+                            pass
 
+                        self._sub_agent_states[state_key] = {
+                            **self._sub_agent_states.get(state_key, {}),
+                            "status": "running",
+                            "iteration": iter_n if iter_n > 0 else fp[0],
+                            "tools_executed": tools_list[-5:],
+                            "tools_total": len(tools_list),
+                            "skills_executed": skills_list[-20:],
+                            "skills_total": len(skills_list),
+                            "elapsed_s": round(elapsed),
+                            "last_progress_s": round(idle_s),
+                            "current_tool_summary": _current_tool,
+                            "tokens_used": _tokens_used,
+                        }
+
+                        self._broadcast_sub_state_change(
+                            state_key, "running", self._sub_agent_states[state_key]
+                        )
+
+                idle_s = time.monotonic() - last_progress_time
                 if idle_s >= idle_timeout:
                     logger.warning(
                         f"[Orchestrator] Agent {agent_profile_id} idle for "
@@ -780,8 +782,10 @@ class AgentOrchestrator:
                     self._update_sub_state(state_key, "timeout", elapsed)
                     raise TimeoutError()
 
+            result = task.result()
+            self._refresh_sub_agent_progress_snapshot(state_key, agent, session.id)
             self._update_sub_state(state_key, "completed", time.monotonic() - start)
-            return task.result()
+            return result
         except asyncio.CancelledError:
             if not task.done():
                 task.cancel()
@@ -900,6 +904,61 @@ class AgentOrchestrator:
                 logger.info(f"[Orchestrator] Cleaned up ephemeral profile: {profile_id}")
         except Exception as e:
             logger.warning(f"[Orchestrator] Failed to cleanup ephemeral {profile_id}: {e}")
+
+    @staticmethod
+    def _extract_progress_from_agent(
+        agent: Any,
+        session_id: str,
+    ) -> tuple[list[str], list[dict], int]:
+        """从 TaskState 或 react trace 提取工具 / SKILL / 迭代次数（委派子 Agent 终态快照用）。"""
+        tools = AgentOrchestrator._get_tools_executed(agent, session_id)
+        skills = AgentOrchestrator._get_skills_executed(agent, session_id)
+        iteration = 0
+
+        state = getattr(agent, "agent_state", None)
+        if state is not None:
+            task = state.get_task_for_session(session_id) if session_id else None
+            if task is None:
+                task = state.current_task
+            if task is not None:
+                iteration = int(getattr(task, "iteration", 0) or 0)
+
+        if not tools:
+            trace = getattr(agent, "_last_finalized_trace", None) or []
+            seen: list[str] = []
+            for it in trace:
+                for tc in it.get("tool_calls", []):
+                    name = str(tc.get("name") or "").strip()
+                    if name and name not in seen:
+                        seen.append(name)
+            tools = seen
+            if not iteration and trace:
+                iteration = len(trace)
+
+        return tools, skills, iteration
+
+    def _refresh_sub_agent_progress_snapshot(
+        self,
+        state_key: str,
+        agent: Any,
+        session_id: str,
+    ) -> None:
+        """在子 Agent 任务刚结束、state 尚未被前端读取前，固化 tools/skills 快照。"""
+        tools_list, skills_list, iter_n = self._extract_progress_from_agent(agent, session_id)
+        if not tools_list and not skills_list and not iter_n:
+            return
+        existing = self._sub_agent_states.get(state_key, {})
+        self._sub_agent_states[state_key] = {
+            **existing,
+            "iteration": max(int(existing.get("iteration") or 0), iter_n),
+            "tools_executed": tools_list[-5:],
+            "tools_total": max(int(existing.get("tools_total") or 0), len(tools_list)),
+            "skills_executed": skills_list[-20:],
+            "skills_total": max(int(existing.get("skills_total") or 0), len(skills_list)),
+            "current_tool_summary": tools_list[-1] if tools_list else existing.get(
+                "current_tool_summary", ""
+            ),
+        }
 
     @staticmethod
     def _get_skills_executed(agent: Any, session_id: str, session: Any = None) -> list[dict]:

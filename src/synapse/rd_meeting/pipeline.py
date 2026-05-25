@@ -60,6 +60,7 @@ STEP_IDLE = "idle"
 STEP_OPEN_MEETING = "open_meeting"
 STEP_NODE_INIT = "node_init"
 STEP_ASSEMBLE_HOST_PROMPT = "assemble_host_prompt"
+STEP_NODE_REVIEW = "node_review"
 STEP_NODE_FINISH = "node_finish"
 STEP_WAITING = "waiting"
 STEP_DONE = "done"
@@ -70,6 +71,7 @@ _VALID_FLOW_STEPS = frozenset(
         STEP_OPEN_MEETING,
         STEP_NODE_INIT,
         STEP_ASSEMBLE_HOST_PROMPT,
+        STEP_NODE_REVIEW,
         STEP_NODE_FINISH,
         STEP_WAITING,
         STEP_DONE,
@@ -95,6 +97,7 @@ FLOW_STEP_LABEL: dict[str, str] = {
     STEP_OPEN_MEETING: "开启会议室",
     STEP_NODE_INIT: "节点初始化",
     STEP_ASSEMBLE_HOST_PROMPT: "主控提示词组装",
+    STEP_NODE_REVIEW: "节点确认总结",
     STEP_NODE_FINISH: "节点收尾",
     STEP_WAITING: "流程待机",
     STEP_DONE: "流程结束",
@@ -105,6 +108,7 @@ FLOW_STEP_NEXT: dict[str, str] = {
     STEP_OPEN_MEETING: STEP_NODE_INIT,
     STEP_NODE_INIT: STEP_ASSEMBLE_HOST_PROMPT,
     STEP_ASSEMBLE_HOST_PROMPT: STEP_WAITING,
+    STEP_NODE_REVIEW: STEP_WAITING,  # NODE_REVIEW → 等用户确认 → confirm_node_delivery → NODE_FINISH
     STEP_NODE_FINISH: STEP_NODE_INIT,
 }
 
@@ -625,11 +629,118 @@ def _schedule_prewarm_for_init(
         logger.debug("schedule prewarm task failed: %s", exc)
 
 
+def _cleanup_agents_for_finished_node(
+    *,
+    scope_id: str,
+    room_id: str,
+    agent_pool: Any | None,
+    last_node_id: str,
+    last_binding: dict[str, Any] | None,
+) -> None:
+    """节点收尾：dump host / worker trace 后严格清空 messages + TaskState。
+
+    - 优先从 ``last_binding`` 解析 host / worker_profile_ids；
+    - 若 binding 缺失则只清 host（向后兼容）。
+    - 任何子步骤失败仅打 warning，避免阻断 pipeline 推进。
+    """
+    if agent_pool is None or not room_id:
+        return
+    try:
+        from synapse.rd_meeting.agent_session import host_session_id
+        from synapse.rd_meeting.agent_trace import (
+            dump_agent_node_trace,
+            reset_agent_node_context,
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.debug("agent_trace import failed scope=%s: %s", scope_id, exc)
+        return
+
+    host_pid = ""
+    worker_ids: list[str] = []
+    if isinstance(last_binding, dict):
+        host_pid = str(last_binding.get("host_profile_id") or "").strip()
+        worker_ids = [
+            str(w).strip()
+            for w in (last_binding.get("worker_profile_ids") or [])
+            if str(w).strip() and str(w).strip() != host_pid
+        ]
+
+    host_sid = host_session_id(room_id)
+    host_agent = None
+    try:
+        if hasattr(agent_pool, "get_existing"):
+            host_agent = agent_pool.get_existing(host_sid)
+    except Exception as exc:  # pragma: no cover
+        logger.debug("get_existing host failed scope=%s: %s", scope_id, exc)
+
+    if host_agent is not None:
+        try:
+            if last_node_id and host_pid:
+                dump_agent_node_trace(
+                    scope_id,
+                    host_pid,
+                    last_node_id,
+                    agent=host_agent,
+                    host_profile_id=host_pid,
+                    worker_profile_ids=worker_ids,
+                    role="host",
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("dump host trace failed scope=%s: %s", scope_id, exc)
+        try:
+            reset_agent_node_context(
+                scope_id,
+                host_pid or "default",
+                last_node_id or "pending",
+                agent=host_agent,
+                reason="node_finish_host",
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("reset host context failed scope=%s: %s", scope_id, exc)
+
+    for wid in worker_ids:
+        worker_sid = f"rd_meeting:{room_id}:{wid}"
+        worker_agent = None
+        try:
+            if hasattr(agent_pool, "get_existing"):
+                worker_agent = agent_pool.get_existing(worker_sid)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("get_existing worker %s failed: %s", wid, exc)
+        if worker_agent is None:
+            continue
+        try:
+            if last_node_id:
+                dump_agent_node_trace(
+                    scope_id,
+                    wid,
+                    last_node_id,
+                    agent=worker_agent,
+                    host_profile_id=host_pid,
+                    worker_profile_ids=worker_ids,
+                    role="worker",
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("dump worker %s trace failed scope=%s: %s", wid, scope_id, exc)
+        try:
+            reset_agent_node_context(
+                scope_id,
+                wid,
+                last_node_id or "pending",
+                agent=worker_agent,
+                reason="node_finish_worker",
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("reset worker %s context failed: %s", wid, exc)
+
+
 def _step_node_finish(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
-    """节点收尾：清理 host messages / TaskState，写流日志；随后自动进入下一节点的 INIT。
+    """节点收尾：dump host + worker trace、严格冷启动 messages / TaskState，写流日志；
+    随后自动进入下一节点的 INIT。
 
     本步骤由 ``schedule_node_finish`` 在 on_node_complete(advance=True) 之后异步触发。
-    `current_node_id` 此时已经是**下一个节点**（dev_status 已被 on_node_complete 推进）。
+    ``current_node_id`` 此时已经是**下一个节点**（dev_status 已被 on_node_complete 推进），
+    所以"刚刚完成的节点"取 ``pipe.context.last_finished_node_id``，由
+    ``schedule_node_finish`` 调用前写入。
     """
     sid = ctx.scope_id
     data = ctx.dev_status or load_dev_status(sid) or {}
@@ -637,28 +748,32 @@ def _step_node_finish(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
     pipe._data["current_node_id"] = next_node
 
     room_id = pipe.room_id or str((data.get("meeting_room") or {}).get("room_id") or "")
-    agent_pool = ctx.agent_pool
-    if agent_pool is not None and room_id:
-        try:
-            from synapse.rd_meeting.agent_session import host_session_id
 
-            host_sid = host_session_id(room_id)
-            host_agent = None
-            if hasattr(agent_pool, "get_existing"):
-                host_agent = agent_pool.get_existing(host_sid)
-            if host_agent is not None:
-                # 清 host 节点内对话历史，避免下一节点的 messages 累积旧节点产出
-                ctx_msgs = getattr(getattr(host_agent, "_context", None), "messages", None)
-                if isinstance(ctx_msgs, list):
-                    ctx_msgs.clear()
-                astate = getattr(host_agent, "agent_state", None)
-                if astate is not None:
-                    try:
-                        astate.current_task = None  # type: ignore[assignment]
-                    except Exception:
-                        pass
+    # 解析"刚完成的节点"以及对应 binding，用于 dump trace
+    pctx = pipe._data.get("context") if isinstance(pipe._data.get("context"), dict) else {}
+    last_node_id = str(pctx.get("last_finished_node_id") or "").strip()
+    last_binding: dict[str, Any] | None = None
+    if last_node_id:
+        try:
+            last_binding = resolve_node_binding(
+                last_node_id,
+                scope_type=ctx.scope_type,
+                scope_id=sid,
+            )
         except Exception as exc:  # pragma: no cover
-            logger.debug("node_finish cleanup host failed scope=%s: %s", sid, exc)
+            logger.debug("resolve last binding failed scope=%s node=%s: %s", sid, last_node_id, exc)
+            last_binding = None
+
+    _cleanup_agents_for_finished_node(
+        scope_id=sid,
+        room_id=room_id,
+        agent_pool=ctx.agent_pool,
+        last_node_id=last_node_id,
+        last_binding=last_binding,
+    )
+    if last_node_id and isinstance(pctx, dict):
+        pctx.pop("last_finished_node_id", None)
+        pipe._data["context"] = pctx
 
     append_history_event(
         sid,
@@ -726,6 +841,7 @@ def schedule_node_finish(
     scope_id: str,
     agent_pool: Any | None = None,
     ticket_title: str = "",
+    last_node_id: str = "",
 ) -> None:
     """在 on_node_complete(advance=True) 之后异步推进：node_finish → node_init → assemble → schedule_run_node。
 
@@ -746,6 +862,12 @@ def schedule_node_finish(
     def _do_advance() -> None:
         try:
             pipe = MeetingPipeline.load_or_create(sid, scope_type=scope_type)
+            if last_node_id:
+                pctx = pipe._data.get("context")
+                if not isinstance(pctx, dict):
+                    pctx = {}
+                pctx["last_finished_node_id"] = last_node_id.strip()
+                pipe._data["context"] = pctx
             pipe.set_flow_step(STEP_NODE_FINISH, reason="节点完成，自动推进至下一节点")
             pipe.save()
 
@@ -794,3 +916,55 @@ def set_flow_step(scope_id: str, step: str, *, reason: str = "") -> None:
     pipe = MeetingPipeline.load_or_create(scope_id)
     pipe.set_flow_step(step, reason=reason)
     pipe.save()
+
+
+async def run_node_review_step(
+    *,
+    scope_type: ScopeType,
+    scope_id: str,
+    room_id: str,
+    node_id: str,
+    binding: dict[str, Any],
+    report_body: str,
+    tokens_used: int,
+    duration_seconds: int,
+    stage_id: int,
+    agent_pool: Any | None,
+    orchestrator: Any | None,
+    use_llm_summary: bool = True,
+) -> dict[str, Any]:
+    """async：组装并落盘节点确认总结 payload，把 pipeline 切到 NODE_REVIEW。
+
+    设计：``run_current_node`` 在 ``human_confirm=true`` 且报告就绪后调用，
+    把"确认总结"从智能体提示词护栏迁到 pipeline 显式步骤。
+    """
+    from synapse.rd_meeting.node_review import (
+        build_node_review_payload,
+        save_node_review,
+    )
+
+    pipe = MeetingPipeline.load_or_create(scope_id, scope_type=scope_type)
+    pipe.set_flow_step(STEP_NODE_REVIEW, reason=f"节点 {node_id} 执行完成，开始装配确认总结")
+    pipe.save()
+
+    payload = await build_node_review_payload(
+        scope_type=scope_type,
+        scope_id=scope_id,
+        room_id=room_id,
+        node_id=node_id,
+        binding=binding,
+        report_body=report_body,
+        tokens_used=tokens_used,
+        duration_seconds=duration_seconds,
+        stage_id=stage_id,
+        agent_pool=agent_pool,
+        orchestrator=orchestrator,
+        use_llm_summary=use_llm_summary,
+    )
+    save_node_review(scope_id, node_id, payload)
+
+    pipe = MeetingPipeline.load_or_create(scope_id, scope_type=scope_type)
+    pipe.mark_step_completed(STEP_NODE_REVIEW)
+    pipe.set_flow_step(STEP_WAITING, reason="确认总结已装配，等待人工确认")
+    pipe.save()
+    return payload

@@ -268,6 +268,8 @@ export interface MeetingRoomLivePayload {
     skills_total?: number;
     elapsed_s?: number;
     current_tool_summary?: string;
+    reason?: string;
+    from_agent?: string;
   }[];
   recent_history?: Record<string, unknown>[];
   recent_chat?: MeetingRoomChatLogWire[];
@@ -306,9 +308,24 @@ export interface MeetingAgentContextTask {
   status?: string;
   iteration?: number;
   tools_executed?: string[];
+  tools_total_hint?: number;
   skills_executed?: SkillExecutionEntry[];
+  skills_total_hint?: number;
   description_preview?: string;
   usage_scene?: string;
+}
+
+export interface MeetingAgentDelegationRun {
+  status?: string;
+  reason?: string;
+  from_agent?: string;
+  elapsed_s?: number;
+  iteration?: number;
+  tools_total?: number;
+  tools_executed?: string[];
+  skills_total?: number;
+  current_tool_summary?: string;
+  started_at?: number;
 }
 
 export interface MeetingAgentContextEntry {
@@ -325,6 +342,7 @@ export interface MeetingAgentContextEntry {
   messages_count?: number;
   messages_truncated?: boolean;
   task?: MeetingAgentContextTask | null;
+  delegation_runs?: MeetingAgentDelegationRun[];
   last_usage?: Record<string, unknown> | null;
 }
 

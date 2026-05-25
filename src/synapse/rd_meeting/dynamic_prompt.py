@@ -30,10 +30,10 @@ def _format_section_order(order: dict[str, Any]) -> str:
         lines.append(f"- 范围：{order['scope_type']} / `{order['scope_id']}`")
     desc = str(order.get("description") or "").strip()
     if desc:
-        lines.append(f"- 说明：{desc}")
+        lines.append(f"- DEMAND_DESC：{desc}")
     impact = str(order.get("impact") or "").strip()
     if impact:
-        lines.append(f"- 影响范围：{impact}")
+        lines.append(f"- DEMAND_IMPACT：{impact}")
     return "\n".join(lines) if lines else "（无工单字段）"
 
 
@@ -44,7 +44,9 @@ def _format_section_product(product: dict[str, Any]) -> str:
     code = str(product.get("locator_code") or "").strip()
     msg = str(product.get("locator_message") or "").strip()
     if product.get("prod"):
-        lines.append(f"- prod：`{product['prod']}`")
+        lines.append(f"- PROD`{product['prod']}`")
+    if product.get("prod_feature"):
+        lines.append(f"- PROD_FEATURE：{product['prod_feature']}")
     if product.get("version"):
         lines.append(f"- version：`{product['version']}`")
     repos = product.get("repos")
@@ -70,10 +72,9 @@ def _format_section_system(
         return "（无系统参数）"
     lines: list[str] = []
     for key, label in (
-        ("synapse_url", "统一服务（Synapse）"),
-        ("gitnexus_url", "GitNexus 服务"),
-        ("gnx_cache_base_dir", "GNX 缓存根目录"),
-        ("gnx_cache_dir", "GNX 缓存目录（本仓库）"),
+        ("synapse_url", "SYNAPSE_URL"),
+        ("gitnexus_url", "GITNEXUS_URL"),
+        ("gnx_cache_base_dir", "TMP_DIR"),
         ("work_order_dir", "工单工作目录"),
     ):
         val = str(system.get(key) or "").strip()

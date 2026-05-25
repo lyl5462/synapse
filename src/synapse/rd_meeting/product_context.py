@@ -183,12 +183,14 @@ def _normalize_product_wire(row: dict[str, Any]) -> dict[str, Any]:
         for item in docs_raw:
             if isinstance(item, dict):
                 docs.append(_normalize_doc_entry(item))
+    prod_feature = str(row.get("prod_feature") or row.get("function") or "").strip()
     return {
         "prod": str(row.get("prod") or "").strip(),
         "version": str(row.get("version") or "").strip(),
         "module": str(row.get("module") or "").strip(),
         "space": str(row.get("space") or "").strip(),
-        "function": str(row.get("function") or "").strip(),
+        "function": prod_feature,
+        "prod_feature": prod_feature,
         "prod_desc": str(row.get("prod_desc") or "").strip(),
         "owner": str(row.get("owner") or "").strip(),
         "repos": repos,

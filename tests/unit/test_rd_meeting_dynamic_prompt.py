@@ -94,6 +94,28 @@ def test_dynamic_context_workers_summary_avoids_capability_card_duplication(host
     assert md.count("worker-default") == 0
 
 
+def test_product_section_includes_prod_feature(host_binding):
+    md = build_dynamic_meeting_context(
+        binding=host_binding,
+        init_data={
+            "order": {"id": "D1", "title": "T", "prod": "p1"},
+            "product": {
+                "locator_code": "ok",
+                "prod": "p1",
+                "prod_feature": "客户管理:CRM|订单中心:订单",
+                "repos": [],
+                "docs": [],
+            },
+            "system": {"synapse_url": "http://127.0.0.1:10001"},
+        },
+        scope_type="demand",
+        scope_id="D1",
+        sop_node_display="需求澄清",
+    )
+    assert "PROD_FEATURE" in md
+    assert "客户管理:CRM|订单中心:订单" in md
+
+
 def test_capability_cards_render_skill_label():
     """技能 label（来自 SKILL frontmatter）应出现在能力卡片，不再在动态上下文里。"""
     from synapse.rd_meeting.room_skill import _resolve_profile, build_capability_cards

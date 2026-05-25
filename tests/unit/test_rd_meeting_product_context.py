@@ -12,6 +12,7 @@ from synapse.rd_meeting.devservice import (
     read_devservice_host,
     unified_service_base_url,
 )
+from synapse.rd_meeting.init_context import normalize_node_init_log_data
 from synapse.rd_meeting.product_context import (
     match_prod_row_by_prod,
     parse_get_prod_info_response,
@@ -89,6 +90,7 @@ def test_resolve_product_by_userwork_prod(monkeypatch, tmp_path):
                         {
                             "prod": prod_name,
                             "version": "1|VER",
+                            "function": "客户管理:CRM模块|订单中心:订单处理",
                             "repo_info": [{"repo_url": "https://git.example.com/foo.git"}],
                             "doc_process": [{"doc_type": "产品架构", "doc_process_state": "D"}],
                         }
@@ -122,4 +124,13 @@ def test_resolve_product_by_userwork_prod(monkeypatch, tmp_path):
     product, _ = resolve_product_for_meeting("demand", scope_id)
     assert product["locator_code"] == "ok"
     assert product["prod"] == prod_name
+    assert product["prod_feature"] == "客户管理:CRM模块|订单中心:订单处理"
+    assert product["function"] == product["prod_feature"]
     assert product["repos"][0]["repo_name"] == "foo"
+
+
+def test_normalize_node_init_backfills_prod_feature_from_function():
+    data = normalize_node_init_log_data(
+        {"product": {"prod": "p1", "function": "模块A:说明A|模块B:说明B"}}
+    )
+    assert data["product"]["prod_feature"] == "模块A:说明A|模块B:说明B"

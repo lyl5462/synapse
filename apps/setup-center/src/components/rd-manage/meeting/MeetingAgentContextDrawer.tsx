@@ -24,6 +24,7 @@ import {
   fetchMeetingAgentContexts,
   type MeetingAgentContextEntry,
   type MeetingAgentContextsPayload,
+  type MeetingAgentDelegationRun,
   type SkillExecutionEntry,
 } from '../../../api/meetingRoomService';
 
@@ -469,6 +470,152 @@ function SkillUsageCard({ entries }: { entries: SkillExecutionEntry[] }) {
   );
 }
 
+interface ToolAggRow {
+  tool: string;
+  count: number;
+}
+
+function aggregateTools(names: string[]): ToolAggRow[] {
+  const map = new Map<string, number>();
+  for (const raw of names || []) {
+    const key = (raw || '').trim();
+    if (!key) continue;
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return Array.from(map.entries())
+    .map(([tool, count]) => ({ tool, count }))
+    .sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool));
+}
+
+/** 「已使用工具」列表：按工具名聚合频次。 */
+function ToolUsageCard({
+  tools,
+  totalHint,
+}: {
+  tools: string[];
+  totalHint?: number;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const rows = useMemo(() => aggregateTools(tools), [tools]);
+  const listed = rows.reduce((n, r) => n + r.count, 0);
+  const total = Math.max(listed, totalHint || 0, tools.length);
+
+  if (!rows.length) {
+    return (
+      <div className="rounded-xl border border-border/60 bg-[color:var(--panel,#1c1c1f)]/60 overflow-hidden">
+        <div className="px-3 py-2 border-b border-border/40 flex items-center gap-2 text-xs font-medium text-foreground/90">
+          <Wrench className="w-3 h-3 text-blue-400" />
+          <span>已使用工具</span>
+          <span className="font-mono text-[10px] text-muted-foreground/70">0 次</span>
+        </div>
+        <p className="p-4 text-xs text-muted-foreground text-center">
+          本任务暂未记录工具调用（委派类工具如 delegate_to_agent 会在主控执行后展示）
+        </p>
+      </div>
+    );
+  }
+
+  const visible = showAll ? rows : rows.slice(0, 10);
+  const hidden = rows.length - visible.length;
+
+  return (
+    <div className="rounded-xl border border-border/60 bg-[color:var(--panel,#1c1c1f)]/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/40 flex items-center gap-2 text-xs font-medium text-foreground/90">
+        <Wrench className="w-3 h-3 text-blue-400" />
+        <span>已使用工具</span>
+        <span className="font-mono text-[10px] text-muted-foreground/70">
+          {rows.length} 种 · 共 {total} 次
+        </span>
+      </div>
+      <div className="p-3 flex flex-wrap gap-1.5">
+        {visible.map((row) => (
+          <span
+            key={row.tool}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-mono bg-blue-500/10 text-blue-200/90 border border-blue-500/25"
+            title={row.tool}
+          >
+            {row.tool}
+            {row.count > 1 ? <span className="text-blue-300/80">×{row.count}</span> : null}
+          </span>
+        ))}
+        {hidden > 0 && !showAll ? (
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            className="text-[10px] text-muted-foreground hover:text-foreground px-2 py-1 rounded border border-dashed border-border/40"
+          >
+            +{hidden} 更多
+          </button>
+        ) : null}
+        {showAll && rows.length > 10 ? (
+          <button
+            type="button"
+            onClick={() => setShowAll(false)}
+            className="text-[10px] text-muted-foreground hover:text-foreground px-2 py-1 rounded border border-dashed border-border/40"
+          >
+            收起
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function DelegationRunsCard({ runs }: { runs: MeetingAgentDelegationRun[] }) {
+  if (!runs.length) return null;
+  return (
+    <div className="rounded-xl border border-border/60 bg-[color:var(--panel,#1c1c1f)]/60 overflow-hidden">
+      <div className="px-3 py-2 border-b border-border/40 flex items-center gap-2 text-xs font-medium text-foreground/90">
+        <Activity className="w-3 h-3 text-emerald-400" />
+        <span>委派子任务</span>
+        <span className="font-mono text-[10px] text-muted-foreground/70">{runs.length} 次</span>
+      </div>
+      <div className="p-3 space-y-2">
+        {runs.map((run, i) => (
+          <div
+            key={i}
+            className="rounded-lg border border-border/40 bg-muted/10 px-2.5 py-2 text-[11px] space-y-1"
+          >
+            <div className="flex items-center gap-2 flex-wrap font-mono">
+              <Tag className="m-0 text-[10px]">{run.status || 'unknown'}</Tag>
+              {run.elapsed_s != null ? (
+                <span className="text-muted-foreground">{run.elapsed_s}s</span>
+              ) : null}
+              {run.iteration != null ? (
+                <span className="text-muted-foreground">iter={run.iteration}</span>
+              ) : null}
+              {run.tools_total != null ? (
+                <span className="text-muted-foreground">tools={run.tools_total}</span>
+              ) : null}
+            </div>
+            {run.reason ? (
+              <p className="text-muted-foreground/90">{run.reason}</p>
+            ) : null}
+            {run.current_tool_summary ? (
+              <p className="text-amber-300/90 font-mono truncate">末次工具: {run.current_tool_summary}</p>
+            ) : null}
+            {(run.tools_executed || []).length > 0 ? (
+              <p className="text-muted-foreground font-mono truncate">
+                近期: {(run.tools_executed || []).join(', ')}
+              </p>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function collectToolsFromSubEntries(subEntries: { tools_executed?: string[] }[]): string[] {
+  const out: string[] = [];
+  for (const s of subEntries || []) {
+    for (const t of s?.tools_executed || []) {
+      if (t && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
+
 export function MeetingAgentContextDrawer({
   open,
   onClose,
@@ -515,6 +662,34 @@ export function MeetingAgentContextDrawer({
       (s) => String(s.profile_id || s.agent_id || '') === agent.profileId,
     );
   }, [payload, agent]);
+
+  const taskTools = useMemo(() => {
+    const fromTask = entry?.task?.tools_executed || [];
+    if (fromTask.length) return fromTask;
+    return collectToolsFromSubEntries(subEntries);
+  }, [entry?.task?.tools_executed, subEntries]);
+
+  const taskSkills = useMemo(() => {
+    const fromTask = entry?.task?.skills_executed || [];
+    if (fromTask.length) return fromTask;
+    const merged: SkillExecutionEntry[] = [];
+    for (const s of subEntries) {
+      for (const item of s.skills_executed || []) merged.push(item);
+    }
+    return merged;
+  }, [entry?.task?.skills_executed, subEntries]);
+
+  const delegationRuns = useMemo(
+    () => entry?.delegation_runs || [],
+    [entry?.delegation_runs],
+  );
+
+  const toolsTotalDisplay = useMemo(() => {
+    const hint = entry?.task?.tools_total_hint;
+    const listed = taskTools.length;
+    if (hint && hint > listed) return hint;
+    return listed || undefined;
+  }, [entry?.task?.tools_total_hint, taskTools.length]);
 
   const messages = useMemo<NormalizedMessage[]>(() => {
     if (!entry?.messages?.length) return [];
@@ -610,13 +785,13 @@ export function MeetingAgentContextDrawer({
             <Stat
               icon={<Wrench className="w-3 h-3" />}
               label="工具"
-              value={(entry.task?.tools_executed || []).length || '—'}
+              value={toolsTotalDisplay ?? '—'}
             />
             <Stat
               icon={<Sparkles className="w-3 h-3" />}
               label="SKILL"
               value={(() => {
-                const arr = entry.task?.skills_executed || [];
+                const arr = taskSkills;
                 if (!arr.length) return '—';
                 const unique = new Set(arr.map((s) => s.skill)).size;
                 return `${arr.length}·${unique}`;
@@ -667,20 +842,16 @@ export function MeetingAgentContextDrawer({
           >
             {subEntries.length ? (
               <div className="mt-4 mx-auto max-w-md text-left space-y-3">
-                <div className="rounded-xl border border-border/60 bg-muted/20 p-3 text-[11px] space-y-1">
-                  <div className="text-xs font-medium text-foreground/90 mb-1.5 flex items-center gap-1">
-                    <Activity className="w-3 h-3" /> 委派子任务历史（{subEntries.length}）
-                  </div>
-                  {subEntries.map((s, i) => (
-                    <div key={i} className="flex items-center justify-between gap-2 font-mono">
-                      <span>{s.status || 'idle'}</span>
-                      <span className="text-muted-foreground">iter={s.iteration ?? 0}</span>
-                      <span className="text-muted-foreground truncate flex-1 text-right">
-                        {s.current_tool_summary || ''}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                <DelegationRunsCard runs={subEntries.map((s) => ({
+                  status: s.status,
+                  reason: s.reason,
+                  elapsed_s: s.elapsed_s,
+                  iteration: s.iteration,
+                  tools_total: s.tools_total,
+                  tools_executed: s.tools_executed,
+                  current_tool_summary: s.current_tool_summary,
+                }))} />
+                <ToolUsageCard tools={collectToolsFromSubEntries(subEntries)} />
                 {(() => {
                   const merged: SkillExecutionEntry[] = [];
                   for (const s of subEntries) {
@@ -723,7 +894,16 @@ export function MeetingAgentContextDrawer({
                   />
                 ) : null}
                 {view === 'all' ? (
-                  <SkillUsageCard entries={entry.task?.skills_executed || []} />
+                  <>
+                    <ToolUsageCard
+                      tools={taskTools}
+                      totalHint={entry.task?.tools_total_hint}
+                    />
+                    <SkillUsageCard entries={taskSkills} />
+                    {!agent?.isHost && delegationRuns.length > 0 ? (
+                      <DelegationRunsCard runs={delegationRuns} />
+                    ) : null}
+                  </>
                 ) : null}
               </>
             )}

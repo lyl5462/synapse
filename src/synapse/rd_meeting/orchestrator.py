@@ -17,6 +17,8 @@ from synapse.rd_meeting.agent_session import (
     ensure_host_session,
     host_session_id,
 )
+from synapse.rd_meeting.agent_trace import append_event as trace_append_event
+from synapse.rd_meeting.agent_trace import write_agent_meta
 from synapse.rd_meeting.artifacts import write_node_deliverables
 from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.bootstrap import build_node_init_message
@@ -287,6 +289,39 @@ class MeetingRoomOrchestrator:
             agent._org_context = True  # type: ignore[attr-defined]
         except Exception as exc:
             logger.debug("set _org_context failed for role=%s: %s", role, exc)
+
+        target_pid = (self_profile_id or "").strip()
+        if role == "host" and not target_pid:
+            target_pid = str(binding.get("host_profile_id") or "default").strip() or "default"
+        if target_pid:
+            try:
+                profile = _resolve_profile(target_pid)
+                display_name = ""
+                if profile is not None:
+                    display_name = profile.get_display_name() or profile.name or target_pid
+                write_agent_meta(
+                    scope_id,
+                    target_pid,
+                    role=role,
+                    display_name=display_name,
+                    llm_endpoint=endpoint_key,
+                    capabilities={
+                        "skills": list(getattr(profile, "skills", None) or []) if profile else [],
+                    },
+                )
+                trace_append_event(
+                    scope_id,
+                    target_pid,
+                    nid or "pending",
+                    event="configured",
+                    detail={
+                        "role": role,
+                        "endpoint": endpoint_key,
+                        "reused_host_prompt": reused_host_prompt,
+                    },
+                )
+            except Exception as exc:  # pragma: no cover
+                logger.debug("write agent meta failed pid=%s: %s", target_pid, exc)
         return reused_host_prompt
 
     def on_node_complete(
@@ -385,6 +420,7 @@ class MeetingRoomOrchestrator:
                     scope_id=sid,
                     ticket_title=ticket_title,
                     agent_pool=agent_pool,
+                    last_node_id=node_id,
                 )
             except Exception as exc:
                 logger.warning("schedule_node_finish after node_complete failed: %s", exc)
@@ -676,8 +712,14 @@ class MeetingRoomOrchestrator:
         ticket_title: str = "",
         sync_userwork: bool = True,
         agent_pool: Any | None = None,
+        mode: str = "",
     ) -> dict[str, Any]:
-        """人工确认待归档总结：通过则写入产物并推进；拒绝则清除 pending 并返工。"""
+        """人工确认待归档总结：通过/打回/异常介入三种模式。
+
+        - ``mode="approve"`` 或 ``approved=True``：归档并推进
+        - ``mode="reject"`` 或 ``approved=False``：清 pending、写返工备注、重跑节点
+        - ``mode="escalate"``：转入 exception_gate，等待人工兜底（不重跑、不归档）
+        """
         sid = scope_id.strip()
         room_state = load_room_state(sid) or {}
         pending = room_state.get("pending_delivery")
@@ -687,6 +729,31 @@ class MeetingRoomOrchestrator:
         node_id = str(pending.get("node_id") or room_state.get("current_node_id") or "")
         if not node_id:
             raise ValueError("invalid_pending_node")
+
+        mode_norm = (mode or "").strip().lower()
+        if mode_norm == "escalate":
+            room_state = dict(room_state)
+            room_state["status"] = "human_intervention"
+            room_state["intervention_kind"] = "exception"
+            if comment.strip():
+                room_state["escalate_reason"] = comment.strip()
+            save_room_state(sid, room_state)
+            set_phase(sid, "exception_gate")
+            append_history_event(
+                sid,
+                {
+                    "event": "hitl_escalated",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "comment": comment.strip(),
+                    "log_type": "warning",
+                    "agent_id": "user",
+                },
+            )
+            return {"status": "escalated", "node_id": node_id, "room_state": room_state}
+
+        if mode_norm in ("approve", "reject"):
+            approved = mode_norm == "approve"
 
         if not approved:
             room_state = dict(room_state)
@@ -1289,7 +1356,30 @@ class MeetingRoomOrchestrator:
                     **gate,
                 }
 
+            # human_confirm 节点：走 NODE_REVIEW pipeline 步骤装配「整体总结 / 工作摘要 /
+            # 产出物 / 人工输入框」四段 payload，前端 NodeReviewPanel 渲染；不再用
+            # hitl_form 多题问卷。
+            from synapse.rd_meeting.pipeline import run_node_review_step
+
             set_phase(sid, "result_gate")
+            try:
+                review_payload = await run_node_review_step(
+                    scope_type=scope_type,  # type: ignore[arg-type]
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=duration,
+                    stage_id=stage_id,
+                    agent_pool=agent_pool,
+                    orchestrator=getattr(agent_pool, "orchestrator", None),
+                )
+            except Exception as exc:  # pragma: no cover - 装配失败降级
+                logger.warning("run_node_review_step failed scope=%s: %s", sid, exc)
+                review_payload = None
+
             pending = {
                 "node_id": node_id,
                 "report_body": report_body,
@@ -1298,18 +1388,16 @@ class MeetingRoomOrchestrator:
                 "duration_seconds": duration,
                 "stage_id": stage_id,
             }
+            if review_payload is not None:
+                pending["review_payload"] = review_payload
             gate = self.mark_human_gate(
                 scope_type=scope_type,
                 scope_id=sid,
                 room_id=room_id,
                 node_id=node_id,
-                reason=f"{node_display_name(node_id)} 待确认总结，请填写表单后归档推进",
+                reason=f"{node_display_name(node_id)} 待人工确认总结，请审阅后通过/打回/异常",
                 ticket_title=ticket_title,
-                hitl_form_schema=resolve_hitl_schema_for_gate(
-                    binding,
-                    dynamic_schema=None,
-                    intervention_kind="result_confirm",
-                ),
+                hitl_form_schema=None,  # NodeReviewPanel 不再使用 hitl_form_schema
                 pending_delivery=pending,
                 intervention_kind="result_confirm",
             )
@@ -1321,6 +1409,8 @@ class MeetingRoomOrchestrator:
                     "node_id": node_id,
                     "tokens_used": tokens_used,
                     "duration_seconds": duration,
+                    "review_summary_count": len((review_payload or {}).get("summaries") or []),
+                    "review_artifact_count": len((review_payload or {}).get("artifacts") or []),
                 },
             )
             return {
@@ -1328,6 +1418,7 @@ class MeetingRoomOrchestrator:
                 "node_id": node_id,
                 "skipped_nodes": skipped_nodes or None,
                 "pending_confirm": True,
+                "review_payload": review_payload,
                 **gate,
             }
 

@@ -514,26 +514,6 @@ def _human_confirm_label(binding: dict[str, Any] | None) -> str:
         return "**开启**（中途待确认内容及会议结果均需用户表单确认后才能推进）"
     return "关闭（自动处理推进会议, 不需要和人工交互）"
 
-
-def _extract_ticket_description(init_context: dict[str, Any] | None) -> str:
-    """从 init_context.order 中提取工单描述（含影响范围，若存在）。"""
-    if not isinstance(init_context, dict):
-        return "（未提供工单描述）"
-    order = init_context.get("order")
-    if not isinstance(order, dict):
-        return "（未提供工单描述）"
-    desc = str(order.get("description") or "").strip()
-    impact = str(order.get("impact") or "").strip()
-    parts: list[str] = []
-    if desc:
-        parts.append(desc)
-    if impact:
-        parts.append(f"影响范围：{impact}")
-    if not parts:
-        return "（未提供工单描述）"
-    return " ｜ ".join(parts)
-
-
 def _format_meeting_outputs(binding: dict[str, Any] | None) -> str:
     """从 binding.node_outputs 渲染「会议产出」展示串（与归档强约束一一对应）。"""
     if not isinstance(binding, dict):
@@ -573,7 +553,6 @@ def build_meeting_runtime_header(
     now = (now_iso or _dt.now().isoformat(timespec="seconds")).strip()
     product_label = _extract_product_label(init_context)
     confirm_label = _human_confirm_label(binding)
-    ticket_desc = _extract_ticket_description(init_context)
     meeting_outputs_label = _format_meeting_outputs(binding)
     supplement = ""
     if isinstance(binding, dict):

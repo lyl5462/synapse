@@ -6340,6 +6340,9 @@ class Agent:
                 iteration += 1
                 logger.info(f"Task iteration {iteration}")
 
+                if self.agent_state and self.agent_state.current_task:
+                    self.agent_state.current_task.iteration = iteration
+
                 # 任务监控：开始迭代
                 task_monitor.begin_iteration(iteration, current_model)
 
@@ -6702,6 +6705,9 @@ class Agent:
                 )
 
                 messages.append({"role": "user", "content": tool_results})
+
+                if executed_names and self.agent_state and self.agent_state.current_task:
+                    self.agent_state.current_task.record_tool_execution(executed_names)
 
                 # === 统一处理 skip 反思 + 用户插入消息 ===
                 if self.agent_state and self.agent_state.current_task:

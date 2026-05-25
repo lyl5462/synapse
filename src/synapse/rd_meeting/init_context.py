@@ -96,6 +96,9 @@ def normalize_node_init_log_data(data: dict[str, Any]) -> dict[str, Any]:
         p.pop("history_demands", None)
         p.pop("standard_docs", None)
         p.pop("local_docs", None)
+        legacy = str(p.get("function") or "").strip()
+        if legacy:
+            p["prod_feature"] = legacy
         out["product"] = p
     system = out.get("system")
     if isinstance(system, dict):
