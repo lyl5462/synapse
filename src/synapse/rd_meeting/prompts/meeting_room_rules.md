@@ -83,8 +83,8 @@
 
 | 场景 | `kind` | 推荐方式 |
 |------|--------|----------|
-| 会议期间澄清 / 选项收集 | `interactive` | **首选** `submit_hitl_questionnaire` 工具；兼容 ask-user 标记块 |
-| 节点终稿确认（`human_confirm: true`） | `result_confirm` | **必须** `submit_hitl_questionnaire(kind="result_confirm")`，`summary` 仅写本节点待确认简表（见下） |
+| 会议期间澄清 / 选项收集 | `interactive` | **首选** `submit_hitl_questionnaire(kind="interactive")`；兼容 ask-user 标记块 |
+| 节点终稿确认（`human_confirm: true`） | — | **禁止** host 使用 `result_confirm` 问卷；用户会中问卷「补充说明」留空后，系统自动进入 NodeReview 完成总结 |
 | 异常 / 风险不可控 / 质量不达标 | `exception` | **必须** `submit_hitl_questionnaire(kind="exception")`，在 `summary` 字段写明异常原因 |
 
 - **调用 `submit_hitl_questionnaire` 后立即停止**：不要继续写正文、不要重复总结、不要再调任何工具。系统在工具返回后会自动锁定 `human_intervention`，模型继续产出的内容会被忽略。

@@ -8,7 +8,11 @@ from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
 from synapse.rd_meeting.orchestrator import MeetingRoomOrchestrator
 from synapse.rd_meeting.room_runtime import load_room_state
 from synapse.rd_meeting.service import MeetingRoomService
-from synapse.rd_meeting.validation import validate_node_output
+from synapse.rd_meeting.validation import (
+    normalize_node_output_body,
+    resolve_delivery_body_for_archive,
+    validate_node_output,
+)
 
 
 @pytest.fixture
@@ -93,6 +97,38 @@ def test_validate_node_output_rejects_short_body():
         "本节点已完成交付，结论如下：模块边界清晰，无跨产品影响。\n" * 3,
     )
     assert good.ok
+
+
+def test_normalize_node_output_body_adds_h1():
+    body = normalize_node_output_body(
+        "req_clarify",
+        "本节点已完成需求澄清，结论如下：" + "详细说明。" * 20,
+    )
+    assert body.startswith("# ")
+    assert validate_node_output("req_clarify", body).ok
+
+
+def test_resolve_delivery_body_prefers_archive_md(tmp_path, monkeypatch):
+    from synapse.rd_meeting.paths import scope_dir
+
+    scope_id = "21883303"
+    node_id = "req_clarify"
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", lambda: tmp_path / "work")
+    dest = scope_dir(scope_id) / "archive" / "1" / node_id
+    dest.mkdir(parents=True)
+    archive_text = (
+        "# 需求澄清\n\n"
+        "本节点已完成交付，结论如下：协作智能体已产出澄清文档，待人工确认归档。\n" * 3
+    )
+    (dest / "需求澄清.md").write_text(archive_text, encoding="utf-8")
+
+    resolved = resolve_delivery_body_for_archive(
+        scope_id,
+        node_id,
+        "这是没有一级标题的 pending 摘要，" + "内容较短。" * 5,
+    )
+    assert resolved.startswith("# 需求澄清")
+    assert validate_node_output(node_id, resolved).ok
 
 
 @pytest.mark.asyncio

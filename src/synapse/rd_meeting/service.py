@@ -26,7 +26,6 @@ from synapse.rd_meeting.dev_status import (
 )
 from synapse.rd_meeting.hitl_submission import (
     format_hitl_form_instruction,
-    load_archive_delivery_body,
     parse_hitl_form_text,
     record_hitl_submission_locked,
 )
@@ -55,7 +54,7 @@ from synapse.rd_meeting.user_context import (
     is_hitl_form_submission,
 )
 from synapse.rd_meeting.userwork_sync import build_title_index, patch_userwork_summary
-from synapse.rd_meeting.validation import validate_node_output
+from synapse.rd_meeting.validation import resolve_delivery_body_for_archive, validate_node_output
 from synapse.rd_sop.manifest import list_manifest_stages
 from synapse.rd_sop.nodes import (
     node_display_name,
@@ -675,15 +674,17 @@ class MeetingRoomService:
                 return out
 
             node_id = str(pending.get("node_id") or room_state.get("current_node_id") or "")
-            report_body = str(pending.get("report_body") or "").strip()
-            if not validate_node_output(node_id, report_body).ok:
-                archive_body = load_archive_delivery_body(sid, node_id)
-                if archive_body:
-                    rs_fix = dict(load_room_state(sid) or {})
-                    pend = dict(rs_fix.get("pending_delivery") or pending)
-                    pend["report_body"] = archive_body
-                    rs_fix["pending_delivery"] = pend
-                    save_room_state(sid, rs_fix)
+            report_body = resolve_delivery_body_for_archive(
+                sid,
+                node_id,
+                str(pending.get("report_body") or "").strip(),
+            )
+            if report_body != str(pending.get("report_body") or "").strip():
+                rs_fix = dict(load_room_state(sid) or {})
+                pend = dict(rs_fix.get("pending_delivery") or pending)
+                pend["report_body"] = report_body
+                rs_fix["pending_delivery"] = pend
+                save_room_state(sid, rs_fix)
 
             rs_proc = dict(load_room_state(sid) or {})
             rs_proc["status"] = "processing"
@@ -735,11 +736,35 @@ class MeetingRoomService:
             out["hitl_locked"] = True
             return out
 
-        # interactive / 会中澄清：注入答案后继续跑本节点
+        # interactive / 会中澄清：注入答案后继续跑本节点，或进入 node_review
+        from synapse.rd_meeting.hitl_lifecycle import (
+            set_ready_for_node_review,
+            user_has_supplement_input,
+        )
+        from synapse.rd_meeting.orchestrator import schedule_enter_node_review
+
+        if user_has_supplement_input(form_values, comment=comment):
+            set_ready_for_node_review(sid, False)
+            rs2 = dict(load_room_state(sid) or {})
+            rs2["status"] = "processing"
+            save_room_state(sid, rs2)
+            schedule_run_node(
+                scope_type=scope_type,  # type: ignore[arg-type]
+                scope_id=sid,
+                room_id=rid,
+                ticket_title=ticket_title,
+                agent_pool=agent_pool,
+            )
+            out = self.get_room_detail(rid) or detail
+            out["resume_run_started"] = True
+            out["hitl_locked"] = True
+            return out
+
+        set_ready_for_node_review(sid, True)
         rs2 = dict(load_room_state(sid) or {})
         rs2["status"] = "processing"
         save_room_state(sid, rs2)
-        schedule_run_node(
+        schedule_enter_node_review(
             scope_type=scope_type,  # type: ignore[arg-type]
             scope_id=sid,
             room_id=rid,
@@ -747,8 +772,9 @@ class MeetingRoomService:
             agent_pool=agent_pool,
         )
         out = self.get_room_detail(rid) or detail
-        out["resume_run_started"] = True
+        out["resume_run_started"] = False
         out["hitl_locked"] = True
+        out["enter_node_review_scheduled"] = True
         return out
 
     def _parse_hitl_decision(

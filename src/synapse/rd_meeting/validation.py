@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from synapse.rd_sop.manifest import get_node_manifest_entry, node_output_artifacts
+from synapse.rd_sop.nodes import node_display_name
 
 
 @dataclass
@@ -16,6 +17,38 @@ class NodeOutputValidation:
 
 _MIN_BODY_LEN = 80
 _REQUIRED_HEADING = re.compile(r"^#\s+\S+", re.MULTILINE)
+
+
+def normalize_node_output_body(node_id: str, content: str) -> str:
+    """为缺少一级标题的正文补上 ``# {节点名}`` 前缀（人工确认归档兜底）。"""
+    text = (content or "").strip()
+    if not text or _REQUIRED_HEADING.search(text):
+        return text
+    title = node_display_name(node_id or "pending")
+    return f"# {title}\n\n{text}"
+
+
+def resolve_delivery_body_for_archive(
+    scope_id: str,
+    node_id: str,
+    report_body: str,
+) -> str:
+    """解析可用于归档的正文：pending 终稿 → 归档目录约定 md → 补标题兜底。"""
+    from synapse.rd_meeting.hitl_submission import load_archive_delivery_body
+
+    candidates = [
+        (report_body or "").strip(),
+        load_archive_delivery_body(scope_id, node_id).strip(),
+        normalize_node_output_body(node_id, (report_body or "").strip()),
+    ]
+    seen: set[str] = set()
+    for text in candidates:
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        if validate_node_output(node_id, text).ok:
+            return text
+    return (report_body or "").strip()
 
 
 def validate_node_output(node_id: str, content: str) -> NodeOutputValidation:

@@ -27,9 +27,18 @@ from synapse.rd_meeting.dynamic_prompt import build_meeting_user_turn_prompt
 from synapse.rd_meeting.hitl_form import (
     HitlGateFromReport,
     extract_hitl_from_agent_output,
-    infer_clarify_hitl_schema,
     normalize_hitl_schema,
     resolve_hitl_schema_for_gate,
+)
+from synapse.rd_meeting.hitl_lifecycle import (
+    HITL_CLARIFY_ROUND_KEY,
+    MAX_HOST_QUESTIONNAIRE_ATTEMPTS,
+    READY_FOR_NODE_REVIEW_KEY,
+    bump_clarify_round,
+    is_ready_for_node_review,
+    prompt_require_interactive_questionnaire,
+    reset_human_confirm_lifecycle,
+    set_ready_for_node_review,
 )
 from synapse.rd_meeting.hitl_submit import (
     clear_pending_questionnaire,
@@ -58,7 +67,7 @@ from synapse.rd_meeting.room_skill import (
 )
 from synapse.rd_meeting.user_context import drain_user_context_for_prompt
 from synapse.rd_meeting.userwork_sync import patch_userwork_summary
-from synapse.rd_meeting.validation import validate_node_output
+from synapse.rd_meeting.validation import resolve_delivery_body_for_archive, validate_node_output
 from synapse.rd_sop.manifest import (
     next_node_id,
 )
@@ -81,16 +90,6 @@ def _dry_run_enabled() -> bool:
         "true",
         "yes",
     )
-
-
-def _looks_like_final_delivery(node_id: str, report_body: str) -> bool:
-    """是否已形成可归档的节点终稿（含交付结论或满足产物校验）。"""
-    text = (report_body or "").strip()
-    if not text:
-        return False
-    if "# 交付结论" in text or "## 交付结论" in text:
-        return True
-    return validate_node_output(node_id, text).ok
 
 
 def _resolve_profile(profile_id: str):
@@ -384,6 +383,10 @@ class MeetingRoomOrchestrator:
                 room_state["status"] = "completed"
         else:
             room_state["current_node_id"] = node_id
+
+        if advance and next_id:
+            room_state.pop(READY_FOR_NODE_REVIEW_KEY, None)
+            room_state.pop(HITL_CLARIFY_ROUND_KEY, None)
 
         save_dev_status(sid, dev)
         save_room_state(sid, room_state)
@@ -701,6 +704,255 @@ class MeetingRoomOrchestrator:
         )
         return room_state
 
+    async def enter_node_review_gate(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        node_id: str,
+        binding: dict[str, Any],
+        report_body: str,
+        tokens_used: int,
+        duration_seconds: int,
+        stage_id: int,
+        ticket_title: str,
+        agent_pool: Any | None = None,
+        skipped_nodes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """human_confirm 且会中问卷已满足：装配 node_review 并进入 result_confirm 门控。"""
+        sid = scope_id.strip()
+        from synapse.rd_meeting.agent_session import resolve_meeting_orchestrator
+        from synapse.rd_meeting.pipeline import run_node_review_step
+
+        set_phase(sid, "result_gate")
+        review_payload: dict[str, Any] | None = None
+        try:
+            review_payload = await run_node_review_step(
+                scope_type=scope_type,  # type: ignore[arg-type]
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                binding=binding,
+                report_body=report_body,
+                tokens_used=tokens_used,
+                duration_seconds=duration_seconds,
+                stage_id=stage_id,
+                agent_pool=agent_pool,
+                orchestrator=resolve_meeting_orchestrator(agent_pool),
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("run_node_review_step failed scope=%s: %s", sid, exc)
+
+        pending: dict[str, Any] = {
+            "node_id": node_id,
+            "report_body": report_body,
+            "await_confirm": True,
+            "tokens_used": tokens_used,
+            "duration_seconds": duration_seconds,
+            "stage_id": stage_id,
+        }
+        if review_payload is not None:
+            pending["review_payload"] = review_payload
+        gate = self.mark_human_gate(
+            scope_type=scope_type,
+            scope_id=sid,
+            room_id=room_id,
+            node_id=node_id,
+            reason=f"{node_display_name(node_id)} 待人工确认总结，请审阅后通过/打回/异常",
+            ticket_title=ticket_title,
+            hitl_form_schema=None,
+            pending_delivery=pending,
+            intervention_kind="result_confirm",
+        )
+        append_history_event(
+            sid,
+            {
+                "event": "node_pending_confirm",
+                "room_id": room_id,
+                "node_id": node_id,
+                "tokens_used": tokens_used,
+                "duration_seconds": duration_seconds,
+                "review_summary_count": len((review_payload or {}).get("summaries") or []),
+                "review_artifact_count": len((review_payload or {}).get("artifacts") or []),
+            },
+        )
+        return {
+            "status": "human_intervention",
+            "node_id": node_id,
+            "skipped_nodes": skipped_nodes or None,
+            "pending_confirm": True,
+            "review_payload": review_payload,
+            **gate,
+        }
+
+    async def _ensure_host_interactive_questionnaire(
+        self,
+        *,
+        scope_type: str,
+        scope_id: str,
+        room_id: str,
+        node_id: str,
+        binding: dict[str, Any],
+        prompt: str,
+        report_body: str,
+        tokens_used: int,
+        duration_seconds: int,
+        stage_id: int,
+        ticket_title: str,
+        agent_pool: Any | None,
+        skipped_nodes: list[str] | None,
+        host_profile_id: str,
+        host_id: str,
+        run_host: Any,
+    ) -> dict[str, Any]:
+        """校验已通过但主控未交 interactive 问卷：强制重跑主控直至其生成（无系统兜底表单）。"""
+        sid = scope_id.strip()
+        round_n = bump_clarify_round(sid)
+        if round_n > MAX_HOST_QUESTIONNAIRE_ATTEMPTS:
+            append_history_event(
+                sid,
+                {
+                    "event": "node_failed",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "error": "主控多次未提交 interactive 会中问卷",
+                    "log_type": "warning",
+                    "agent_id": host_profile_id,
+                },
+            )
+            gate = self.mark_human_gate(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                reason=(
+                    f"{node_display_name(node_id)}：主控多次未提交会中问卷，"
+                    "请人工介入或调整主控提示词后重跑"
+                ),
+                ticket_title=ticket_title,
+                hitl_form_schema=resolve_hitl_schema_for_gate(
+                    binding,
+                    dynamic_schema=None,
+                    reason="主控未提交 interactive 问卷",
+                    intervention_kind="exception",
+                ),
+                pending_delivery={
+                    "node_id": node_id,
+                    "report_body": report_body,
+                    "await_confirm": False,
+                    "tokens_used": tokens_used,
+                    "duration_seconds": duration_seconds,
+                    "stage_id": stage_id,
+                },
+                intervention_kind="exception",
+            )
+            set_phase(sid, "exception_gate")
+            return {
+                "status": "human_intervention",
+                "node_id": node_id,
+                "exception": True,
+                **gate,
+            }
+
+        append_history_event(
+            sid,
+            {
+                "event": "host_retry",
+                "room_id": room_id,
+                "node_id": node_id,
+                "reason": "主控未提交 interactive 会中问卷，强制重跑",
+                "round": round_n,
+                "log_type": "warning",
+                "agent_id": host_profile_id,
+            },
+        )
+        retry_prompt = f"{prompt}\n\n{prompt_require_interactive_questionnaire()}"
+        retry_result = await run_host(retry_prompt)
+        retry_questionnaire = consume_pending_questionnaire(sid)
+        if retry_result.success:
+            report_body = str(retry_result.data or retry_result.error or report_body)
+
+        if retry_questionnaire and retry_questionnaire.get("schema"):
+            kind = (retry_questionnaire.get("kind") or "interactive").strip().lower()
+            if kind == "interactive":
+                return self._gate_from_tool_questionnaire(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    questionnaire={**retry_questionnaire, "kind": "interactive"},
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=duration_seconds,
+                    stage_id=stage_id,
+                    ticket_title=ticket_title,
+                    skipped_nodes=skipped_nodes,
+                )
+            if kind == "exception":
+                return self._gate_from_tool_questionnaire(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    questionnaire=retry_questionnaire,
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=duration_seconds,
+                    stage_id=stage_id,
+                    ticket_title=ticket_title,
+                    skipped_nodes=skipped_nodes,
+                )
+
+        hitl_gate = extract_hitl_from_agent_output(report_body)
+        report_body = hitl_gate.clean_body
+        if hitl_gate.explicit and hitl_gate.intervention_kind in ("interactive", "exception"):
+            return self._gate_from_agent_hitl(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                node_id=node_id,
+                binding=binding,
+                gate=hitl_gate,
+                report_body=report_body,
+                tokens_used=tokens_used,
+                duration_seconds=duration_seconds,
+                stage_id=stage_id,
+                ticket_title=ticket_title,
+                skipped_nodes=skipped_nodes,
+            )
+
+        rs = dict(load_room_state(sid) or {})
+        rs["status"] = "processing"
+        rs["rework_instruction"] = prompt_require_interactive_questionnaire()
+        save_room_state(sid, rs)
+        schedule_run_node(
+            scope_type=scope_type,
+            scope_id=sid,
+            room_id=room_id,
+            ticket_title=ticket_title,
+            agent_pool=agent_pool,
+        )
+        append_history_event(
+            sid,
+            {
+                "event": "awaiting_host_questionnaire",
+                "room_id": room_id,
+                "node_id": node_id,
+                "text": "主控仍未提交会中问卷，已自动续跑本节点",
+                "log_type": "info",
+                "agent_id": host_id,
+            },
+        )
+        return {
+            "status": "processing",
+            "node_id": node_id,
+            "awaiting_host_questionnaire": True,
+            "skipped_nodes": skipped_nodes or None,
+        }
+
     def confirm_node_delivery(
         self,
         *,
@@ -756,6 +1008,8 @@ class MeetingRoomOrchestrator:
             approved = mode_norm == "approve"
 
         if not approved:
+            set_ready_for_node_review(sid, False)
+            reset_human_confirm_lifecycle(sid)
             room_state = dict(room_state)
             room_state.pop("pending_delivery", None)
             room_state["status"] = "processing"
@@ -781,7 +1035,11 @@ class MeetingRoomOrchestrator:
             )
             return {"status": "rework", "node_id": node_id, "room_state": room_state}
 
-        report_body = str(pending.get("report_body") or "")
+        report_body = resolve_delivery_body_for_archive(
+            sid,
+            node_id,
+            str(pending.get("report_body") or ""),
+        )
         validation = validate_node_output(node_id, report_body)
         if not validation.ok:
             raise ValueError("node_output_validation_failed: " + "; ".join(validation.errors))
@@ -954,6 +1212,10 @@ class MeetingRoomOrchestrator:
         report_body = ""
         tool_questionnaire: dict[str, Any] | None = None
         clear_pending_questionnaire(sid)
+
+        host_run_fn: Any | None = None
+        host_run_prompt = ""
+        host_run_profile_id = str(binding.get("host_profile_id") or host_id or "default")
 
         if use_dry:
             report_body = (
@@ -1149,10 +1411,9 @@ class MeetingRoomOrchestrator:
                         "你上一次的回复既没有调用 `submit_hitl_questionnaire` 工具，"
                         "也没有按 `whalecloud-dev-tool-ask-user` 技能在末尾输出 "
                         "`<!-- hitl-questionnaire -->` 标记块；同时正文未通过节点校验。\n\n"
-                        "**本次重跑要求**：直接调用 `submit_hitl_questionnaire` 工具提交问卷，"
-                        "无需再写工具调用前的总结性文字；若已有可定稿内容，请按需求选择 "
-                        "`kind=result_confirm`（节点终稿确认），否则使用 "
-                        "`kind=interactive`（继续会中澄清）或 `kind=exception`（异常裁决）。\n"
+                        "**本次重跑要求**：直接调用 `submit_hitl_questionnaire` 工具提交 "
+                        "`kind=interactive` 会中问卷，无需再写工具调用前的总结性文字；"
+                        "**禁止** `kind=result_confirm`（完成总结由用户在问卷无补充后系统自动进入）。\n"
                         "调用工具后立即停止，不要重复总结。\n\n"
                         "**题目颗粒度（强约束）**：每个独立可决策点 = 一道独立题。\n"
                         "- 禁止把多个决策点合并成一道「整体确认 / 部分修改 / 拒绝」单选；\n"
@@ -1179,61 +1440,106 @@ class MeetingRoomOrchestrator:
                         },
                     )
 
+                host_run_fn = _run_host
+                host_run_prompt = prompt
+                host_run_profile_id = host_profile_id
+
         stage_id = int(dev.get("stage_id") or stage_id_for_node_id(node_id))
         duration = max(1, int(time.monotonic() - started))
 
-        # 工具提交的问卷优先于 LLM 终稿解析
-        if tool_questionnaire and tool_questionnaire.get("schema"):
-            return self._gate_from_tool_questionnaire(
-                scope_type=scope_type,
-                scope_id=sid,
-                room_id=room_id,
-                node_id=node_id,
-                binding=binding,
-                questionnaire=tool_questionnaire,
-                report_body=report_body,
-                tokens_used=tokens_used,
-                duration_seconds=duration,
-                stage_id=stage_id,
-                ticket_title=ticket_title,
-                skipped_nodes=skipped_nodes or None,
-            )
+        need_human_confirm = bool(binding.get("human_confirm"))
+        room_rs = load_room_state(sid) or {}
+        ready_for_review = is_ready_for_node_review(room_rs)
 
-        hitl_gate = extract_hitl_from_agent_output(report_body)
-        report_body = hitl_gate.clean_body
+        if need_human_confirm and not ready_for_review:
+            if tool_questionnaire and tool_questionnaire.get("schema"):
+                t_kind = (tool_questionnaire.get("kind") or "interactive").strip().lower()
+                if t_kind == "interactive":
+                    return self._gate_from_tool_questionnaire(
+                        scope_type=scope_type,
+                        scope_id=sid,
+                        room_id=room_id,
+                        node_id=node_id,
+                        binding=binding,
+                        questionnaire={**tool_questionnaire, "kind": "interactive"},
+                        report_body=report_body,
+                        tokens_used=tokens_used,
+                        duration_seconds=duration,
+                        stage_id=stage_id,
+                        ticket_title=ticket_title,
+                        skipped_nodes=skipped_nodes or None,
+                    )
+                if t_kind == "exception":
+                    return self._gate_from_tool_questionnaire(
+                        scope_type=scope_type,
+                        scope_id=sid,
+                        room_id=room_id,
+                        node_id=node_id,
+                        binding=binding,
+                        questionnaire=tool_questionnaire,
+                        report_body=report_body,
+                        tokens_used=tokens_used,
+                        duration_seconds=duration,
+                        stage_id=stage_id,
+                        ticket_title=ticket_title,
+                        skipped_nodes=skipped_nodes or None,
+                    )
 
-        if hitl_gate.explicit:
-            append_history_event(
-                sid,
-                {
-                    "event": "hitl_dynamic",
-                    "room_id": room_id,
-                    "node_id": node_id,
-                    "detail": (
-                        f"主控输出动态问卷 kind={hitl_gate.intervention_kind} "
-                        f"questions={len((hitl_gate.schema or {}).get('questions') or [])}"
-                    ),
-                    "log_type": "info",
-                    "agent_id": host_id,
-                },
-            )
-            return self._gate_from_agent_hitl(
-                scope_type=scope_type,
-                scope_id=sid,
-                room_id=room_id,
-                node_id=node_id,
-                binding=binding,
-                gate=hitl_gate,
-                report_body=report_body,
-                tokens_used=tokens_used,
-                duration_seconds=duration,
-                stage_id=stage_id,
-                ticket_title=ticket_title,
-                skipped_nodes=skipped_nodes or None,
-            )
+            hitl_gate = extract_hitl_from_agent_output(report_body)
+            report_body = hitl_gate.clean_body
+            if hitl_gate.explicit and hitl_gate.intervention_kind in ("interactive", "exception"):
+                append_history_event(
+                    sid,
+                    {
+                        "event": "hitl_dynamic",
+                        "room_id": room_id,
+                        "node_id": node_id,
+                        "detail": (
+                            f"主控输出动态问卷 kind={hitl_gate.intervention_kind} "
+                            f"questions={len((hitl_gate.schema or {}).get('questions') or [])}"
+                        ),
+                        "log_type": "info",
+                        "agent_id": host_id,
+                    },
+                )
+                return self._gate_from_agent_hitl(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    gate=hitl_gate,
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=duration,
+                    stage_id=stage_id,
+                    ticket_title=ticket_title,
+                    skipped_nodes=skipped_nodes or None,
+                )
+        else:
+            hitl_gate = extract_hitl_from_agent_output(report_body)
+            report_body = hitl_gate.clean_body
 
         validation = validate_node_output(node_id, report_body)
         if not validation.ok:
+            if not need_human_confirm:
+                append_history_event(
+                    sid,
+                    {
+                        "event": "node_validation_failed",
+                        "room_id": room_id,
+                        "node_id": node_id,
+                        "errors": validation.errors,
+                    },
+                )
+                rs_fail = dict(load_room_state(sid) or {})
+                rs_fail["status"] = "failed"
+                save_room_state(sid, rs_fail)
+                return {
+                    "status": "failed",
+                    "node_id": node_id,
+                    "validation_errors": validation.errors,
+                }
             append_history_event(
                 sid,
                 {
@@ -1278,149 +1584,57 @@ class MeetingRoomOrchestrator:
                 **gate,
             }
 
-        need_human_confirm = bool(binding.get("human_confirm"))
         if need_human_confirm:
-            if node_id == "req_clarify" and not _looks_like_final_delivery(node_id, report_body):
-                set_phase(sid, "clarify_gate")
-                pending = {
-                    "node_id": node_id,
-                    "report_body": report_body,
-                    "await_confirm": False,
-                    "tokens_used": tokens_used,
-                    "duration_seconds": duration,
-                    "stage_id": stage_id,
-                }
-                clarify_schema = infer_clarify_hitl_schema(
-                    report_body, scope_id=sid, node_id=node_id
-                )
-                append_history_event(
-                    sid,
-                    {
-                        "event": "hitl_dynamic",
-                        "room_id": room_id,
-                        "node_id": node_id,
-                        "detail": (
-                            "会中澄清门控："
-                            + (
-                                f"动态问卷 {len((clarify_schema or {}).get('questions') or [])} 题"
-                                if clarify_schema
-                                else "未解析到有效问卷（需 ask-user / hitl-questionnaire 或 .questions.json）"
-                            )
-                        ),
-                        "log_type": "info",
-                        "agent_id": host_id,
-                    },
-                )
-                gate = self.mark_human_gate(
+            if ready_for_review:
+                return await self.enter_node_review_gate(
                     scope_type=scope_type,
-                    scope_id=sid,
-                    room_id=room_id,
-                    node_id=node_id,
-                    reason=(
-                        f"{node_display_name(node_id)}：请填写需求澄清问卷，"
-                        "小鲸将根据您的回答继续委派协作智能体"
-                    ),
-                    ticket_title=ticket_title,
-                    hitl_form_schema=resolve_hitl_schema_for_gate(
-                        binding,
-                        dynamic_schema=clarify_schema,
-                        intervention_kind="interactive",
-                    ),
-                    pending_delivery=pending,
-                    intervention_kind="interactive",
-                )
-                clarify_hint = (
-                    "小鲸已整理协作产出，请在下方的澄清问卷中作答；提交后将续跑本节点。"
-                    if clarify_schema
-                    else (
-                        "未检测到有效澄清问卷。请小鲸通过技能 whalecloud-dev-tool-ask-user "
-                        "输出 ``hitl-questionnaire`` 后再次提交；亦可先在对话区说明，再重跑本节点。"
-                    )
-                )
-                append_history_event(
-                    sid,
-                    {
-                        "event": "node_pending_clarify",
-                        "room_id": room_id,
-                        "node_id": node_id,
-                        "text": clarify_hint,
-                        "agent_id": host_id,
-                        "log_type": "info",
-                    },
-                )
-                return {
-                    "status": "human_intervention",
-                    "node_id": node_id,
-                    "pending_confirm": False,
-                    "clarify_gate": True,
-                    **gate,
-                }
-
-            # human_confirm 节点：走 NODE_REVIEW pipeline 步骤装配「整体总结 / 工作摘要 /
-            # 产出物 / 人工输入框」四段 payload，前端 NodeReviewPanel 渲染；不再用
-            # hitl_form 多题问卷。
-            from synapse.rd_meeting.agent_session import resolve_meeting_orchestrator
-            from synapse.rd_meeting.pipeline import run_node_review_step
-
-            set_phase(sid, "result_gate")
-            try:
-                review_payload = await run_node_review_step(
-                    scope_type=scope_type,  # type: ignore[arg-type]
                     scope_id=sid,
                     room_id=room_id,
                     node_id=node_id,
                     binding=binding,
                     report_body=report_body,
                     tokens_used=tokens_used,
-                    duration_seconds=duration,
+                    duration_seconds=int(duration),
                     stage_id=stage_id,
+                    ticket_title=ticket_title,
                     agent_pool=agent_pool,
-                    orchestrator=resolve_meeting_orchestrator(agent_pool),
+                    skipped_nodes=skipped_nodes or None,
                 )
-            except Exception as exc:  # pragma: no cover - 装配失败降级
-                logger.warning("run_node_review_step failed scope=%s: %s", sid, exc)
-                review_payload = None
-
-            pending = {
-                "node_id": node_id,
-                "report_body": report_body,
-                "await_confirm": True,
-                "tokens_used": tokens_used,
-                "duration_seconds": duration,
-                "stage_id": stage_id,
-            }
-            if review_payload is not None:
-                pending["review_payload"] = review_payload
-            gate = self.mark_human_gate(
+            if host_run_fn is not None:
+                return await self._ensure_host_interactive_questionnaire(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    prompt=host_run_prompt,
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=int(duration),
+                    stage_id=stage_id,
+                    ticket_title=ticket_title,
+                    agent_pool=agent_pool,
+                    skipped_nodes=skipped_nodes or None,
+                    host_profile_id=host_run_profile_id,
+                    host_id=host_id,
+                    run_host=host_run_fn,
+                )
+            rs_wait = dict(load_room_state(sid) or {})
+            rs_wait["status"] = "processing"
+            rs_wait["rework_instruction"] = prompt_require_interactive_questionnaire()
+            save_room_state(sid, rs_wait)
+            schedule_run_node(
                 scope_type=scope_type,
                 scope_id=sid,
                 room_id=room_id,
-                node_id=node_id,
-                reason=f"{node_display_name(node_id)} 待人工确认总结，请审阅后通过/打回/异常",
                 ticket_title=ticket_title,
-                hitl_form_schema=None,  # NodeReviewPanel 不再使用 hitl_form_schema
-                pending_delivery=pending,
-                intervention_kind="result_confirm",
-            )
-            append_history_event(
-                sid,
-                {
-                    "event": "node_pending_confirm",
-                    "room_id": room_id,
-                    "node_id": node_id,
-                    "tokens_used": tokens_used,
-                    "duration_seconds": duration,
-                    "review_summary_count": len((review_payload or {}).get("summaries") or []),
-                    "review_artifact_count": len((review_payload or {}).get("artifacts") or []),
-                },
+                agent_pool=agent_pool,
             )
             return {
-                "status": "human_intervention",
+                "status": "processing",
                 "node_id": node_id,
+                "awaiting_host_questionnaire": True,
                 "skipped_nodes": skipped_nodes or None,
-                "pending_confirm": True,
-                "review_payload": review_payload,
-                **gate,
             }
 
         artifacts = write_node_deliverables(sid, stage_id, node_id, report_body)
@@ -1493,6 +1707,61 @@ def schedule_run_node(
 
     task = loop.create_task(_runner())
     _running_tasks[key] = task
+    return key
+
+
+def schedule_enter_node_review(
+    *,
+    scope_type: str,
+    scope_id: str,
+    room_id: str,
+    ticket_title: str = "",
+    agent_pool: Any | None = None,
+) -> str:
+    """用户会中问卷无补充后，异步进入 node_review 门控。"""
+    key = f"{room_id.strip() or scope_id.strip()}::node_review"
+    sid = scope_id.strip()
+    rid = room_id.strip()
+
+    async def _runner() -> None:
+        try:
+            orch = MeetingRoomOrchestrator()
+            rs = load_room_state(sid) or {}
+            pending = rs.get("pending_delivery") if isinstance(rs.get("pending_delivery"), dict) else {}
+            node_id = str(pending.get("node_id") or rs.get("current_node_id") or "")
+            if not node_id:
+                logger.warning("schedule_enter_node_review: missing node_id scope=%s", sid)
+                return
+            binding = resolve_node_binding(
+                node_id,
+                scope_type=scope_type,  # type: ignore[arg-type]
+                scope_id=sid,
+                ticket_title=ticket_title,
+            )
+            binding["node_id"] = node_id
+            report_body = str(pending.get("report_body") or "").strip()
+            await orch.enter_node_review_gate(
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=rid,
+                node_id=node_id,
+                binding=binding,
+                report_body=report_body,
+                tokens_used=int(pending.get("tokens_used") or 0),
+                duration_seconds=int(pending.get("duration_seconds") or 0),
+                stage_id=int(pending.get("stage_id") or stage_id_for_node_id(node_id)),
+                ticket_title=ticket_title,
+                agent_pool=agent_pool,
+            )
+        except Exception as exc:
+            logger.exception("schedule_enter_node_review failed scope=%s: %s", sid, exc)
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug("schedule_enter_node_review: no event loop scope=%s", sid)
+        return key
+    loop.create_task(_runner())
     return key
 
 
