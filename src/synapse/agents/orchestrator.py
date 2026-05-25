@@ -693,6 +693,7 @@ class AgentOrchestrator:
             while not task.done():
                 await asyncio.sleep(CHECK_INTERVAL)
                 elapsed = time.monotonic() - start
+                idle_s = time.monotonic() - last_progress_time
 
                 if hard_timeout > 0 and elapsed >= hard_timeout:
                     logger.warning(
