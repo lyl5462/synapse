@@ -54,7 +54,7 @@ from synapse.rd_meeting.user_context import (
     is_hitl_form_submission,
 )
 from synapse.rd_meeting.userwork_sync import build_title_index, patch_userwork_summary
-from synapse.rd_meeting.validation import resolve_delivery_body_for_archive, validate_node_output
+from synapse.rd_meeting.validation import resolve_delivery_body_for_archive
 from synapse.rd_sop.manifest import list_manifest_stages
 from synapse.rd_sop.nodes import (
     node_display_name,

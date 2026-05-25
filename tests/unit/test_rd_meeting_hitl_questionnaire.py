@@ -417,6 +417,47 @@ def test_coerce_boolean_and_text_do_not_require_input_enabled():
     assert len(schema["questions"]) == 4  # 含系统追加补充题
 
 
+def test_coerce_normalizes_yes_no_options_to_true_false():
+    schema = coerce_questionnaire_schema(
+        kind="interactive",
+        questions=[
+            {
+                "id": "q1",
+                "type": "single",
+                "title": "是否同意",
+                "options": [
+                    {"label": "是"},
+                    {"label": "否"},
+                ],
+            },
+        ],
+    )
+    q = schema["questions"][0]
+    assert q["render"]["optionStyle"] == "boolean"
+    values = {o["value"] for o in q["options"]}
+    assert values == {"true", "false"}
+
+
+def test_coerce_normalizes_python_bool_option_values():
+    schema = coerce_questionnaire_schema(
+        kind="interactive",
+        questions=[
+            {
+                "id": "q1",
+                "type": "single",
+                "title": "判断",
+                "options": [
+                    {"value": True, "label": "是"},
+                    {"value": False, "label": "否"},
+                ],
+            },
+        ],
+    )
+    q = schema["questions"][0]
+    assert q["render"]["optionStyle"] == "boolean"
+    assert [o["value"] for o in q["options"]] == ["true", "false"]
+
+
 def test_default_exception_schema_shape():
     schema = default_exception_hitl_schema("req_clarify", reason="解析失败")
     assert schema["type"] == "questionnaire"

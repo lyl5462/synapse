@@ -72,7 +72,10 @@ from synapse.rd_meeting.room_skill import (
 )
 from synapse.rd_meeting.user_context import drain_user_context_for_prompt
 from synapse.rd_meeting.userwork_sync import patch_userwork_summary
-from synapse.rd_meeting.validation import resolve_delivery_body_for_archive, validate_node_output
+from synapse.rd_meeting.validation import (
+    resolve_delivery_body_for_archive,
+    validate_node_archive_artifacts,
+)
 from synapse.rd_sop.manifest import (
     next_node_id,
 )
@@ -1077,18 +1080,13 @@ class MeetingRoomOrchestrator:
             node_id,
             str(pending.get("report_body") or ""),
         )
-        validation = validate_node_output(node_id, report_body)
-        if not validation.ok:
-            raise ValueError("node_output_validation_failed: " + "; ".join(validation.errors))
 
         stage_id = int(pending.get("stage_id") or stage_id_for_node_id(node_id))
         set_phase(sid, "document")
         artifacts = write_node_deliverables(sid, stage_id, node_id, report_body)
-        from synapse.rd_meeting.validation import validate_node_archive_files
-
-        file_val = validate_node_archive_files(sid, stage_id, node_id)
-        if not file_val.ok:
-            raise ValueError("node_archive_validation_failed: " + "; ".join(file_val.errors))
+        validation = validate_node_archive_artifacts(sid, stage_id, node_id)
+        if not validation.ok:
+            raise ValueError("node_archive_validation_failed: " + "; ".join(validation.errors))
         tokens_used = int(pending.get("tokens_used") or 0)
         duration = int(pending.get("duration_seconds") or 0)
 
@@ -1452,12 +1450,13 @@ class MeetingRoomOrchestrator:
                 )
 
                 # E：human_confirm 节点的「自动重跑一次」
-                # 触发：未通过工具提交问卷 + 终稿无标记块 + 校验失败
+                # 触发：未通过工具提交问卷 + 终稿无标记块 + 产出物文档校验失败
+                _retry_stage = int(dev.get("stage_id") or stage_id_for_node_id(node_id))
                 if (
                     bool(binding.get("human_confirm"))
                     and tool_questionnaire is None
                     and not extract_hitl_from_agent_output(report_body).explicit
-                    and not validate_node_output(node_id, report_body).ok
+                    and not validate_node_archive_artifacts(sid, _retry_stage, node_id).ok
                 ):
                     append_history_event(
                         sid,
@@ -1465,7 +1464,7 @@ class MeetingRoomOrchestrator:
                             "event": "host_retry",
                             "room_id": room_id,
                             "node_id": node_id,
-                            "reason": "主控未提交结构化问卷且终稿未通过校验，自动重跑一次",
+                            "reason": "主控未提交结构化问卷且产出物文档未通过校验，自动重跑一次",
                             "log_type": "warning",
                             "agent_id": host_profile_id,
                         },
@@ -1475,7 +1474,7 @@ class MeetingRoomOrchestrator:
                         "## ⚠️ 系统提示：上一次输出未提交合法问卷\n"
                         "你上一次的回复既没有调用 `submit_hitl_questionnaire` 工具，"
                         "也没有按 `whalecloud-dev-tool-ask-user` 技能在末尾输出 "
-                        "`<!-- hitl-questionnaire -->` 标记块；同时正文未通过节点校验。\n\n"
+                        "`<!-- hitl-questionnaire -->` 标记块；同时约定产出物文档未通过校验。\n\n"
                         "**本次重跑要求**：直接调用 `submit_hitl_questionnaire` 工具提交 "
                         "`kind=interactive` 会中问卷，无需再写工具调用前的总结性文字；"
                         "**禁止** `kind=result_confirm`（完成总结由用户在问卷无补充后系统自动进入）。\n"
@@ -1585,9 +1584,9 @@ class MeetingRoomOrchestrator:
             hitl_gate = extract_hitl_from_agent_output(report_body)
             report_body = hitl_gate.clean_body
 
-        validation = validate_node_output(node_id, report_body)
-        if not validation.ok:
-            if not need_human_confirm:
+        if need_human_confirm:
+            validation = validate_node_archive_artifacts(sid, stage_id, node_id)
+            if not validation.ok:
                 append_history_event(
                     sid,
                     {
@@ -1597,59 +1596,41 @@ class MeetingRoomOrchestrator:
                         "errors": validation.errors,
                     },
                 )
-                rs_fail = dict(load_room_state(sid) or {})
-                rs_fail["status"] = "failed"
-                save_room_state(sid, rs_fail)
-                return {
-                    "status": "failed",
-                    "node_id": node_id,
-                    "validation_errors": validation.errors,
-                }
-            append_history_event(
-                sid,
-                {
-                    "event": "node_validation_failed",
-                    "room_id": room_id,
-                    "node_id": node_id,
-                    "errors": validation.errors,
-                },
-            )
-            gate = self.mark_human_gate(
-                scope_type=scope_type,
-                scope_id=sid,
-                room_id=room_id,
-                node_id=node_id,
-                reason=(
-                    f"{node_display_name(node_id)} 产物质量/格式未达标，需人工介入："
-                    + "; ".join(validation.errors)
-                ),
-                ticket_title=ticket_title,
-                hitl_form_schema=resolve_hitl_schema_for_gate(
-                    binding,
-                    dynamic_schema=None,
-                    reason="; ".join(validation.errors),
+                gate = self.mark_human_gate(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    reason=(
+                        f"{node_display_name(node_id)} 产出物文档未达标，需人工介入："
+                        + "; ".join(validation.errors)
+                    ),
+                    ticket_title=ticket_title,
+                    hitl_form_schema=resolve_hitl_schema_for_gate(
+                        binding,
+                        dynamic_schema=None,
+                        reason="; ".join(validation.errors),
+                        intervention_kind="exception",
+                    ),
+                    pending_delivery={
+                        "node_id": node_id,
+                        "report_body": report_body,
+                        "await_confirm": False,
+                        "tokens_used": tokens_used,
+                        "duration_seconds": duration,
+                        "stage_id": stage_id,
+                    },
                     intervention_kind="exception",
-                ),
-                pending_delivery={
+                )
+                set_phase(sid, "exception_gate")
+                return {
+                    "status": "human_intervention",
                     "node_id": node_id,
-                    "report_body": report_body,
-                    "await_confirm": False,
-                    "tokens_used": tokens_used,
-                    "duration_seconds": duration,
-                    "stage_id": stage_id,
-                },
-                intervention_kind="exception",
-            )
-            set_phase(sid, "exception_gate")
-            return {
-                "status": "human_intervention",
-                "node_id": node_id,
-                "exception": True,
-                "validation_errors": validation.errors,
-                **gate,
-            }
+                    "exception": True,
+                    "validation_errors": validation.errors,
+                    **gate,
+                }
 
-        if need_human_confirm:
             if ready_for_review:
                 return await self.enter_node_review_gate(
                     scope_type=scope_type,
@@ -1703,6 +1684,25 @@ class MeetingRoomOrchestrator:
             }
 
         artifacts = write_node_deliverables(sid, stage_id, node_id, report_body)
+        validation = validate_node_archive_artifacts(sid, stage_id, node_id)
+        if not validation.ok:
+            append_history_event(
+                sid,
+                {
+                    "event": "node_validation_failed",
+                    "room_id": room_id,
+                    "node_id": node_id,
+                    "errors": validation.errors,
+                },
+            )
+            rs_fail = dict(load_room_state(sid) or {})
+            rs_fail["status"] = "failed"
+            save_room_state(sid, rs_fail)
+            return {
+                "status": "failed",
+                "node_id": node_id,
+                "validation_errors": validation.errors,
+            }
         out = self.on_node_complete(
             scope_type=scope_type,
             scope_id=sid,

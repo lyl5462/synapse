@@ -86,14 +86,30 @@ export interface HitlQuestionOption {
   selected?: boolean;
 }
 
-/** 归一化选项主键：避免 LLM 漏 value 导致全部选项共享 undefined 主键。 */
+/** 归一化选项主键：是/否、bool、True/False 统一为 true/false，保证选中态一致。 */
 function optionKey(o: HitlQuestionOption, idx: number): string {
+  if (typeof o.value === 'boolean') {
+    return o.value ? 'true' : 'false';
+  }
   const raw =
     (typeof o.value === 'string' && o.value.trim()) ||
     (typeof o.id === 'string' && o.id.trim()) ||
     (typeof o.label === 'string' && o.label.trim()) ||
     '';
-  return raw || `opt_${idx}`;
+  const text = raw.trim();
+  if (!text) return `opt_${idx}`;
+  const low = text.toLowerCase();
+  if (low === 'true' || low === 'yes' || low === 'y' || low === '1' || text === '是') return 'true';
+  if (low === 'false' || low === 'no' || low === 'n' || low === '0' || text === '否') return 'false';
+  return text;
+}
+
+function isAffirmativeOption(key: string, label?: string): boolean {
+  const k = (key || '').trim().toLowerCase();
+  const lb = (label || '').trim();
+  if (k === 'true' || k === 'yes' || k === 'y' || k === '1') return true;
+  if (lb === '是') return true;
+  return false;
 }
 
 export interface HitlQuestionRender {
@@ -145,15 +161,12 @@ function isQuestionnaire(schema: HitlFormSchema): boolean {
 }
 
 function isBooleanQuestion(q: HitlQuestion): boolean {
+  if (q.type === 'boolean') return true;
   if (q.render?.optionStyle === 'boolean') return true;
   const opts = q.options || [];
-  return (
-    opts.length === 2 &&
-    opts.every((o, idx) => {
-      const key = optionKey(o, idx);
-      return key === 'true' || key === 'false';
-    })
-  );
+  if (opts.length !== 2) return false;
+  const keys = opts.map((o, idx) => optionKey(o, idx));
+  return keys.includes('true') && keys.includes('false');
 }
 
 function accentClasses(accent?: string): { ring: string; bg: string; text: string; bar: string } {
@@ -251,12 +264,13 @@ const HitlQuestionnaireForm: React.FC<{
   const toggleOption = useCallback((q: HitlQuestion, value: string) => {
     if (preview) return;
     const multi = q.type === 'multiple' || q.render?.optionStyle === 'checkbox';
+    const boolQ = isBooleanQuestion(q);
     setSelections((prev) => {
       const next = new Set(prev[q.id]);
       if (multi) {
         if (next.has(value)) next.delete(value);
         else next.add(value);
-      } else if (next.has(value)) {
+      } else if (!boolQ && next.has(value)) {
         next.clear();
       } else {
         next.clear();
@@ -322,20 +336,21 @@ const HitlQuestionnaireForm: React.FC<{
           {opts.map((o, idx) => {
             const key = optionKey(o, idx);
             const active = sel.has(key);
-            const yes = key === 'true';
+            const yes = isAffirmativeOption(key, o.label);
             return (
               <motion.button
                 key={key}
                 type="button"
                 disabled={preview}
+                aria-pressed={active}
                 whileHover={preview ? undefined : { scale: 1.02 }}
                 whileTap={preview ? undefined : { scale: 0.98 }}
                 onClick={() => toggleOption(q, key)}
                 className={`flex-1 py-3 px-4 rounded-xl border text-sm font-medium transition-all ${
                   active
                     ? yes
-                      ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.15)]'
-                      : 'border-rose-500/60 bg-rose-500/15 text-rose-300 shadow-[0_0_20px_rgba(244,63,94,0.12)]'
+                      ? 'border-emerald-500/60 bg-emerald-500/15 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/40'
+                      : 'border-rose-500/60 bg-rose-500/15 text-rose-300 shadow-[0_0_20px_rgba(244,63,94,0.12)] ring-1 ring-rose-500/40'
                     : 'border-border/50 bg-background/40 text-muted-foreground hover:border-border'
                 }`}
               >

@@ -348,12 +348,16 @@ def coerce_questionnaire_schema(
             for opt_idx, opt in enumerate(raw_opts):
                 if not isinstance(opt, dict):
                     continue
-                value = (
-                    str(opt.get("value") or "").strip()
-                    or str(opt.get("id") or "").strip()
-                    or str(opt.get("label") or "").strip()
-                    or f"opt_{opt_idx}"
-                )
+                raw_val = opt.get("value")
+                if raw_val is not None and raw_val is not False and str(raw_val).strip() != "":
+                    value = _normalize_option_value(raw_val)
+                else:
+                    value = (
+                        str(opt.get("id") or "").strip()
+                        or str(opt.get("label") or "").strip()
+                        or f"opt_{opt_idx}"
+                    )
+                    value = _normalize_option_value(value) or value
                 normalized_opts.append(
                     {
                         "value": value,
@@ -366,6 +370,7 @@ def coerce_questionnaire_schema(
                     }
                 )
             entry["options"] = normalized_opts
+        _maybe_normalize_boolean_question(entry)
         # 选项题由前端/归一化自动附加人工输入框，不再要求 LLM 显式 inputEnabled
         if qtype in ("single", "multiple") and qid != HUMAN_SUPPLEMENT_QUESTION_ID:
             entry["inputEnabled"] = True
@@ -436,6 +441,54 @@ def _boolean_options() -> list[dict[str, Any]]:
         {"value": "true", "label": "是", "selected": False},
         {"value": "false", "label": "否", "selected": False},
     ]
+
+
+def _normalize_option_value(raw: Any) -> str:
+    """选项 value 归一化：bool / True / 是 → ``true``，避免前端选中态失配。"""
+    if isinstance(raw, bool):
+        return "true" if raw else "false"
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    low = text.lower()
+    if low in ("true", "yes", "y", "1", "是"):
+        return "true"
+    if low in ("false", "no", "n", "0", "否"):
+        return "false"
+    return text
+
+
+def _looks_like_boolean_options(opts: list[Any]) -> bool:
+    if len(opts) != 2:
+        return False
+    labels: set[str] = set()
+    values: set[str] = set()
+    for o in opts:
+        if not isinstance(o, dict):
+            return False
+        labels.add(str(o.get("label") or "").strip())
+        values.add(_normalize_option_value(o.get("value")) or str(o.get("label") or "").strip())
+    if labels <= {"是", "否"}:
+        return True
+    return values <= {"true", "false"}
+
+
+def _apply_boolean_question_shape(item: dict[str, Any]) -> None:
+    """是/否 判断题：统一 value=true/false + optionStyle=boolean。"""
+    item["type"] = "single"
+    item["options"] = _boolean_options()
+    render = dict(item.get("render") or {})
+    render["optionStyle"] = "boolean"
+    item["render"] = render
+
+
+def _maybe_normalize_boolean_question(entry: dict[str, Any]) -> None:
+    qtype = str(entry.get("type") or "single").strip().lower()
+    opts = entry.get("options")
+    opt_list = list(opts) if isinstance(opts, list) else []
+    style = str((entry.get("render") or {}).get("optionStyle") or "").strip().lower()
+    if qtype == "boolean" or style == "boolean" or _looks_like_boolean_options(opt_list):
+        _apply_boolean_question_shape(entry)
 
 
 def build_question(
@@ -712,6 +765,8 @@ def ensure_question_input_guardrails(questions: list[dict[str, Any]]) -> list[di
             item["type"] = "single"
             item["options"] = _boolean_options()
             item.setdefault("render", {})["optionStyle"] = "boolean"
+        elif qtype == "boolean" or _looks_like_boolean_options(list(opts) if isinstance(opts, list) else []):
+            _apply_boolean_question_shape(item)
         item["inputEnabled"] = True
         if not item.get("inputPlaceholder"):
             item["inputPlaceholder"] = "或者你的答案："

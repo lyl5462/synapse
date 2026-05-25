@@ -1,4 +1,4 @@
-"""Phase 3 / §8.2：节点产物轻量校验（可选，不通过则不记完成）。"""
+"""Phase 3 / §8.2：节点产物轻量校验（仅针对归档目录约定 Markdown 文件）。"""
 
 from __future__ import annotations
 
@@ -19,8 +19,18 @@ _MIN_BODY_LEN = 80
 _REQUIRED_HEADING = re.compile(r"^#\s+\S+", re.MULTILINE)
 
 
+def _artifact_md_names(node_id: str) -> list[str]:
+    names: list[str] = []
+    for name in node_output_artifacts(node_id):
+        if not name or name.startswith("（"):
+            continue
+        if name.lower().endswith(".md"):
+            names.append(name)
+    return names
+
+
 def normalize_node_output_body(node_id: str, content: str) -> str:
-    """为缺少一级标题的正文补上 ``# {节点名}`` 前缀（人工确认归档兜底）。"""
+    """为缺少一级标题的正文补上 ``# {节点名}`` 前缀（写盘兜底）。"""
     text = (content or "").strip()
     if not text or _REQUIRED_HEADING.search(text):
         return text
@@ -33,39 +43,75 @@ def resolve_delivery_body_for_archive(
     node_id: str,
     report_body: str,
 ) -> str:
-    """解析可用于归档的正文：pending 终稿 → 归档目录约定 md → 补标题兜底。"""
+    """解析可用于写盘的正文：优先归档约定 md，其次 pending 终稿，最后补标题兜底。"""
     from synapse.rd_meeting.hitl_submission import load_archive_delivery_body
 
-    candidates = [
-        (report_body or "").strip(),
-        load_archive_delivery_body(scope_id, node_id).strip(),
-        normalize_node_output_body(node_id, (report_body or "").strip()),
-    ]
-    seen: set[str] = set()
-    for text in candidates:
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        if validate_node_output(node_id, text).ok:
-            return text
-    return (report_body or "").strip()
+    archive = load_archive_delivery_body(scope_id, node_id).strip()
+    if archive:
+        return archive
+    pending = (report_body or "").strip()
+    if pending:
+        return pending
+    return normalize_node_output_body(node_id, pending)
 
 
-def validate_node_output(node_id: str, content: str) -> NodeOutputValidation:
-    """校验 archive result 类 Markdown：非空、有标题、最低长度。"""
+def _validate_markdown_body(node_id: str, content: str, *, filename: str = "") -> list[str]:
+    prefix = f"{filename}: " if filename else ""
     text = (content or "").strip()
     errors: list[str] = []
 
     if len(text) < _MIN_BODY_LEN:
-        errors.append(f"产物过短（至少 {_MIN_BODY_LEN} 字符）")
+        errors.append(f"{prefix}产物过短（至少 {_MIN_BODY_LEN} 字符）")
 
     if not _REQUIRED_HEADING.search(text):
-        errors.append("产物须包含 Markdown 一级标题（# ）")
+        errors.append(f"{prefix}须包含 Markdown 一级标题（# ）")
 
     entry = get_node_manifest_entry(node_id)
     if entry and entry.get("type") == "ai":
         if "交付" not in text and "完成" not in text and "结论" not in text:
-            errors.append("AI 节点产物建议包含「结论/完成/交付」等验收表述")
+            errors.append(f"{prefix}AI 节点产物建议包含「结论/完成/交付」等验收表述")
+
+    return errors
+
+
+def validate_node_output(node_id: str, content: str) -> NodeOutputValidation:
+    """（内部）校验 Markdown 正文格式；对外请使用 ``validate_node_archive_artifacts``。"""
+    errors = _validate_markdown_body(node_id, content)
+    return NodeOutputValidation(ok=len(errors) == 0, errors=errors)
+
+
+def validate_node_archive_artifacts(
+    scope_id: str,
+    stage_id: int,
+    node_id: str,
+) -> NodeOutputValidation:
+    """校验归档目录下 NODE_OUTPUTS 约定的 Markdown 产出物（存在性 + 内容）。"""
+    from synapse.rd_meeting.paths import scope_dir
+
+    names = _artifact_md_names(node_id)
+    if not names:
+        return NodeOutputValidation(ok=True, errors=[])
+
+    dest = scope_dir(scope_id) / "archive" / str(stage_id) / node_id
+    if not dest.is_dir():
+        return NodeOutputValidation(
+            ok=False,
+            errors=[f"归档目录不存在：archive/{stage_id}/{node_id}/"],
+        )
+
+    errors: list[str] = []
+    for name in names:
+        path = dest / name
+        rel = f"archive/{stage_id}/{node_id}/{name}"
+        if not path.is_file():
+            errors.append(f"缺少约定产出物：{name}（{rel}）")
+            continue
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"{name}: 读取失败（{exc}）")
+            continue
+        errors.extend(_validate_markdown_body(node_id, body, filename=name))
 
     return NodeOutputValidation(ok=len(errors) == 0, errors=errors)
 
@@ -75,18 +121,14 @@ def validate_node_archive_files(
     stage_id: int,
     node_id: str,
 ) -> NodeOutputValidation:
-    """P3：校验 NODE_OUTPUTS 约定的 Markdown 文件是否已写入归档目录。"""
+    """P3：仅校验约定 Markdown 文件是否存在于归档目录（不含内容）。"""
     from synapse.rd_meeting.paths import scope_dir
 
     errors: list[str] = []
     dest = scope_dir(scope_id) / "archive" / str(stage_id) / node_id
     if not dest.is_dir():
         return NodeOutputValidation(ok=False, errors=["归档目录不存在"])
-    for name in node_output_artifacts(node_id):
-        if not name or name.startswith("（"):
-            continue
-        if not name.lower().endswith(".md"):
-            continue
+    for name in _artifact_md_names(node_id):
         if not (dest / name).is_file():
             errors.append(f"缺少约定产物：{name}")
     return NodeOutputValidation(ok=len(errors) == 0, errors=errors)

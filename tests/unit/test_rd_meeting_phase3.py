@@ -11,6 +11,7 @@ from synapse.rd_meeting.service import MeetingRoomService
 from synapse.rd_meeting.validation import (
     normalize_node_output_body,
     resolve_delivery_body_for_archive,
+    validate_node_archive_artifacts,
     validate_node_output,
 )
 
@@ -87,6 +88,29 @@ def test_list_pending_human_intervention(synapse_work_home):
     assert any(p["scope_id"] == scope_id for p in pending)
 
 
+def test_validate_node_archive_artifacts_checks_file_content(tmp_path, monkeypatch):
+    from synapse.rd_meeting.paths import scope_dir
+
+    scope_id = "21883304"
+    node_id = "boundary"
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", lambda: tmp_path / "work")
+    dest = scope_dir(scope_id) / "archive" / "1" / node_id
+    dest.mkdir(parents=True)
+
+    (dest / "边界确认说明.md").write_text("too short", encoding="utf-8")
+    bad = validate_node_archive_artifacts(scope_id, 1, node_id)
+    assert not bad.ok
+    assert any("边界确认说明.md" in e for e in bad.errors)
+
+    good_body = (
+        "# 边界确认结论\n\n"
+        "本节点已完成交付，结论如下：模块边界清晰，无跨产品影响。\n" * 3
+    )
+    (dest / "边界确认说明.md").write_text(good_body, encoding="utf-8")
+    good = validate_node_archive_artifacts(scope_id, 1, node_id)
+    assert good.ok
+
+
 def test_validate_node_output_rejects_short_body():
     bad = validate_node_output("boundary", "too short")
     assert not bad.ok
@@ -128,7 +152,7 @@ def test_resolve_delivery_body_prefers_archive_md(tmp_path, monkeypatch):
         "这是没有一级标题的 pending 摘要，" + "内容较短。" * 5,
     )
     assert resolved.startswith("# 需求澄清")
-    assert validate_node_output(node_id, resolved).ok
+    assert validate_node_archive_artifacts(scope_id, 1, node_id).ok
 
 
 @pytest.mark.asyncio
