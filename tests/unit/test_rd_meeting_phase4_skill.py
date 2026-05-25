@@ -153,12 +153,14 @@ def test_build_room_skill_prompt_renders_context_vars(host_binding, monkeypatch)
     assert "需求分析阶段的边界确认任务" in rendered
     # node_intent 作为会议目标独立展示
     assert "识别跨产品边界" in rendered, "node_intent 应作为「会议目标」字段展示"
-    # 技能使用路径：预注入 SKILL 全文，不提供 list_skills
+    # 技能使用路径：摘要 + get_skill_info 按需加载，不提供 list_skills
     assert "## 工具与技能使用" in rendered
-    assert "已挂载技能" in rendered
+    assert "已挂载技能（摘要）" in rendered
+    assert "get_skill_info" in rendered
     assert "run_skill_script" in rendered
+    assert "SKILL 全文已注入" not in rendered
     assert "不确定时用 `list_skills`" not in rendered
-    assert "不提供 list_skills" in rendered
+    assert "本会话不提供 list_skills" in rendered
 
 
 def test_build_room_skill_prompt_worker_view(host_binding):
@@ -185,9 +187,10 @@ def test_build_room_skill_prompt_worker_view(host_binding):
     assert "## 四、系统信息" in rendered
     # Worker 也必须看到技能与工具裁剪说明
     assert "## 工具与技能使用" in rendered
-    assert "已挂载技能" in rendered
+    assert "已挂载技能（摘要）" in rendered
+    assert "get_skill_info" in rendered
     assert "不确定时用 `list_skills`" not in rendered
-    assert "不提供 list_skills" in rendered
+    assert "本会话不提供 list_skills" in rendered
     assert "你的能力档案" in rendered
 
 

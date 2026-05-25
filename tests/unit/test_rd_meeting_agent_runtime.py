@@ -67,12 +67,18 @@ def test_skill_ids_from_profile_inclusive():
     assert "whalecloud-dev-tool-doc-generate" in ids
 
 
-def test_apply_meeting_agent_runtime_appends_skill_section():
+def test_apply_meeting_agent_runtime_appends_skill_summary_not_full_body():
+    from synapse.skills.registry import SkillEntry
+
     agent = MagicMock()
-    skill = MagicMock()
-    skill.body = "# Skill body\n\nDo work."
-    skill.skill_dir = "/tmp/skills/foo"
-    agent.skill_loader.get_skill.return_value = skill
+    entry = SkillEntry(
+        skill_id="foo-skill",
+        name="Foo",
+        description="Short summary for meeting.",
+        when_to_use="When doing foo tasks.",
+    )
+    agent.skill_registry.get.return_value = entry
+    agent.skill_loader = None
     agent._tools = [{"name": "run_shell"}, {"name": "list_skills"}]
     agent._meeting_orig_tools = None
     agent.tool_catalog = MagicMock()
@@ -84,7 +90,6 @@ def test_apply_meeting_agent_runtime_appends_skill_section():
         skills=["foo-skill"],
         skills_mode=SkillsMode.INCLUSIVE,
     )
-    agent.skill_loader.get_skill.return_value = skill
 
     out = apply_meeting_agent_runtime(
         agent,
@@ -93,8 +98,11 @@ def test_apply_meeting_agent_runtime_appends_skill_section():
         base_system_prompt="BASE-PROMPT",
     )
     assert "BASE-PROMPT" in out
-    assert "## 已挂载技能（SKILL 全文" in out
-    assert "Skill body" in out
+    assert "## 已挂载技能（摘要）" in out
+    assert "Short summary for meeting." in out
+    assert "get_skill_info" in out
+    assert "Skill body" not in out
+    assert "# Skill body" not in out
     assert "list_skills" not in {t["name"] for t in agent._tools}
 
 

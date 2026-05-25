@@ -601,9 +601,9 @@ def build_meeting_runtime_header(
         lines.append("- 你是子 Agent，**禁止再发起委派**（不要调用 delegate_to_agent / delegate_parallel），也无法直接联系其他 Worker；任何「需要别人配合」的诉求都改为在产出里向小鲸说明。")
         lines.append("- 仅在「你的能力档案」描述的能力边界内执行任务；超出边界时**坦诚向小鲸说明**并建议改派，不要勉强执行、不要伪造结果。")
         lines.append(
-            "- **接到子任务后**，优先按 system prompt 中「已挂载技能（SKILL 全文）」执行；"
-            "档案中的 skill 若已注入则**禁止**再拉全量技能列表；"
-            "按 SKILL 指引使用 `run_skill_script` 或 `run_shell` / 读写工具，**禁止**跳过 SKILL 硬做。"
+            "- **接到子任务后**，先看 system「已挂载技能（摘要）」确认 skill_id，"
+            "再 `get_skill_info(skill_id)` 加载完整 SKILL.md 后执行；"
+            "**禁止**拉全量技能列表，**禁止**未读 SKILL 就用通用工具硬做。"
         )
         lines.append("- 输出必须自给自足：含结论、证据、产物路径；Markdown 一级标题，结尾含「结论」「完成」或「交付」。")
         lines.append("- 你看不到主会话历史，也看不到其他 Worker 的能力卡片。工单/产品/系统参数在 system prompt「系统信息」段；委派 message 中的分析性描述若无来源标注，**不得采信**，须自行通过 SKILL 从代码/文档/工单获取事实。")
@@ -622,13 +622,16 @@ def build_meeting_runtime_header(
         )
     lines.append("- **外部技能（SKILL）执行路径（强约束）**：")
     lines.append(
-        "  1. 本 Agent 的 SKILL 全文已注入 system prompt「已挂载技能」段；从「你的能力档案」确认具备的 skill_id 后**按需执行**。"
+        "  1. system「已挂载技能（摘要）」仅含元数据；"
+        "从「参会能力卡片」/「你的能力档案」确认 skill_id 后，"
+        "**必须先** `get_skill_info(skill_id)` 加载完整 SKILL.md。"
     )
     lines.append(
-        "  2. 当需要脚本参数细节或参考文档时，可再调用 `get_skill_info` / `get_skill_reference`。"
+        "  2. 需要参考文档时用 `get_skill_reference`；有预置脚本时用 `run_skill_script`。"
     )
     lines.append(
-        "  3. 技能包含脚本时，使用 `run_skill_script` 执行。"
+        "  3. instruction-only 技能按 get_skill_info 指引写代码并 `run_shell` / 读写文件；"
+        "**禁止**列举全库技能（本会话不提供 list_skills）。"
     )
     lines.append("- 任何结论必须可由源码、文档或工单证据回溯；严禁虚构。")
     lines.append("")
