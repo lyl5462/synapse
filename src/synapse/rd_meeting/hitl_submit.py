@@ -107,6 +107,26 @@ def submit_questionnaire(
         },
     )
 
+    try:
+        from synapse.rd_meeting.agent_activity import record_output, resolve_binding_for_profile
+        from synapse.rd_meeting.binding import resolve_node_binding
+
+        binding = resolve_node_binding(node_id)
+        host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+        act = resolve_binding_for_profile(scope_id, node_id, host_id, host_profile_id=host_id)
+        record_output(
+            act,
+            output_kind="questionnaire",
+            title="提交人机问卷",
+            summary=summary.strip() or str(schema.get("title") or ""),
+            detail={
+                "kind": kind_norm,
+                "question_count": len(schema.get("questions") or []),
+            },
+        )
+    except Exception as exc:
+        logger.debug("hitl_submit activity record failed: %s", exc)
+
     return {
         "scope_id": scope_id,
         "room_id": room_id,

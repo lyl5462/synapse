@@ -336,22 +336,6 @@ def coerce_questionnaire_schema(
         qtitle = str(q.get("title") or "").strip()
         if not qtitle:
             raise ValueError(f"questions[{idx}].title 不能为空")
-        # 选项题（single / multiple）必须显式允许用户在选项之外手动输入，
-        # 避免 HITL 流程被有限选项卡死（详见 meeting-room 规则 §5.1(c)）。
-        # boolean / text / textarea 不强制：boolean 二选一即明确；text/textarea 本身是输入框。
-        # 系统自动追加的补充题（human_supplement）由后续 append_human_supplement_question 处理，
-        # 跳过此校验。
-        if (
-            qtype in ("single", "multiple")
-            and qid != HUMAN_SUPPLEMENT_QUESTION_ID
-            and not bool(q.get("inputEnabled"))
-        ):
-            raise ValueError(
-                f"questions[{idx}] (id={qid!r}, type={qtype}) 必须设置 "
-                "``inputEnabled: true`` 与 ``inputPlaceholder``，"
-                "以便用户在给定选项都不满意时手动填写答复"
-                "（见 whalecloud-dev-tool-meeting-room 规则 §5.1(c)）。"
-            )
         entry = dict(q)
         entry["id"] = qid
         entry["type"] = qtype
@@ -382,6 +366,11 @@ def coerce_questionnaire_schema(
                     }
                 )
             entry["options"] = normalized_opts
+        # 选项题由前端/归一化自动附加人工输入框，不再要求 LLM 显式 inputEnabled
+        if qtype in ("single", "multiple") and qid != HUMAN_SUPPLEMENT_QUESTION_ID:
+            entry["inputEnabled"] = True
+            if not entry.get("inputPlaceholder"):
+                entry["inputPlaceholder"] = "或者你的答案："
         valid_questions.append(entry)
 
     schema: dict[str, Any] = {
@@ -698,6 +687,38 @@ def default_exception_hitl_schema(
     }
 
 
+def ensure_question_input_guardrails(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """组件级护栏（后端归一化）：每题可输入；无选项的选择题降级为 textarea。"""
+    out: list[dict[str, Any]] = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        item = dict(q)
+        qid = str(item.get("id") or "").strip()
+        qtype = str(item.get("type") or "single").strip().lower()
+        if qid == HUMAN_SUPPLEMENT_QUESTION_ID or qtype in ("text", "textarea"):
+            out.append(item)
+            continue
+        opts = item.get("options")
+        has_opts = isinstance(opts, list) and len(opts) > 0
+        if qtype in ("single", "multiple") and not has_opts:
+            item["type"] = "textarea"
+            item["options"] = []
+            if not item.get("inputPlaceholder"):
+                item["inputPlaceholder"] = "请输入您的回答…"
+            out.append(item)
+            continue
+        if qtype == "boolean" and not has_opts:
+            item["type"] = "single"
+            item["options"] = _boolean_options()
+            item.setdefault("render", {})["optionStyle"] = "boolean"
+        item["inputEnabled"] = True
+        if not item.get("inputPlaceholder"):
+            item["inputPlaceholder"] = "或者你的答案："
+        out.append(item)
+    return out
+
+
 def normalize_hitl_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
     """归一化 schema：补全 questionnaire v1.0 元数据与题目进度。"""
     if not schema or not isinstance(schema, dict):
@@ -710,7 +731,8 @@ def normalize_hitl_schema(schema: dict[str, Any] | None) -> dict[str, Any] | Non
         out["type"] = QUESTIONNAIRE_TYPE
     if not out.get("version"):
         out["version"] = QUESTIONNAIRE_VERSION
-    merged = append_human_supplement_question(list(questions))
+    guarded = ensure_question_input_guardrails(list(questions))
+    merged = append_human_supplement_question(guarded)
     out["questions"] = attach_question_progress(merged)
     return out
 

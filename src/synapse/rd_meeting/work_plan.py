@@ -199,6 +199,19 @@ def submit_work_plan(
             "item_count": len(normalized),
         },
     )
+    try:
+        from synapse.rd_meeting.agent_activity import record_output, resolve_binding_for_profile
+
+        binding = resolve_binding_for_profile(scope_id, node_id, host_id, host_profile_id=host_id)
+        record_output(
+            binding,
+            output_kind="work_plan",
+            title="工作安排计划",
+            summary=summary_text,
+            detail={"plan_id": plan.get("plan_id"), "item_count": len(normalized)},
+        )
+    except Exception as exc:
+        logger.debug("work_plan activity record failed: %s", exc)
     return plan
 
 

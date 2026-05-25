@@ -328,10 +328,37 @@ export interface MeetingAgentDelegationRun {
   started_at?: number;
 }
 
+export interface ProcessingHistoryEntry {
+  id?: string;
+  seq?: number;
+  ts?: string;
+  category: 'input' | 'output' | 'tool' | 'skill' | string;
+  category_label?: string;
+  display_title?: string;
+  title?: string;
+  summary?: string;
+  source?: 'human' | 'system' | 'host' | string;
+  source_label?: string;
+  input_kind?: string;
+  output_kind?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  result_preview?: string;
+  skill_name?: string;
+  skill_tool?: string;
+  script_name?: string;
+  success?: boolean;
+  duration_ms?: number;
+  detail?: Record<string, unknown>;
+  node_id?: string;
+  profile_id?: string;
+}
+
 export interface MeetingAgentContextEntry {
   session_id: string;
   profile_id: string;
   role: 'host' | 'worker' | string;
+  current_node_id?: string;
   preferred_endpoint?: string;
   default_cwd?: string;
   system_prompt?: string;
@@ -341,6 +368,9 @@ export interface MeetingAgentContextEntry {
   messages?: { role?: string; content?: unknown }[];
   messages_count?: number;
   messages_truncated?: boolean;
+  processing_history?: ProcessingHistoryEntry[];
+  processing_history_count?: number;
+  offline_from_disk?: boolean;
   task?: MeetingAgentContextTask | null;
   delegation_runs?: MeetingAgentDelegationRun[];
   last_usage?: Record<string, unknown> | null;
@@ -349,6 +379,7 @@ export interface MeetingAgentContextEntry {
 export interface MeetingAgentContextsPayload {
   room_id: string;
   scope_id?: string | null;
+  current_node_id?: string;
   host_session_id?: string;
   agents: MeetingAgentContextEntry[];
   sub_agents?: MeetingRoomLivePayload['sub_agents'];

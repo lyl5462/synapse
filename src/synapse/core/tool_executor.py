@@ -803,6 +803,23 @@ class ToolExecutor:
                 logger.info(f"[Tool] {tool_name} ❌ 错误: {result_str}")
 
             elapsed = time.time() - t0
+            dt_ms = int(elapsed * 1000)
+
+            try:
+                agent_ref = self._agent_ref
+                if agent_ref is not None:
+                    from synapse.rd_meeting.agent_activity import try_record_tool_from_agent
+
+                    try_record_tool_from_agent(
+                        agent_ref,
+                        tool_name=tool_name,
+                        tool_input=tool_input if isinstance(tool_input, dict) else {},
+                        result_preview=result_str,
+                        success=success,
+                        duration_ms=dt_ms,
+                    )
+            except Exception as _act_exc:
+                logger.debug("tool_executor activity record: %s", _act_exc)
 
             # 记录到 task_monitor
             if use_parallel_safe_monitor and task_monitor:

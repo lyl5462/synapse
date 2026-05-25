@@ -137,7 +137,7 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 
 ## 场景化生成指引
 
-1. **问答 / 澄清**：按议题拆 3–8 题，优先 `single`/`multiple`；开放补充用 `inputEnabled: true`。
+1. **问答 / 澄清**：按议题拆 3–8 题，优先 `single`/`multiple`；每题末尾补充输入框与问卷末「还有什么需要补充」由桌面端组件**自动追加**，无需手写 `inputEnabled` 或补充题。
 2. **结果确认**：先 1–2 题审阅质量/风险，最后一题固定 `decision` + 可选 `comment`（`textarea`）。
 3. **异常反馈**：标题点明异常类型；`decision` 或等价单选区分「继续重试 / 跳过 / 终止」；`context` 写清影响范围。
 

@@ -11,6 +11,68 @@ const { TextArea } = Input;
 
 const OPTION_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+const HUMAN_SUPPLEMENT_QUESTION_ID = 'human_supplement';
+const HUMAN_SUPPLEMENT_TITLE = '请问您还有什么需要补充的吗？';
+const DEFAULT_CUSTOM_PLACEHOLDER = '或者你的答案：';
+
+function isFreeTextQuestion(q: HitlQuestion): boolean {
+  return q.type === 'textarea' || q.type === 'text';
+}
+
+function buildSupplementQuestion(): HitlQuestion {
+  return {
+    id: HUMAN_SUPPLEMENT_QUESTION_ID,
+    type: 'textarea',
+    title: HUMAN_SUPPLEMENT_TITLE,
+    context: '选填。此处为自由补充说明，不会覆盖您在上方各题中的选择；无补充可留空直接提交。',
+    required: false,
+    render: { showProgress: true },
+  };
+}
+
+/** 渲染前护栏：每题可输入；末尾追加统一补充题（与后端 normalize 对齐）。 */
+function normalizeQuestionsForRender(raw: HitlQuestion[]): HitlQuestion[] {
+  const mapped = raw.map((q) => {
+    const item: HitlQuestion = { ...q };
+    if (item.id === HUMAN_SUPPLEMENT_QUESTION_ID) return item;
+    if (isFreeTextQuestion(item)) return item;
+    const opts = item.options || [];
+    if ((item.type === 'single' || item.type === 'multiple') && opts.length === 0) {
+      return {
+        ...item,
+        type: 'textarea',
+        options: [],
+        inputPlaceholder: item.inputPlaceholder || '请输入您的回答…',
+      };
+    }
+    return {
+      ...item,
+      inputEnabled: true,
+      inputPlaceholder: item.inputPlaceholder || DEFAULT_CUSTOM_PLACEHOLDER,
+    };
+  });
+  const hasSupplement = mapped.some(
+    (q) =>
+      q.id === HUMAN_SUPPLEMENT_QUESTION_ID ||
+      (q.title || '').includes(HUMAN_SUPPLEMENT_TITLE),
+  );
+  const withSupplement = hasSupplement ? mapped : [...mapped, buildSupplementQuestion()];
+  return withSupplement.map((q, idx, arr) => ({
+    ...q,
+    render: {
+      ...q.render,
+      showProgress: q.render?.showProgress !== false,
+      progress: { current: idx + 1, total: arr.length },
+    },
+  }));
+}
+
+function normalizeSchemaForRender(schema: HitlFormSchema): HitlFormSchema {
+  const raw = schema.questions || [];
+  if (raw.length === 0) return schema;
+  return { ...schema, questions: normalizeQuestionsForRender(raw) };
+}
+
 /* ── Questionnaire v1.0 ── */
 export type HitlQuestionType = 'single' | 'multiple' | 'boolean' | 'text' | 'textarea';
 export type HitlOptionStyle = 'radio' | 'checkbox' | 'boolean';
@@ -136,7 +198,8 @@ const HitlQuestionnaireForm: React.FC<{
   onSubmit,
   submitLabel = '提交确认',
 }) => {
-  const questions = schema.questions || [];
+  const normalizedSchema = useMemo(() => normalizeSchemaForRender(schema), [schema]);
+  const questions = normalizedSchema.questions || [];
   const stepped = schema.render?.layout === 'stepped';
   const accent = accentClasses(schema.render?.accent);
   const [step, setStep] = useState(0);
@@ -185,14 +248,8 @@ const HitlQuestionnaireForm: React.FC<{
     }).length;
   }, [questions, selections, customTexts]);
 
-  const clearCustomForQuestion = useCallback((qid: string) => {
-    setCustomTexts((p) => ({ ...p, [qid]: '' }));
-    setShowCustom((p) => ({ ...p, [qid]: false }));
-  }, []);
-
   const toggleOption = useCallback((q: HitlQuestion, value: string) => {
     if (preview) return;
-    clearCustomForQuestion(q.id);
     const multi = q.type === 'multiple' || q.render?.optionStyle === 'checkbox';
     setSelections((prev) => {
       const next = new Set(prev[q.id]);
@@ -207,13 +264,12 @@ const HitlQuestionnaireForm: React.FC<{
       }
       return { ...prev, [q.id]: next };
     });
-  }, [preview, clearCustomForQuestion]);
+  }, [preview]);
 
   const setCustomForQuestion = useCallback((q: HitlQuestion, text: string) => {
     if (preview) return;
     setCustomTexts((p) => ({ ...p, [q.id]: text }));
     if (text.trim()) {
-      setSelections((prev) => ({ ...prev, [q.id]: new Set() }));
       setShowCustom((p) => ({ ...p, [q.id]: true }));
     }
   }, [preview]);
@@ -221,7 +277,7 @@ const HitlQuestionnaireForm: React.FC<{
   const questionAnswered = (q: HitlQuestion): boolean => {
     const sel = selections[q.id];
     const custom = customTexts[q.id]?.trim();
-    if (q.type === 'textarea' || q.type === 'text') return !!custom || !q.required;
+    if (isFreeTextQuestion(q)) return !!custom || !q.required;
     if (q.required) return (sel?.size ?? 0) > 0 || !!custom;
     return true;
   };
@@ -340,6 +396,30 @@ const HitlQuestionnaireForm: React.FC<{
     );
   };
 
+  const renderPerQuestionInput = (q: HitlQuestion) => {
+    if (isFreeTextQuestion(q)) return null;
+    return (
+      <div
+        className={`mt-3 rounded-xl border-2 p-0.5 transition-all ${
+          (customTexts[q.id] || '').trim()
+            ? 'border-amber-400/70 bg-amber-500/10 shadow-[0_0_16px_rgba(245,158,11,0.18)] ring-1 ring-amber-400/30'
+            : 'border-dashed border-border/50 bg-muted/15'
+        }`}
+      >
+        <div className="px-2.5 pt-1.5 text-[10px] font-medium text-amber-300/90">
+          您的回答{optsLength(q) > 0 ? '（可与上方选项配合；仅填此项亦可）' : ''}
+        </div>
+        <Input
+          disabled={preview}
+          value={customTexts[q.id] || ''}
+          onChange={(e) => setCustomForQuestion(q, e.target.value)}
+          placeholder={q.inputPlaceholder || DEFAULT_CUSTOM_PLACEHOLDER}
+          className="border-0 bg-transparent text-xs text-foreground shadow-none focus:shadow-none"
+        />
+      </div>
+    );
+  };
+
   const renderQuestionBody = (q: HitlQuestion) => (
     <div className="space-y-1">
       <div className="flex items-start justify-between gap-2">
@@ -369,26 +449,7 @@ const HitlQuestionnaireForm: React.FC<{
         />
       )}
       {optsLength(q) > 0 ? renderOptions(q) : null}
-      {q.inputEnabled && q.type !== 'textarea' && q.type !== 'text' ? (
-        <div
-          className={`mt-3 rounded-xl border-2 p-0.5 transition-all ${
-            (customTexts[q.id] || '').trim()
-              ? 'border-amber-400/70 bg-amber-500/10 shadow-[0_0_16px_rgba(245,158,11,0.18)] ring-1 ring-amber-400/30'
-              : 'border-dashed border-border/50 bg-muted/15'
-          }`}
-        >
-          <div className="px-2.5 pt-1.5 text-[10px] font-medium text-amber-300/90">
-            自定义回答（与上方选项互斥）
-          </div>
-          <Input
-            disabled={preview}
-            value={customTexts[q.id] || ''}
-            onChange={(e) => setCustomForQuestion(q, e.target.value)}
-            placeholder={q.inputPlaceholder || '输入后将清空已选选项…'}
-            className="border-0 bg-transparent text-xs text-foreground shadow-none focus:shadow-none"
-          />
-        </div>
-      ) : null}
+      {renderPerQuestionInput(q)}
     </div>
   );
 

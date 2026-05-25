@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Drawer, Empty, Segmented, Spin, Tag, Tooltip } from 'antd';
 import {
   Activity,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   Bot,
   BrainCircuit,
   ChevronDown,
@@ -25,6 +27,7 @@ import {
   type MeetingAgentContextEntry,
   type MeetingAgentContextsPayload,
   type MeetingAgentDelegationRun,
+  type ProcessingHistoryEntry,
   type SkillExecutionEntry,
 } from '../../../api/meetingRoomService';
 
@@ -42,6 +45,151 @@ interface Props {
   synapseApiBase: string;
   roomId: string;
   agent: AgentContextTarget | null;
+}
+
+type ActivityCategory = 'all' | 'input' | 'output' | 'tool' | 'skill';
+
+const ACTIVITY_CATEGORY_META: Record<
+  Exclude<ActivityCategory, 'all'>,
+  { label: string; icon: React.ReactNode; chip: string; dot: string; glow: string }
+> = {
+  input: {
+    label: '输入',
+    icon: <ArrowDownToLine className="w-3.5 h-3.5" />,
+    chip: 'bg-sky-500/12 text-sky-200 border-sky-500/35',
+    dot: 'bg-sky-400 shadow-[0_0_12px_rgba(56,189,248,0.55)]',
+    glow: 'from-sky-500/20 via-sky-500/5 to-transparent',
+  },
+  output: {
+    label: '输出',
+    icon: <ArrowUpFromLine className="w-3.5 h-3.5" />,
+    chip: 'bg-emerald-500/12 text-emerald-200 border-emerald-500/35',
+    dot: 'bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.55)]',
+    glow: 'from-emerald-500/20 via-emerald-500/5 to-transparent',
+  },
+  tool: {
+    label: '工具',
+    icon: <Wrench className="w-3.5 h-3.5" />,
+    chip: 'bg-slate-500/12 text-slate-200 border-slate-500/35',
+    dot: 'bg-slate-300 shadow-[0_0_10px_rgba(203,213,225,0.35)]',
+    glow: 'from-slate-400/15 via-slate-400/5 to-transparent',
+  },
+  skill: {
+    label: '技能',
+    icon: <Sparkles className="w-3.5 h-3.5" />,
+    chip: 'bg-amber-500/12 text-amber-200 border-amber-500/35',
+    dot: 'bg-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.55)]',
+    glow: 'from-amber-500/20 via-amber-500/5 to-transparent',
+  },
+};
+
+function formatActivityTime(ts?: string): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function ProcessingHistoryCard({ entry, isLast }: { entry: ProcessingHistoryEntry; isLast?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const cat = (entry.category || 'tool') as Exclude<ActivityCategory, 'all'>;
+  const meta = ACTIVITY_CATEGORY_META[cat] || ACTIVITY_CATEGORY_META.tool;
+  const title = entry.display_title || entry.title || meta.label;
+  const summary = (entry.summary || entry.result_preview || '').trim();
+  const hasDetail =
+    Boolean(summary) ||
+    entry.tool_input != null ||
+    Boolean(entry.detail && Object.keys(entry.detail).length);
+
+  return (
+    <div className="relative flex gap-3 group">
+      <div className="flex flex-col items-center shrink-0 w-5 pt-1">
+        <div className={`w-2.5 h-2.5 rounded-full ring-2 ring-[color:var(--panel,#0f0f12)] ${meta.dot}`} />
+        {!isLast ? (
+          <div className="w-px flex-1 min-h-[12px] mt-1 bg-gradient-to-b from-border/80 to-border/20" />
+        ) : null}
+      </div>
+      <div
+        className={`flex-1 min-w-0 mb-3 rounded-xl border border-border/50 overflow-hidden transition-all duration-200 hover:border-border/80 hover:shadow-lg hover:shadow-black/20 bg-gradient-to-br ${meta.glow}`}
+      >
+        <button
+          type="button"
+          className="w-full text-left px-3 py-2.5 flex items-start gap-2"
+          onClick={() => hasDetail && setExpanded((v) => !v)}
+        >
+          <span
+            className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md border shrink-0 ${meta.chip}`}
+          >
+            {meta.icon}
+            {entry.category_label || meta.label}
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-foreground/95 truncate">{title}</span>
+              {entry.source_label ? (
+                <span className="text-[10px] text-muted-foreground/80">{entry.source_label}</span>
+              ) : null}
+              {entry.duration_ms != null && entry.duration_ms > 0 ? (
+                <span className="text-[10px] font-mono text-muted-foreground/70">{entry.duration_ms}ms</span>
+              ) : null}
+              {entry.success === false ? (
+                <Tag color="error" className="text-[10px] leading-none m-0 px-1 py-0">失败</Tag>
+              ) : null}
+            </div>
+            {!expanded && summary ? (
+              <p className="text-[11px] text-muted-foreground/90 mt-1 line-clamp-2 whitespace-pre-wrap">{summary}</p>
+            ) : null}
+          </div>
+          <span className="text-[10px] font-mono text-muted-foreground/60 shrink-0 tabular-nums">
+            {formatActivityTime(entry.ts)}
+          </span>
+          {hasDetail ? (
+            expanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0 mt-0.5" />
+            )
+          ) : null}
+        </button>
+        {expanded && hasDetail ? (
+          <div className="px-3 pb-3 pt-0 space-y-2 border-t border-border/30">
+            {summary ? (
+              <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-words font-mono text-foreground/85 bg-black/20 rounded-lg p-2.5 max-h-48 overflow-y-auto custom-scrollbar">
+                {summary}
+              </pre>
+            ) : null}
+            {entry.tool_input != null ? (
+              <div>
+                <div className="text-[10px] text-muted-foreground mb-1">工具参数</div>
+                <pre className="text-[10.5px] font-mono whitespace-pre-wrap break-words bg-black/25 rounded-lg p-2 max-h-36 overflow-y-auto custom-scrollbar">
+                  {typeof entry.tool_input === 'string'
+                    ? entry.tool_input
+                    : JSON.stringify(entry.tool_input, null, 2)}
+                </pre>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ProcessingHistoryTimeline({ entries }: { entries: ProcessingHistoryEntry[] }) {
+  if (!entries.length) {
+    return (
+      <p className="text-xs text-muted-foreground text-center py-10">
+        当前节点暂无处理记录；节点执行后将在此展示输入、输出、工具与技能调用
+      </p>
+    );
+  }
+  return (
+    <div className="py-1">
+      {entries.map((e, i) => (
+        <ProcessingHistoryCard key={e.id || `${e.seq}-${i}`} entry={e} isLast={i === entries.length - 1} />
+      ))}
+    </div>
+  );
 }
 
 type MsgRole = 'system' | 'user' | 'assistant' | 'tool' | 'unknown';
@@ -682,8 +830,8 @@ export function MeetingAgentContextDrawer({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [payload, setPayload] = useState<MeetingAgentContextsPayload | null>(null);
-  const [view, setView] = useState<'all' | 'prompt' | 'messages'>('all');
-  const [roleFilter, setRoleFilter] = useState<MsgRole | 'all'>('all');
+  const [view, setView] = useState<'all' | 'prompt' | 'history'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<ActivityCategory>('all');
 
   const load = useCallback(async () => {
     const base = (synapseApiBase || '').trim();
@@ -704,7 +852,7 @@ export function MeetingAgentContextDrawer({
     if (!open) {
       setPayload(null);
       setView('all');
-      setRoleFilter('all');
+      setCategoryFilter('all');
     }
   }, [open, agent?.profileId, load]);
 
@@ -747,6 +895,24 @@ export function MeetingAgentContextDrawer({
     if (hint && hint > listed) return hint;
     return listed || undefined;
   }, [entry?.task?.tools_total_hint, taskTools.length]);
+
+  const processingHistory = useMemo<ProcessingHistoryEntry[]>(() => {
+    return entry?.processing_history || [];
+  }, [entry?.processing_history]);
+
+  const filteredHistory = useMemo(() => {
+    if (categoryFilter === 'all') return processingHistory;
+    return processingHistory.filter((e) => e.category === categoryFilter);
+  }, [processingHistory, categoryFilter]);
+
+  const categoryCounts = useMemo(() => {
+    const out: Partial<Record<Exclude<ActivityCategory, 'all'>, number>> = {};
+    for (const e of processingHistory) {
+      const c = e.category as Exclude<ActivityCategory, 'all'>;
+      if (c) out[c] = (out[c] || 0) + 1;
+    }
+    return out;
+  }, [processingHistory]);
 
   const messages = useMemo<NormalizedMessage[]>(() => {
     if (!entry?.messages?.length) return [];
@@ -871,7 +1037,7 @@ export function MeetingAgentContextDrawer({
             options={[
               { label: '全部', value: 'all' },
               { label: 'Prompt', value: 'prompt' },
-              { label: `Messages (${messages.length})`, value: 'messages' },
+              { label: `处理历史 (${processingHistory.length})`, value: 'history' },
             ]}
           />
         </div>
@@ -965,44 +1131,50 @@ export function MeetingAgentContextDrawer({
               </>
             )}
 
-            {(view === 'all' || view === 'messages') && (
+            {(view === 'all' || view === 'history') && (
               <div className="rounded-xl border border-border/60 bg-[color:var(--panel,#1c1c1f)]/60 overflow-hidden">
                 <div className="px-3 py-2 border-b border-border/40 flex items-center gap-2 flex-wrap">
-                  <MessageSquareText className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="text-xs font-medium">对话消息</span>
+                  <ScrollText className="w-3.5 h-3.5 text-violet-400" />
+                  <span className="text-xs font-medium">处理历史</span>
+                  {entry?.current_node_id || payload?.current_node_id ? (
+                    <Tag className="text-[10px] m-0 border-border/50 bg-muted/30 font-mono">
+                      节点 {entry?.current_node_id || payload?.current_node_id}
+                    </Tag>
+                  ) : null}
                   <span className="text-[10px] font-mono text-muted-foreground">
-                    {filteredMessages.length}/{messages.length}
+                    {filteredHistory.length}/{processingHistory.length}
                   </span>
                   <div className="ml-auto flex items-center gap-1 flex-wrap">
-                    {(['all', 'system', 'user', 'assistant', 'tool'] as const).map((r) => {
-                      const active = roleFilter === r;
-                      const count = r === 'all' ? messages.length : roleCounts[r as MsgRole] || 0;
-                      if (r !== 'all' && count === 0) return null;
+                    {(['all', 'input', 'output', 'tool', 'skill'] as const).map((c) => {
+                      const active = categoryFilter === c;
+                      const count =
+                        c === 'all'
+                          ? processingHistory.length
+                          : categoryCounts[c as Exclude<ActivityCategory, 'all'>] || 0;
+                      if (c !== 'all' && count === 0) return null;
+                      const label =
+                        c === 'all'
+                          ? '全部'
+                          : ACTIVITY_CATEGORY_META[c as Exclude<ActivityCategory, 'all'>].label;
                       return (
                         <button
-                          key={r}
+                          key={c}
                           type="button"
-                          onClick={() => setRoleFilter(r)}
+                          onClick={() => setCategoryFilter(c)}
                           className={`text-[10px] px-1.5 py-0.5 rounded-md border transition-colors ${
                             active
-                              ? 'bg-blue-500/20 border-blue-500/40 text-blue-200'
+                              ? 'bg-violet-500/20 border-violet-500/40 text-violet-200'
                               : 'border-border/40 text-muted-foreground hover:text-foreground hover:border-border'
                           }`}
                         >
-                          {r === 'all' ? '全部' : r} · {count}
+                          {label} · {count}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-                <div className="p-3 space-y-3 max-h-[min(60vh,560px)] overflow-y-auto custom-scrollbar">
-                  {filteredMessages.length === 0 ? (
-                    <p className="text-xs text-muted-foreground text-center py-6">
-                      暂无对应消息
-                    </p>
-                  ) : (
-                    filteredMessages.map((m) => <MessageCard key={m.index} msg={m} />)
-                  )}
+                <div className="p-3 max-h-[min(62vh,580px)] overflow-y-auto custom-scrollbar">
+                  <ProcessingHistoryTimeline entries={filteredHistory} />
                 </div>
               </div>
             )}

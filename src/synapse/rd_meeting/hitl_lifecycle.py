@@ -20,7 +20,6 @@ _PROMPT_REQUIRE_INTERACTIVE = """
 1. 直接调用 ``submit_hitl_questionnaire(kind="interactive", ...)``，题目覆盖本节点待用户确认的决策点；
 2. **禁止**使用 ``kind=result_confirm``（节点完成总结由系统在用户确认问卷后自动进入 NodeReview）；
 3. 调用工具后立即停止，不要重复总结正文。
-4. 问卷末尾系统会自动追加「请问您还有什么需要补充的吗？」；用户在该题留空才表示可进入完成总结。
 """
 
 

@@ -600,7 +600,6 @@ def build_meeting_runtime_header(
         lines.append("- 必须熟悉本工单对应的产品信息（产品文档 / 仓库代码 / 历史工单），所有决策都要基于产品事实；缺少产品事实时可以拒绝或报错，**不得臆造**。")
         lines.append("- 你是子 Agent，**禁止再发起委派**（不要调用 delegate_to_agent / delegate_parallel），也无法直接联系其他 Worker；任何「需要别人配合」的诉求都改为在产出里向小鲸说明。")
         lines.append("- 仅在「你的能力档案」描述的能力边界内执行任务；超出边界时**坦诚向小鲸说明**并建议改派，不要勉强执行、不要伪造结果。")
-        lines.append("- **事实先于 SKILL（强约束）**：执行需求澄清、模块功能等分析型 SKILL 前，须先完成代码 materialize/检索、`get_doc` 或相似工单拉取（按 SKILL Phase 0）；**禁止**跳过事实收集直接按 Host 预置框架出结论。")
         lines.append("- **接到子任务后，必须先**对「你的能力档案」里与任务相关的 skill 调用 `get_skill_info(skill_id)` 加载 SKILL.md，再按 SKILL 指引执行（`run_skill_script` 或 shell / 读写工具）；**禁止**不看 SKILL 直接用通用工具硬做。")
         lines.append("- 输出必须自给自足：含结论、证据、产物路径；Markdown 一级标题，结尾含「结论」「完成」或「交付」。")
         lines.append("- 你看不到主会话历史，也看不到其他 Worker 的能力卡片。工单/产品/系统参数在 system prompt「系统信息」段；委派 message 中的分析性描述若无来源标注，**不得采信**，须自行通过 SKILL 从代码/文档/工单获取事实。")

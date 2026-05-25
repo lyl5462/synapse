@@ -114,17 +114,7 @@
 
 只要决策语义允许「同时选中多个」，就**必须**用 `multiple`，**禁止**强行拆成多个 `boolean` 或 `single` 互相覆盖。
 
-**(c) 每题必须支持人工输入（`inputEnabled: true`）**
-
-除「补充题（系统自动追加）」与纯文本输入题（`text` / `textarea`，本身就是输入框）外，**所有** `boolean` / `single` / `multiple` 题都必须显式设置：
-
-```json
-{ "id": "...", "type": "single", "title": "...", "options": [...],
-  "inputEnabled": true,
-  "inputPlaceholder": "或者你的答案：" }
-```
-
-这是为了保证用户在「给定选项都不满意」时仍可手动填写答复，避免 HITL 流程被有限选项卡死。**禁止**为了「答复更标准化」而把 `inputEnabled` 关掉。
+> **组件护栏**：桌面端 `MeetingHitlForm` 会为每道题自动附加人工输入框，并在问卷末尾追加「还有什么需要补充的吗？」；**无需**在 `questions` 里设置 `inputEnabled` 或手写补充题。
 
 #### 5.2 `summary` 字段约束
 

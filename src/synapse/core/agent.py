@@ -1037,6 +1037,19 @@ class Agent:
                 return idx, out, None, None
             finally:
                 dt_ms = int((time.time() - t0) * 1000)
+                try:
+                    from synapse.rd_meeting.agent_activity import try_record_tool_from_agent
+
+                    try_record_tool_from_agent(
+                        self,
+                        tool_name=tool_name,
+                        tool_input=tool_input if isinstance(tool_input, dict) else {},
+                        result_preview=result_str,
+                        success=success,
+                        duration_ms=dt_ms,
+                    )
+                except Exception as _act_exc:  # pragma: no cover
+                    logger.debug("meeting activity tool record: %s", _act_exc)
                 if task_monitor:
                     if use_parallel_safe_monitor:
                         async with self._task_monitor_lock:
@@ -6805,6 +6818,18 @@ class Agent:
                         sound=settings.desktop_notify_sound,
                     )
                 )
+
+        try:
+            from synapse.rd_meeting.agent_activity import try_record_output_from_agent
+
+            try_record_output_from_agent(
+                self,
+                output_kind="llm_response",
+                title="智能体反馈",
+                summary=str(final_response or ""),
+            )
+        except Exception as _out_exc:  # pragma: no cover
+            logger.debug("meeting activity output record: %s", _out_exc)
 
         return TaskResult(
             success=True,

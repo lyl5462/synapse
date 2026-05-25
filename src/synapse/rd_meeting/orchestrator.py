@@ -17,6 +17,11 @@ from synapse.rd_meeting.agent_session import (
     ensure_host_session,
     host_session_id,
 )
+from synapse.rd_meeting.agent_activity import (
+    record_input,
+    resolve_binding_for_profile,
+    set_agent_activity_binding,
+)
 from synapse.rd_meeting.agent_trace import append_event as trace_append_event
 from synapse.rd_meeting.agent_trace import write_agent_meta
 from synapse.rd_meeting.artifacts import write_node_deliverables
@@ -321,6 +326,22 @@ class MeetingRoomOrchestrator:
                 )
             except Exception as exc:  # pragma: no cover
                 logger.debug("write agent meta failed pid=%s: %s", target_pid, exc)
+            try:
+                dev_mr = load_dev_status(scope_id) or {}
+                mr = dev_mr.get("meeting_room")
+                room_id = str(mr.get("room_id") or "").strip() if isinstance(mr, dict) else ""
+                host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+                set_agent_activity_binding(
+                    agent,
+                    scope_id=scope_id,
+                    node_id=nid or "pending",
+                    profile_id=target_pid,
+                    host_profile_id=host_id,
+                    role=role,
+                    room_id=room_id,
+                )
+            except Exception as exc:
+                logger.debug("set_agent_activity_binding failed pid=%s: %s", target_pid, exc)
         return reused_host_prompt
 
     def on_node_complete(
@@ -1027,6 +1048,22 @@ class MeetingRoomOrchestrator:
                     "agent_id": "user",
                 },
             )
+            try:
+                from synapse.rd_meeting.agent_activity import record_host_human_input
+                from synapse.rd_meeting.binding import resolve_node_binding
+
+                binding = resolve_node_binding(node_id)
+                host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+                record_host_human_input(
+                    sid,
+                    node_id,
+                    host_id,
+                    input_kind="summary_feedback",
+                    title="人类驳回总结",
+                    summary=comment.strip(),
+                )
+            except Exception as exc:
+                logger.debug("hitl reject activity record failed: %s", exc)
             schedule_run_node(
                 scope_type=scope_type,
                 scope_id=sid,
@@ -1089,6 +1126,22 @@ class MeetingRoomOrchestrator:
                 "agent_id": "user",
             },
         )
+        try:
+            from synapse.rd_meeting.agent_activity import record_host_human_input
+            from synapse.rd_meeting.binding import resolve_node_binding
+
+            binding = resolve_node_binding(node_id)
+            host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+            record_host_human_input(
+                sid,
+                node_id,
+                host_id,
+                input_kind="summary_feedback",
+                title="人类确认通过",
+                summary=comment.strip() or "用户确认节点产出",
+            )
+        except Exception as exc:
+            logger.debug("hitl approve activity record failed: %s", exc)
         return {"status": "approved", **out, "room_state": rs}
 
     async def run_current_node(
@@ -1318,6 +1371,18 @@ class MeetingRoomOrchestrator:
                     },
                 )
                 meeting_session = ensure_host_session(room_id, host_profile_id)
+
+                host_act = resolve_binding_for_profile(
+                    sid, node_id, host_profile_id, host_profile_id=host_profile_id
+                )
+                record_input(
+                    host_act,
+                    source="system",
+                    input_kind="node_task",
+                    title="节点任务指令",
+                    summary=prompt[:1200],
+                    detail={"reused_host_prompt_cache": reused_prompt},
+                )
 
                 async def _run_host(message: str) -> Any:
                     bind_meeting_agent_session(host_agent, meeting_session)

@@ -84,9 +84,21 @@ def agent_dir(scope_id: str, profile_id: str) -> Path:
 
 
 def agent_node_dir(scope_id: str, profile_id: str, node_id: str) -> Path:
-    """智能体按节点分桶的目录：``.../<profile_id>/nodes/<node_id>/``。"""
+    """智能体按节点分桶的目录：``.../<profile_id>/nodes/<node_id>/``（legacy trace）。"""
     nseg = sanitize_work_order_segment(node_id or "pending")
     return agent_dir(scope_id, profile_id) / "nodes" / nseg
+
+
+def agent_sop_node_dir(scope_id: str, node_id: str) -> Path:
+    """SOP 节点目录：``work/<scope>/agents/<node_id>/``。"""
+    nseg = sanitize_work_order_segment(node_id or "pending")
+    return agents_root(scope_id) / nseg
+
+
+def agent_sop_profile_dir(scope_id: str, node_id: str, profile_id: str) -> Path:
+    """智能体节点活动目录：``work/<scope>/agents/<node_id>/<profile_id>/``。"""
+    pseg = sanitize_work_order_segment(profile_id or "default")
+    return agent_sop_node_dir(scope_id, node_id) / pseg
 
 
 def is_work_order_directory(path: Path, *, work: Path | None = None) -> bool:

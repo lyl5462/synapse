@@ -337,43 +337,50 @@ def test_coerce_granularity_can_be_disabled():
     )
 
 
-def test_coerce_rejects_single_without_input_enabled():
-    """选项题（single / multiple）必须 ``inputEnabled: true``，否则拒绝。"""
-    with pytest.raises(ValueError) as excinfo:
-        coerce_questionnaire_schema(
-            kind="interactive",
-            questions=[
-                {
-                    "id": "decision",
-                    "type": "single",
-                    "title": "请选择",
-                    "options": [
-                        {"value": "ok", "label": "同意"},
-                        {"value": "no", "label": "拒绝"},
-                    ],
-                }
-            ],
-        )
-    assert "inputEnabled" in str(excinfo.value)
+def test_coerce_auto_enables_input_for_single_without_flag():
+    """选项题无需 LLM 显式 inputEnabled；coerce 会自动打开。"""
+    schema = coerce_questionnaire_schema(
+        kind="interactive",
+        questions=[
+            {
+                "id": "decision",
+                "type": "single",
+                "title": "请选择",
+                "options": [
+                    {"value": "ok", "label": "同意"},
+                    {"value": "no", "label": "拒绝"},
+                ],
+            }
+        ],
+    )
+    assert schema["questions"][0]["inputEnabled"] is True
 
 
-def test_coerce_rejects_multiple_without_input_enabled():
-    with pytest.raises(ValueError) as excinfo:
-        coerce_questionnaire_schema(
-            kind="interactive",
-            questions=[
-                {
-                    "id": "tags",
-                    "type": "multiple",
-                    "title": "影响范围（可多选）",
-                    "options": [
-                        {"value": "a", "label": "A 模块"},
-                        {"value": "b", "label": "B 模块"},
-                    ],
-                }
-            ],
-        )
-    assert "inputEnabled" in str(excinfo.value)
+def test_coerce_auto_enables_input_for_multiple_without_flag():
+    schema = coerce_questionnaire_schema(
+        kind="interactive",
+        questions=[
+            {
+                "id": "tags",
+                "type": "multiple",
+                "title": "影响范围（可多选）",
+                "options": [
+                    {"value": "a", "label": "A 模块"},
+                    {"value": "b", "label": "B 模块"},
+                ],
+            }
+        ],
+    )
+    assert schema["questions"][0]["inputEnabled"] is True
+
+
+def test_normalize_guardrail_empty_options_becomes_textarea():
+    from synapse.rd_meeting.hitl_form import ensure_question_input_guardrails
+
+    out = ensure_question_input_guardrails(
+        [{"id": "q1", "type": "single", "title": "无选项题", "options": []}]
+    )
+    assert out[0]["type"] == "textarea"
 
 
 def test_coerce_allows_multiple_choice_with_input():

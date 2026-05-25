@@ -92,10 +92,7 @@ def _format_section_system(
         for n in (node_outputs or [])
         if str(n).strip() and not str(n).strip().startswith("（")
     ]
-    if outs:
-        lines.append("- **会议产出**（与运行时头「会议产出」一致；归档文件名必须逐字匹配以下清单）：")
-        for n in outs:
-            lines.append(f"  - `{n}`")
+    
     return "\n".join(lines) if lines else "（无系统字段）"
 
 

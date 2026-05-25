@@ -1115,6 +1115,25 @@ class AgentOrchestrator:
             _start = time.time()
             exit_reason = "completed"
             try:
+                if is_sub_agent and getattr(agent, "_org_context", False):
+                    try:
+                        from synapse.rd_meeting.agent_activity import (
+                            record_input,
+                            resolve_agent_activity_binding,
+                        )
+
+                        act_binding = resolve_agent_activity_binding(agent)
+                        if act_binding:
+                            record_input(
+                                act_binding,
+                                source="host",
+                                input_kind="delegation",
+                                title="收到委派请求",
+                                summary=message[:1200],
+                            )
+                    except Exception as _in_exc:
+                        logger.debug("worker delegation input record: %s", _in_exc)
+
                 usage_scene = "sub_agent_chat" if is_sub_agent else "main_agent_chat"
                 session_messages = session.context.get_messages()
                 result = await agent.chat_with_session(
@@ -1189,6 +1208,24 @@ class AgentOrchestrator:
                     elapsed_s=round(time.time() - _start, 2),
                     exit_reason=exit_reason,
                 )
+                if is_sub_agent and getattr(agent, "_org_context", False):
+                    try:
+                        from synapse.rd_meeting.agent_activity import (
+                            record_output,
+                            resolve_agent_activity_binding,
+                        )
+
+                        act_binding = resolve_agent_activity_binding(agent)
+                        if act_binding:
+                            record_output(
+                                act_binding,
+                                output_kind="delegation_feedback",
+                                title="协作反馈",
+                                summary=str(result or "")[:1200],
+                                detail={"tools_used": tools_used, "exit_reason": exit_reason},
+                            )
+                    except Exception as _out_exc:
+                        logger.debug("worker delegation output record: %s", _out_exc)
                 return delegation_result.to_tool_response()
             finally:
                 agent._is_sub_agent_call = False

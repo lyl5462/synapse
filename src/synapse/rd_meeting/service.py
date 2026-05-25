@@ -647,6 +647,25 @@ class MeetingRoomService:
             },
         )
 
+        try:
+            from synapse.rd_meeting.agent_activity import record_host_human_input
+            from synapse.rd_meeting.binding import resolve_node_binding
+
+            node_id = str(room_state.get("current_node_id") or "pending")
+            binding = resolve_node_binding(node_id)
+            host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+            record_host_human_input(
+                sid,
+                node_id,
+                host_id,
+                input_kind="questionnaire_feedback" if kind == "interactive" else "summary_feedback",
+                title="人类问卷反馈" if kind == "interactive" else "人类总结反馈",
+                summary=instruction_text[:1200],
+                detail={"intervention_kind": kind, "form_values": form_values},
+            )
+        except Exception as exc:
+            logger.debug("hitl form activity record failed: %s", exc)
+
         orch = MeetingRoomOrchestrator()
         resume_started = False
 

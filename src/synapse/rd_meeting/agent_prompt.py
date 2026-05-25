@@ -15,6 +15,35 @@ logger = logging.getLogger(__name__)
 MEETING_PROMPT_MARKER = "# 你是 Synapse 研发会议室参会智能体"
 
 
+def _refresh_meeting_activity_binding(
+    agent: Any,
+    *,
+    scope_id: str,
+    node_id: str,
+    room_id: str,
+    agent_profile_id: str,
+    depth: int,
+    binding: dict[str, Any],
+) -> None:
+    try:
+        from synapse.rd_meeting.agent_activity import set_agent_activity_binding
+
+        host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+        role: Literal["host", "worker"] = "worker" if depth > 0 else "host"
+        pid = agent_profile_id if depth > 0 else host_id
+        set_agent_activity_binding(
+            agent,
+            scope_id=scope_id,
+            node_id=node_id,
+            profile_id=pid,
+            host_profile_id=host_id,
+            role=role,
+            room_id=room_id,
+        )
+    except Exception as exc:
+        logger.debug("refresh meeting activity binding failed: %s", exc)
+
+
 def is_meeting_room_system_prompt(text: str) -> bool:
     return MEETING_PROMPT_MARKER in (text or "")
 
@@ -66,9 +95,6 @@ def ensure_meeting_agent_configured(
     if not scope_id:
         return True
 
-    if is_meeting_agent_configured(agent):
-        return True
-
     dev = load_dev_status(scope_id) or {}
     node_id = str(dev.get("current_node_id") or "").strip()
     if not node_id:
@@ -85,6 +111,18 @@ def ensure_meeting_agent_configured(
         ticket_title=ticket_title,
     )
     binding["node_id"] = node_id
+
+    if is_meeting_agent_configured(agent):
+        _refresh_meeting_activity_binding(
+            agent,
+            scope_id=scope_id,
+            node_id=node_id,
+            room_id=room_id,
+            agent_profile_id=agent_profile_id,
+            depth=depth,
+            binding=binding,
+        )
+        return True
 
     if depth > 0:
         role: Literal["host", "worker"] = "worker"
@@ -104,6 +142,15 @@ def ensure_meeting_agent_configured(
         ticket_title=ticket_title,
         scope_path=str(scope_dir(scope_id)),
         self_profile_id=self_profile_id,
+    )
+    _refresh_meeting_activity_binding(
+        agent,
+        scope_id=scope_id,
+        node_id=node_id,
+        room_id=room_id,
+        agent_profile_id=agent_profile_id,
+        depth=depth,
+        binding=binding,
     )
     logger.info(
         "Configured meeting prompt for %s role=%s profile=%s scope=%s node=%s",
