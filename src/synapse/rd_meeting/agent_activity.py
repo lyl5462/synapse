@@ -407,14 +407,6 @@ def try_record_tool_from_agent(
     if not name:
         return
     try:
-        record_tool(
-            binding,
-            tool_name=name,
-            tool_input=tool_input,
-            result_preview=result_preview,
-            success=success,
-            duration_ms=duration_ms,
-        )
         if name in _SKILL_TOOLS:
             skill_name = ""
             script_name = ""
@@ -422,6 +414,7 @@ def try_record_tool_from_agent(
                 skill_name = str(tool_input.get("skill_name") or "").strip()
                 script_name = str(tool_input.get("script_name") or "").strip()
             if skill_name:
+                # 技能类工具只记 skill 行，避免与 tool 行重复展示（如 get_skill_info + 同名技能）
                 record_skill(
                     binding,
                     skill_name=skill_name,
@@ -431,6 +424,15 @@ def try_record_tool_from_agent(
                     success=success,
                     duration_ms=duration_ms,
                 )
+                return
+        record_tool(
+            binding,
+            tool_name=name,
+            tool_input=tool_input,
+            result_preview=result_preview,
+            success=success,
+            duration_ms=duration_ms,
+        )
     except Exception as exc:
         logger.debug("try_record_tool_from_agent failed: %s", exc)
 

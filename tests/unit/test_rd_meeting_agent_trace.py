@@ -15,7 +15,7 @@ from synapse.rd_meeting.agent_trace import (
     reset_agent_node_context,
     write_agent_meta,
 )
-from synapse.rd_meeting.paths import agent_dir, agent_node_dir
+from synapse.rd_meeting.paths import agent_node_dir, agent_sop_profile_dir
 
 
 @pytest.fixture(autouse=True)
@@ -212,14 +212,16 @@ def test_reset_agent_node_context_clears_messages_and_task(tmp_path):
 def test_write_agent_meta_persists_identity(tmp_path):
     scope = "scope-C"
     pid = "doc-gen"
+    nid = "req_clarify"
     write_agent_meta(
         scope,
         pid,
+        node_id=nid,
         role="worker",
         llm_endpoint="endpoint-a",
         capabilities={"skills": ["doc-generate"]},
     )
-    meta = json.loads((agent_dir(scope, pid) / "meta.json").read_text("utf-8"))
+    meta = json.loads((agent_sop_profile_dir(scope, nid, pid) / "meta.json").read_text("utf-8"))
     assert meta["profile_id"] == "doc-gen"
     assert meta["display_name"] == "文档专家"
     assert meta["llm_endpoint"] == "endpoint-a"

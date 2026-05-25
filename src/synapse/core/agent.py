@@ -1037,19 +1037,7 @@ class Agent:
                 return idx, out, None, None
             finally:
                 dt_ms = int((time.time() - t0) * 1000)
-                try:
-                    from synapse.rd_meeting.agent_activity import try_record_tool_from_agent
-
-                    try_record_tool_from_agent(
-                        self,
-                        tool_name=tool_name,
-                        tool_input=tool_input if isinstance(tool_input, dict) else {},
-                        result_preview=result_str,
-                        success=success,
-                        duration_ms=dt_ms,
-                    )
-                except Exception as _act_exc:  # pragma: no cover
-                    logger.debug("meeting activity tool record: %s", _act_exc)
+                # 会议室 activity 由 ToolExecutor.execute_batch 统一落盘，避免重复记录
                 if task_monitor:
                     if use_parallel_safe_monitor:
                         async with self._task_monitor_lock:
@@ -3325,10 +3313,14 @@ class Agent:
 
         if self._is_sub_agent_call:
             _profile_hints = self._derive_tool_hints_from_profile()
+            # 会议室 Worker：委派正文已在 user 消息，勿再写入 TaskDefinition 以免 system 尾部重复
+            _sub_task_def = ""
+            if not getattr(self, "_org_context", None):
+                _sub_task_def = message[:600]
             intent_result = IntentResult(
                 intent=IntentType.TASK,
                 confidence=1.0,
-                task_definition=message[:600],
+                task_definition=_sub_task_def,
                 task_type="action",
                 tool_hints=_profile_hints,
                 memory_keywords=[],
@@ -4527,10 +4519,12 @@ class Agent:
                 session=session,
             )
 
-            # 注入 TaskDefinition
-            task_def = (getattr(self, "_current_task_definition", "") or "").strip()
-            if task_def:
-                system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
+            # 注入 TaskDefinition（研发会议室 _org_context 已在 system 含工单/节点上下文，
+            # 委派内容保留在 user 消息即可，避免与 [任务背景][任务指令] 重复）
+            if not getattr(self, "_org_context", None):
+                task_def = (getattr(self, "_current_task_definition", "") or "").strip()
+                if task_def:
+                    system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
 
             base_system_prompt = system_prompt
 
@@ -5614,10 +5608,11 @@ class Agent:
         else:
             system_prompt = self._context.system
 
-        # 注入 TaskDefinition
-        task_def = (getattr(self, "_current_task_definition", "") or "").strip()
-        if task_def:
-            system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
+        # 注入 TaskDefinition（会议室 _org_context 跳过，见 chat_with_session_stream 注释）
+        if not getattr(self, "_org_context", None):
+            task_def = (getattr(self, "_current_task_definition", "") or "").strip()
+            if task_def:
+                system_prompt += f"\n\n## Developer: TaskDefinition\n{task_def}\n"
 
         base_system_prompt = system_prompt
         conversation_id = getattr(self, "_current_conversation_id", None) or getattr(

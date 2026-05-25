@@ -314,6 +314,7 @@ class MeetingRoomOrchestrator:
                 write_agent_meta(
                     scope_id,
                     target_pid,
+                    node_id=nid or "pending",
                     role=role,
                     display_name=display_name,
                     llm_endpoint=endpoint_key,

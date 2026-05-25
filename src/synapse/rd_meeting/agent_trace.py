@@ -2,8 +2,8 @@
 
 设计要点（对齐 NODE_REVIEW 方案 §3）：
 
-- 每个智能体在工单内有自己的目录 ``work/<scope>/agents/<profile_id>/``。
-- 节点级 trace 按 ``nodes/<node_id>/`` 分桶，包含：
+- 每个智能体在节点内有自己的目录 ``work/<scope>/agents/<node_id>/<profile_id>/``。
+- 节点级 trace 与 activity 同目录，包含：
   * ``conversation.jsonl``：归一化后的对话记录（user/host/coworker/system/tool）。
   * ``tools.jsonl``：工具调用快照（来自 ``agent_state.tools_executed``）。
   * ``skills.jsonl``：技能调用快照（来自 ``agent_state.skills_executed``）。
@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from synapse.rd_meeting.paths import agent_dir, agent_node_dir
+from synapse.rd_meeting.paths import agent_node_dir, agent_sop_profile_dir
 
 logger = logging.getLogger(__name__)
 
@@ -285,19 +285,22 @@ def write_agent_meta(
     scope_id: str,
     profile_id: str,
     *,
+    node_id: str,
     role: str,
     display_name: str = "",
     llm_endpoint: str = "",
     capabilities: dict[str, Any] | None = None,
 ) -> None:
-    """写入 agent 维度的元数据 ``meta.json``（跨节点不变的身份信息）。"""
+    """写入本节点智能体元数据 ``meta.json``（``agents/<node_id>/<profile_id>/meta.json``）。"""
     sid = (scope_id or "").strip()
     pid = (profile_id or "").strip()
+    nid = (node_id or "").strip() or "pending"
     if not sid or not pid:
         return
     name = display_name or _resolve_display_name(pid)
     payload: dict[str, Any] = {
         "profile_id": pid,
+        "node_id": nid,
         "role": role,
         "display_name": name,
         "llm_endpoint": llm_endpoint or "",
@@ -305,7 +308,7 @@ def write_agent_meta(
     }
     if capabilities:
         payload["capabilities"] = capabilities
-    _write_json(agent_dir(sid, pid) / "meta.json", payload)
+    _write_json(agent_sop_profile_dir(sid, nid, pid) / "meta.json", payload)
 
 
 def dump_agent_node_trace(

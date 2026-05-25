@@ -75,18 +75,14 @@ def agents_root(scope_id: str) -> Path:
 
 
 def agent_dir(scope_id: str, profile_id: str) -> Path:
-    """单个智能体目录：``work/<scope>/agents/<profile_id>/``。
-
-    ``profile_id`` 经 :func:`sanitize_work_order_segment` 规范化，避免越权写盘。
-    """
+    """Legacy 路径：``work/<scope>/agents/<profile_id>/``（仅兼容旧数据读取，新写入请用 :func:`agent_sop_profile_dir`）。"""
     seg = sanitize_work_order_segment(profile_id or "default")
     return agents_root(scope_id) / seg
 
 
 def agent_node_dir(scope_id: str, profile_id: str, node_id: str) -> Path:
-    """智能体按节点分桶的目录：``.../<profile_id>/nodes/<node_id>/``（legacy trace）。"""
-    nseg = sanitize_work_order_segment(node_id or "pending")
-    return agent_dir(scope_id, profile_id) / "nodes" / nseg
+    """智能体节点目录（trace / conversation / meta）：``work/<scope>/agents/<node_id>/<profile_id>/``。"""
+    return agent_sop_profile_dir(scope_id, node_id, profile_id)
 
 
 def agent_sop_node_dir(scope_id: str, node_id: str) -> Path:

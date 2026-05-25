@@ -18,7 +18,7 @@ from synapse.rd_meeting.node_review import (
     save_node_review,
 )
 from synapse.rd_meeting.orchestrator import MeetingRoomOrchestrator
-from synapse.rd_meeting.paths import agent_dir, agent_node_dir
+from synapse.rd_meeting.paths import agent_node_dir, agent_sop_profile_dir
 from synapse.rd_meeting.room_runtime import load_room_state
 from synapse.rd_meeting.service import MeetingRoomService
 
@@ -341,7 +341,7 @@ async def get_agent_trace(
     import json as _json
 
     base = agent_node_dir(sid, pid, nid)
-    meta_path = agent_dir(sid, pid) / "meta.json"
+    meta_path = agent_sop_profile_dir(sid, nid, pid) / "meta.json"
 
     def _read_json(path) -> Any:
         if not path.is_file():

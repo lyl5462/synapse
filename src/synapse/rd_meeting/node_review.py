@@ -8,7 +8,7 @@ LLM 跑完后组装并落盘到 ``meeting_pipeline.json.context.node_review[node
 
 1. **metrics**：节点 token / 时长 / 各 agent 委派 / 工具 / 技能 / token 聚合
 2. **summaries**：主持人 + 各协作智能体的工作摘要（由 LLM 在 NODE_REVIEW 阶段
-   基于 ``agents/<pid>/nodes/<node_id>/conversation.jsonl`` 总结一次）
+   基于 ``agents/<node_id>/<pid>/conversation.jsonl`` 总结一次）
 3. **artifacts**：本节点 ``archive/<stage>/<node>/`` 下所有文件（含 mtime / size）
 4. **report_body**：兼容字段，保留 LLM 终稿，前端可不显示
 

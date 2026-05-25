@@ -44,7 +44,7 @@ def _format_section_product(product: dict[str, Any]) -> str:
     code = str(product.get("locator_code") or "").strip()
     msg = str(product.get("locator_message") or "").strip()
     if product.get("prod"):
-        lines.append(f"- PROD`{product['prod']}`")
+        lines.append(f"- PROD：`{product['prod']}`")
     if product.get("prod_feature"):
         lines.append(f"- PROD_FEATURE：{product['prod_feature']}")
     if product.get("version"):
