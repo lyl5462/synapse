@@ -338,7 +338,15 @@ export interface ProcessingHistoryEntry {
   id?: string;
   seq?: number;
   ts?: string;
-  category: 'input' | 'output' | 'tool' | 'skill_load' | 'skill_exec' | 'skill' | string;
+  category:
+    | 'input'
+    | 'output'
+    | 'tool'
+    | 'skill_load'
+    | 'skill_load_blocked'
+    | 'skill_exec'
+    | 'skill'
+    | string;
   category_label?: string;
   display_title?: string;
   title?: string;
@@ -354,6 +362,9 @@ export interface ProcessingHistoryEntry {
   skill_tool?: string;
   script_name?: string;
   executing_skill_id?: string;
+  executing_script_name?: string;
+  chain_label?: string;
+  block_reason?: string;
   success?: boolean;
   duration_ms?: number;
   detail?: Record<string, unknown>;

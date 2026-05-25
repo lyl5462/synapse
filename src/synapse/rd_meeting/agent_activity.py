@@ -4,7 +4,7 @@
 
     work/<scope>/agents/<node_id>/<profile_id>/activity.jsonl
 
-每条记录为 JSON 一行，``category`` 取 ``input`` | ``output`` | ``tool`` | ``skill_load`` | ``skill_exec``
+每条记录为 JSON 一行，``category`` 取 ``input`` | ``output`` | ``tool`` | ``skill_load`` | ``skill_load_blocked`` | ``skill_exec``
 （旧数据可能仍为 ``skill``，读取时会按 ``skill_tool`` 归一化）。
 写入失败仅打 warning，不阻断主流程。
 """
@@ -24,7 +24,9 @@ from synapse.rd_meeting.paths import agent_sop_node_dir, agent_sop_profile_dir
 
 logger = logging.getLogger(__name__)
 
-ActivityCategory = Literal["input", "output", "tool", "skill_load", "skill_exec", "skill"]
+ActivityCategory = Literal[
+    "input", "output", "tool", "skill_load", "skill_load_blocked", "skill_exec", "skill"
+]
 InputSource = Literal["human", "system", "host"]
 
 _PREVIEW_LIMIT = 2_000
@@ -67,9 +69,13 @@ _CATEGORY_LABELS: dict[str, str] = {
     "output": "产出反馈",
     "tool": "调用工具",
     "skill_load": "加载技能",
+    "skill_load_blocked": "技能加载被拦截",
     "skill_exec": "执行技能",
     "skill": "调用技能",  # 旧数据兼容
 }
+
+_TODO_BLOCK_MARKERS = ("建议先创建 Todo", "这是一个多步骤任务，建议先创建 Todo")
+_INSTRUCTION_ONLY_SCRIPT = "instruction-only"
 
 _SKILL_TOOL_LABELS: dict[str, str] = {
     "get_skill_info": "加载技能说明",
@@ -111,21 +117,35 @@ def _normalize_category(row: dict[str, Any]) -> str:
     cat = str(row.get("category") or "")
     if cat == "skill":
         return _skill_activity_category(str(row.get("skill_tool") or ""))
+    if cat == "skill_load" and is_todo_block_preview(str(row.get("result_preview") or "")):
+        return "skill_load_blocked"
     return cat
 
 
 def _category_label_for_row(row: dict[str, Any]) -> str:
     cat = _normalize_category(row)
+    if cat == "skill_load_blocked":
+        return _CATEGORY_LABELS["skill_load_blocked"]
     skill_tool = str(row.get("skill_tool") or "").strip()
+    if cat == "skill_load" and skill_tool and is_todo_block_preview(str(row.get("result_preview") or "")):
+        return _CATEGORY_LABELS["skill_load_blocked"]
     if cat in ("skill_load", "skill_exec", "skill") and skill_tool:
         return _SKILL_TOOL_LABELS.get(skill_tool, _CATEGORY_LABELS.get(cat, cat))
     return _CATEGORY_LABELS.get(cat, cat)
+
+
+def is_todo_block_preview(result_preview: str) -> bool:
+    """Todo 门禁拦截时 tool_executor 返回的固定提示文案。"""
+    preview = str(result_preview or "")
+    return any(marker in preview for marker in _TODO_BLOCK_MARKERS)
 
 
 def _result_indicates_failure(tool_name: str, result_preview: str) -> bool:
     preview = str(result_preview or "").lstrip()
     if not preview:
         return False
+    if is_todo_block_preview(preview):
+        return True
     if preview.startswith("❌"):
         return True
     if tool_name == "run_skill_script" and "脚本执行失败" in preview[:300]:
@@ -144,6 +164,10 @@ def _get_executing_skill(agent: Any) -> str:
     return str(getattr(agent, "_rd_meeting_executing_skill", "") or "").strip()
 
 
+def _get_executing_script(agent: Any) -> str:
+    return str(getattr(agent, "_rd_meeting_executing_script", "") or "").strip()
+
+
 def _set_executing_skill(agent: Any, skill_name: str) -> None:
     name = (skill_name or "").strip()
     try:
@@ -152,8 +176,17 @@ def _set_executing_skill(agent: Any, skill_name: str) -> None:
         logger.debug("set executing skill failed: %s", exc)
 
 
+def _set_executing_script(agent: Any, script_name: str) -> None:
+    name = (script_name or "").strip()
+    try:
+        agent._rd_meeting_executing_script = name  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.debug("set executing script failed: %s", exc)
+
+
 def _clear_executing_skill(agent: Any) -> None:
     _set_executing_skill(agent, "")
+    _set_executing_script(agent, "")
 
 
 def _maybe_set_executing_skill_from_load(
@@ -171,6 +204,7 @@ def _maybe_set_executing_skill_from_load(
     preview_lower = str(result_preview or "").lower()
     if "instruction-only" in preview_lower or "no executable scripts" in preview_lower:
         _set_executing_skill(agent, skill_name)
+        _set_executing_script(agent, _INSTRUCTION_ONLY_SCRIPT)
 
 
 def _safe_json(obj: Any, limit: int = _INPUT_JSON_LIMIT) -> Any:
@@ -436,6 +470,18 @@ def record_output(
     )
 
 
+def _chain_label(skill_name: str, script_name: str = "") -> str:
+    skill = (skill_name or "").strip()
+    script = (script_name or "").strip()
+    if not skill:
+        return ""
+    if script == _INSTRUCTION_ONLY_SCRIPT:
+        return f"{skill} → instruction-only"
+    if script:
+        return f"{skill} → {script}"
+    return skill
+
+
 def record_tool(
     binding: dict[str, str],
     *,
@@ -445,14 +491,17 @@ def record_tool(
     success: bool = True,
     duration_ms: int | None = None,
     executing_skill_id: str = "",
+    executing_script_name: str = "",
 ) -> dict[str, Any] | None:
     name = (tool_name or "").strip()
     if not name:
         return None
     esid = (executing_skill_id or "").strip()
+    escript = (executing_script_name or "").strip()
     display_title = name
-    if esid:
-        display_title = f"{name} · {esid}"
+    chain = _chain_label(esid, escript)
+    if chain:
+        display_title = f"{name} · {chain}"
     row: dict[str, Any] = {
         "category": "tool",
         "tool_name": name,
@@ -464,6 +513,10 @@ def record_tool(
     }
     if esid:
         row["executing_skill_id"] = esid
+    if escript:
+        row["executing_script_name"] = escript
+    if chain:
+        row["chain_label"] = chain
     return _append_row(
         binding["scope_id"],
         binding["node_id"],
@@ -492,20 +545,55 @@ def record_skill(
     if scname:
         title = f"{sname} / {scname}"
     label = _SKILL_TOOL_LABELS.get(stool, _CATEGORY_LABELS.get(category, category))
+    row: dict[str, Any] = {
+        "category": category,
+        "skill_name": sname,
+        "skill_tool": stool,
+        "script_name": scname,
+        "result_preview": _truncate(result_preview),
+        "success": bool(success),
+        "duration_ms": duration_ms,
+        "display_title": title,
+        "category_label": label,
+    }
+    chain = _chain_label(sname, scname)
+    if chain:
+        row["chain_label"] = chain
+    return _append_row(
+        binding["scope_id"],
+        binding["node_id"],
+        binding["profile_id"],
+        row,
+    )
+
+
+def record_skill_load_blocked(
+    binding: dict[str, str],
+    *,
+    skill_name: str,
+    skill_tool: str,
+    result_preview: str = "",
+    duration_ms: int | None = None,
+    block_reason: str = "todo_required",
+) -> dict[str, Any] | None:
+    sname = (skill_name or "").strip()
+    if not sname:
+        return None
+    stool = (skill_tool or "").strip()
     return _append_row(
         binding["scope_id"],
         binding["node_id"],
         binding["profile_id"],
         {
-            "category": category,
+            "category": "skill_load_blocked",
             "skill_name": sname,
             "skill_tool": stool,
-            "script_name": scname,
+            "block_reason": block_reason,
             "result_preview": _truncate(result_preview),
-            "success": bool(success),
+            "success": False,
             "duration_ms": duration_ms,
-            "display_title": title,
-            "category_label": label,
+            "display_title": sname,
+            "category_label": _CATEGORY_LABELS["skill_load_blocked"],
         },
     )
 
@@ -537,6 +625,15 @@ def try_record_tool_from_agent(
                 skill_name = str(tool_input.get("skill_name") or "").strip()
                 script_name = str(tool_input.get("script_name") or "").strip()
             if skill_name:
+                if is_todo_block_preview(result_preview):
+                    record_skill_load_blocked(
+                        binding,
+                        skill_name=skill_name,
+                        skill_tool=name,
+                        result_preview=result_preview,
+                        duration_ms=duration_ms,
+                    )
+                    return
                 if name == "run_skill_script":
                     _clear_executing_skill(agent)
                 elif name == "get_skill_info" and success:
@@ -559,8 +656,10 @@ def try_record_tool_from_agent(
                 )
                 return
         executing_skill = ""
+        executing_script = ""
         if name in _SKILL_CONTEXT_TOOLS:
             executing_skill = _get_executing_skill(agent)
+            executing_script = _get_executing_script(agent)
         record_tool(
             binding,
             tool_name=name,
@@ -569,6 +668,7 @@ def try_record_tool_from_agent(
             success=success,
             duration_ms=duration_ms,
             executing_skill_id=executing_skill,
+            executing_script_name=executing_script,
         )
     except Exception as exc:
         logger.debug("try_record_tool_from_agent failed: %s", exc)
@@ -673,11 +773,13 @@ def aggregate_tools_and_skills(entries: list[dict[str, Any]]) -> tuple[list[str]
                 tools.append(name)
             esid = str(row.get("executing_skill_id") or "").strip()
             if esid:
+                escript = str(row.get("executing_script_name") or "").strip()
                 _append_skill_aggregate(
                     skills,
                     skill_seen,
                     skill_name=esid,
                     tool_name=name,
+                    script_name=escript,
                     ts_raw=ts_raw,
                     kind="instruction",
                 )
@@ -711,16 +813,33 @@ def enrich_display(entry: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_category(row)
     if normalized != row.get("category"):
         row["category"] = normalized
+    if normalized == "skill_load_blocked":
+        row["success"] = False
     row.setdefault("category_label", _category_label_for_row(row))
     if normalized == "input":
         src = str(row.get("source") or "")
         row.setdefault("source_label", _INPUT_SOURCE_LABELS.get(src, src))
+    if not row.get("chain_label"):
+        if normalized == "tool":
+            chain = _chain_label(
+                str(row.get("executing_skill_id") or ""),
+                str(row.get("executing_script_name") or ""),
+            )
+        elif normalized in ("skill_load", "skill_exec", "skill", "skill_load_blocked"):
+            chain = _chain_label(
+                str(row.get("skill_name") or ""),
+                str(row.get("script_name") or ""),
+            )
+        else:
+            chain = ""
+        if chain:
+            row["chain_label"] = chain
     if not row.get("display_title"):
         if normalized == "tool":
             name = str(row.get("tool_name") or "工具")
-            esid = str(row.get("executing_skill_id") or "").strip()
-            row["display_title"] = f"{name} · {esid}" if esid else name
-        elif normalized in ("skill_load", "skill_exec", "skill"):
+            chain = str(row.get("chain_label") or "").strip()
+            row["display_title"] = f"{name} · {chain}" if chain else name
+        elif normalized in ("skill_load", "skill_exec", "skill", "skill_load_blocked"):
             sn = str(row.get("skill_name") or "")
             sc = str(row.get("script_name") or "")
             row["display_title"] = f"{sn} / {sc}" if sc else sn
