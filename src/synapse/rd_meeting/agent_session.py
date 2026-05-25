@@ -63,6 +63,12 @@ def clear_meeting_agent_session(agent: Any) -> None:
     if getattr(agent, "agent_state", None) is not None:
         agent.agent_state.current_session = None
     try:
+        from synapse.rd_meeting.agent_runtime import restore_meeting_slim_tools
+
+        restore_meeting_slim_tools(agent)
+    except Exception:
+        pass
+    try:
         agent._org_context = False  # 复位会议室短路开关，允许复用时回到通用编译管线
     except Exception:
         pass

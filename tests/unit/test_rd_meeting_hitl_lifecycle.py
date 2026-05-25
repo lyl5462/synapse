@@ -5,22 +5,28 @@ from __future__ import annotations
 from synapse.rd_meeting.hitl_form import HUMAN_SUPPLEMENT_QUESTION_ID
 from synapse.rd_meeting.hitl_lifecycle import (
     READY_FOR_NODE_REVIEW_KEY,
-    extract_human_supplement,
     is_ready_for_node_review,
     reset_human_confirm_lifecycle,
     set_ready_for_node_review,
     user_has_supplement_input,
 )
 
+_SCHEMA = {
+    "questions": [{"id": "q1", "type": "single", "title": "Q", "options": [{"value": "daily", "label": "D"}]}],
+}
 
-def test_extract_human_supplement_empty():
-    assert extract_human_supplement({HUMAN_SUPPLEMENT_QUESTION_ID: "  "}) == ""
+
+def test_user_has_supplement_input_empty_supplement():
     assert not user_has_supplement_input({HUMAN_SUPPLEMENT_QUESTION_ID: ""})
 
 
-def test_extract_human_supplement_with_text():
+def test_user_has_supplement_input_detects_per_question_other():
+    vals = {"q1": ["daily", "OTHER:自定义"], HUMAN_SUPPLEMENT_QUESTION_ID: ""}
+    assert user_has_supplement_input(vals, schema=_SCHEMA)
+
+
+def test_user_has_supplement_input_detects_human_supplement():
     vals = {HUMAN_SUPPLEMENT_QUESTION_ID: "还需要补充风险说明"}
-    assert extract_human_supplement(vals) == "还需要补充风险说明"
     assert user_has_supplement_input(vals)
 
 

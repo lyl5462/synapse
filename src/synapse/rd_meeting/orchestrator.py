@@ -64,6 +64,7 @@ from synapse.rd_meeting.room_runtime import (
     load_room_state,
     save_room_state,
 )
+from synapse.rd_meeting.agent_runtime import apply_meeting_agent_runtime
 from synapse.rd_meeting.room_skill import (
     DEFAULT_LLM_ENDPOINT_KEY,
     build_room_skill_prompt,
@@ -286,23 +287,27 @@ class MeetingRoomOrchestrator:
                 binding=binding,
                 sop_node_display=sop_display,
             )
-        # 会议室提示词直接作为 system prompt（绕过 Identity/Catalogs/Memory 等通用编译段），
-        # 通过 _org_context=True 阻止 _build_system_prompt_compiled* 重新拼装覆盖。
+        # 会议室提示词 + Profile 技能全文 + 任务级工具白名单（对齐产品知识生成）
         agent._custom_prompt_suffix = ""
+        target_pid = (self_profile_id or "").strip()
+        if role == "host" and not target_pid:
+            target_pid = str(binding.get("host_profile_id") or "default").strip() or "default"
+        profile = _resolve_profile(target_pid) if target_pid else None
         agent_ctx = getattr(agent, "_context", None)
         if agent_ctx is not None:
-            agent_ctx.system = suffix
+            agent_ctx.system = apply_meeting_agent_runtime(
+                agent,
+                role=role,  # type: ignore[arg-type]
+                profile=profile,
+                base_system_prompt=suffix or "",
+            )
         try:
             agent._org_context = True  # type: ignore[attr-defined]
         except Exception as exc:
             logger.debug("set _org_context failed for role=%s: %s", role, exc)
 
-        target_pid = (self_profile_id or "").strip()
-        if role == "host" and not target_pid:
-            target_pid = str(binding.get("host_profile_id") or "default").strip() or "default"
         if target_pid:
             try:
-                profile = _resolve_profile(target_pid)
                 display_name = ""
                 if profile is not None:
                     display_name = profile.get_display_name() or profile.name or target_pid

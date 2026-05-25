@@ -106,4 +106,4 @@ def test_configure_host_reuses_cache(host_binding, monkeypatch):
         scope_path="/tmp/work/C1",
     )
     assert reused is True
-    assert agent._custom_prompt_suffix == prompt_body
+    assert prompt_body in (getattr(agent._context, "system", None) or "")

@@ -25,7 +25,6 @@ from synapse.rd_meeting.dev_status import (
     should_list_in_meeting_rooms,
 )
 from synapse.rd_meeting.hitl_submission import (
-    format_hitl_form_instruction,
     parse_hitl_form_text,
     record_hitl_submission_locked,
 )
@@ -623,9 +622,21 @@ class MeetingRoomService:
         rid = room_id.strip()
         sid = scope_id.strip()
         form_values, comment, parsed_decision = parse_hitl_form_text(text)
-        record_hitl_submission_locked(sid, raw_text=text, values=form_values)
+        submission = record_hitl_submission_locked(sid, raw_text=text, values=form_values)
+        schema = submission.get("schema_snapshot") if isinstance(submission.get("schema_snapshot"), dict) else None
 
-        instruction_text = format_hitl_form_instruction(form_values, comment=comment)
+        from synapse.rd_meeting.hitl_feedback import (
+            classify_hitl_feedback_mode,
+            format_hitl_feedback_structured,
+            prompt_after_hitl_feedback,
+        )
+        from synapse.rd_meeting.hitl_lifecycle import (
+            set_hitl_feedback_mode,
+            set_ready_for_node_review,
+        )
+
+        feedback_mode = classify_hitl_feedback_mode(form_values, schema, comment=comment)
+        instruction_text = format_hitl_feedback_structured(form_values, schema, comment=comment)
         append_user_context_pending(sid, instruction_text)
 
         kind = str(room_state.get("intervention_kind") or "interactive").strip().lower()
@@ -755,35 +766,15 @@ class MeetingRoomService:
             out["hitl_locked"] = True
             return out
 
-        # interactive / 会中澄清：注入答案后继续跑本节点，或进入 node_review
-        from synapse.rd_meeting.hitl_lifecycle import (
-            set_ready_for_node_review,
-            user_has_supplement_input,
-        )
-        from synapse.rd_meeting.orchestrator import schedule_enter_node_review
+        # interactive / 会中澄清：结构化反馈 + 分模式续跑本节点
 
-        if user_has_supplement_input(form_values, comment=comment):
-            set_ready_for_node_review(sid, False)
-            rs2 = dict(load_room_state(sid) or {})
-            rs2["status"] = "processing"
-            save_room_state(sid, rs2)
-            schedule_run_node(
-                scope_type=scope_type,  # type: ignore[arg-type]
-                scope_id=sid,
-                room_id=rid,
-                ticket_title=ticket_title,
-                agent_pool=agent_pool,
-            )
-            out = self.get_room_detail(rid) or detail
-            out["resume_run_started"] = True
-            out["hitl_locked"] = True
-            return out
-
-        set_ready_for_node_review(sid, True)
+        set_ready_for_node_review(sid, feedback_mode == "options_only")
+        set_hitl_feedback_mode(sid, feedback_mode)
         rs2 = dict(load_room_state(sid) or {})
         rs2["status"] = "processing"
+        rs2["rework_instruction"] = prompt_after_hitl_feedback(feedback_mode)
         save_room_state(sid, rs2)
-        schedule_enter_node_review(
+        schedule_run_node(
             scope_type=scope_type,  # type: ignore[arg-type]
             scope_id=sid,
             room_id=rid,
@@ -791,9 +782,9 @@ class MeetingRoomService:
             agent_pool=agent_pool,
         )
         out = self.get_room_detail(rid) or detail
-        out["resume_run_started"] = False
+        out["resume_run_started"] = True
         out["hitl_locked"] = True
-        out["enter_node_review_scheduled"] = True
+        out["hitl_feedback_mode"] = feedback_mode
         return out
 
     def _parse_hitl_decision(

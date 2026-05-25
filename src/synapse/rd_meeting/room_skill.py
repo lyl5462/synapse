@@ -600,19 +600,36 @@ def build_meeting_runtime_header(
         lines.append("- 必须熟悉本工单对应的产品信息（产品文档 / 仓库代码 / 历史工单），所有决策都要基于产品事实；缺少产品事实时可以拒绝或报错，**不得臆造**。")
         lines.append("- 你是子 Agent，**禁止再发起委派**（不要调用 delegate_to_agent / delegate_parallel），也无法直接联系其他 Worker；任何「需要别人配合」的诉求都改为在产出里向小鲸说明。")
         lines.append("- 仅在「你的能力档案」描述的能力边界内执行任务；超出边界时**坦诚向小鲸说明**并建议改派，不要勉强执行、不要伪造结果。")
-        lines.append("- **接到子任务后，必须先**对「你的能力档案」里与任务相关的 skill 调用 `get_skill_info(skill_id)` 加载 SKILL.md，再按 SKILL 指引执行（`run_skill_script` 或 shell / 读写工具）；**禁止**不看 SKILL 直接用通用工具硬做。")
+        lines.append(
+            "- **接到子任务后**，优先按 system prompt 中「已挂载技能（SKILL 全文）」执行；"
+            "档案中的 skill 若已注入则**禁止**再拉全量技能列表；"
+            "按 SKILL 指引使用 `run_skill_script` 或 `run_shell` / 读写工具，**禁止**跳过 SKILL 硬做。"
+        )
         lines.append("- 输出必须自给自足：含结论、证据、产物路径；Markdown 一级标题，结尾含「结论」「完成」或「交付」。")
         lines.append("- 你看不到主会话历史，也看不到其他 Worker 的能力卡片。工单/产品/系统参数在 system prompt「系统信息」段；委派 message 中的分析性描述若无来源标注，**不得采信**，须自行通过 SKILL 从代码/文档/工单获取事实。")
 
     lines.append("")
     lines.append("## 工具与技能使用")
-    lines.append("- **基础工具**（函数调用，禁止伪造输出）：shell / read_file / write_file / list_directory / web_search 等。")
+    lines.append(
+        "- **可用工具**（本会话已裁剪，仅暴露任务所需项；禁止伪造工具输出）："
+        "run_shell / read_file / write_file / list_directory / web_search / "
+        "get_skill_info / run_skill_script / get_skill_reference 等。"
+    )
+    if role == "host":
+        lines.append(
+            "- **Host 额外工具**：submit_meeting_work_plan、submit_hitl_questionnaire、"
+            "delegate_to_agent、delegate_parallel、send_agent_message。"
+        )
     lines.append("- **外部技能（SKILL）执行路径（强约束）**：")
-    lines.append("  1. 从「参会能力卡片」或「你的能力档案」确认本任务对应的 `skill_id`；不确定时用 `list_skills` 查找。")
-    lines.append("  2. **必须先** `get_skill_info(skill_id)` 读取 SKILL.md 全文与脚本列表（会议室不会预加载 Skill Catalog）。")
-    lines.append("  3. 有脚本的用 `run_skill_script`；instruction-only 技能按 SKILL 指引写代码并 `run_shell` / 读写文件。")
-    lines.append("  4. 许多研发技能（需求澄清、代码检索、文档生成等）**只有走完上述路径才算正确使用**；仅 grep / read_file 不算替代 SKILL。")
-    lines.append("- 涉及破坏性操作（rm / 大批量写入 / 网络副作用）需在产物中显式标注理由。")
+    lines.append(
+        "  1. 本 Agent 的 SKILL 全文已注入 system prompt「已挂载技能」段；从「你的能力档案」确认具备的 skill_id 后**按需执行**。"
+    )
+    lines.append(
+        "  2. 当需要脚本参数细节或参考文档时，可再调用 `get_skill_info` / `get_skill_reference`。"
+    )
+    lines.append(
+        "  3. 技能包含脚本时，使用 `run_skill_script` 执行。"
+    )
     lines.append("- 任何结论必须可由源码、文档或工单证据回溯；严禁虚构。")
     lines.append("")
 
@@ -630,18 +647,19 @@ def build_meeting_runtime_header(
         lines.append("以下是本场会议可用的协作智能体（不含你自己），分派任务时必须先比对其能力边界：")
         lines.append("")
         lines.append(cards)
-    else:
-        self_profile = _resolve_profile(self_pid) if self_pid else None
-        self_block = _format_self_capability_block(
-            self_profile,
-            fallback_id=self_pid,
-            llm_endpoint=context.worker_llm_endpoint,
-        )
-        lines.append("## 你的能力档案")
-        lines.append("")
-        lines.append("这是小鲸在本节点为你配置的角色档案——所有任务都必须在此边界内执行；超界即向小鲸申请改派，不要勉强或臆造。")
-        lines.append("")
-        lines.append(self_block)
+
+    
+    self_profile = _resolve_profile(self_pid) if self_pid else None
+    self_block = _format_self_capability_block(
+        self_profile,
+        fallback_id=self_pid,
+        llm_endpoint=context.worker_llm_endpoint,
+    )
+    lines.append("## 你的能力档案")
+    lines.append("")
+    lines.append("这是小鲸在本节点为你配置的角色档案——所有任务都必须在此边界内执行；超界即向小鲸申请改派，不要勉强或臆造。")
+    lines.append("")
+    lines.append(self_block)
     lines.append("")
     return "\n".join(lines)
 

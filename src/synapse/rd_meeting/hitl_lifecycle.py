@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from synapse.rd_meeting.hitl_form import HUMAN_SUPPLEMENT_QUESTION_ID
+from synapse.rd_meeting.hitl_feedback import (
+    HitlFeedbackMode,
+    user_has_free_text_input,
+)
 from synapse.rd_meeting.room_runtime import load_room_state, save_room_state
 
 READY_FOR_NODE_REVIEW_KEY = "ready_for_node_review"
 HITL_CLARIFY_ROUND_KEY = "hitl_clarify_round"
+HITL_FEEDBACK_MODE_KEY = "hitl_feedback_mode"
 MAX_HOST_QUESTIONNAIRE_ATTEMPTS = 5
 
 _PROMPT_REQUIRE_INTERACTIVE = """
@@ -41,6 +45,18 @@ def set_ready_for_node_review(scope_id: str, ready: bool) -> None:
     save_room_state(sid, rs)
 
 
+def set_hitl_feedback_mode(scope_id: str, mode: HitlFeedbackMode | None) -> None:
+    sid = (scope_id or "").strip()
+    if not sid:
+        return
+    rs = dict(load_room_state(sid) or {})
+    if mode:
+        rs[HITL_FEEDBACK_MODE_KEY] = mode
+    else:
+        rs.pop(HITL_FEEDBACK_MODE_KEY, None)
+    save_room_state(sid, rs)
+
+
 def reset_human_confirm_lifecycle(scope_id: str) -> None:
     """新节点开始或节点推进后重置会中澄清 / 完成确认状态。"""
     sid = (scope_id or "").strip()
@@ -49,6 +65,7 @@ def reset_human_confirm_lifecycle(scope_id: str) -> None:
     rs = dict(load_room_state(sid) or {})
     rs.pop(READY_FOR_NODE_REVIEW_KEY, None)
     rs.pop(HITL_CLARIFY_ROUND_KEY, None)
+    rs.pop(HITL_FEEDBACK_MODE_KEY, None)
     save_room_state(sid, rs)
 
 
@@ -75,20 +92,11 @@ def prompt_require_interactive_questionnaire() -> str:
     return _PROMPT_REQUIRE_INTERACTIVE.strip()
 
 
-def extract_human_supplement(values: dict[str, Any], *, comment: str = "") -> str:
-    """用户是否还有补充：优先 human_supplement 题，其次 comment / 补充说明。"""
-    parts: list[str] = []
-    raw = values.get(HUMAN_SUPPLEMENT_QUESTION_ID)
-    if raw is not None:
-        text = raw if isinstance(raw, str) else str(raw)
-        text = text.strip()
-        if text:
-            parts.append(text)
-    c = (comment or "").strip()
-    if c:
-        parts.append(c)
-    return "\n".join(parts).strip()
-
-
-def user_has_supplement_input(values: dict[str, Any], *, comment: str = "") -> bool:
-    return bool(extract_human_supplement(values, comment=comment))
+def user_has_supplement_input(
+    values: dict[str, Any],
+    *,
+    comment: str = "",
+    schema: dict[str, Any] | None = None,
+) -> bool:
+    """兼容旧名：是否含任意自由输入（见 ``user_has_free_text_input``）。"""
+    return user_has_free_text_input(values, schema, comment=comment)

@@ -144,8 +144,18 @@ def load_archive_delivery_body(scope_id: str, node_id: str) -> str:
     return ""
 
 
-def format_hitl_form_instruction(values: dict[str, Any], *, comment: str = "") -> str:
+def format_hitl_form_instruction(
+    values: dict[str, Any],
+    *,
+    comment: str = "",
+    schema: dict[str, Any] | None = None,
+) -> str:
     """将结构化表单答案格式化为 host 可读的指令块。"""
+    if schema:
+        from synapse.rd_meeting.hitl_feedback import format_hitl_feedback_structured
+
+        return format_hitl_feedback_structured(values, schema, comment=comment)
+
     lines = [_HITL_FORM_PREFIX, ""]
     for k, v in values.items():
         if isinstance(v, list):
