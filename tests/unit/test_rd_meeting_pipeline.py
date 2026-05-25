@@ -77,7 +77,7 @@ def test_pipeline_file_created_on_open_flow(monkeypatch, tmp_path):
         "synapse.rd_meeting.init_context.resolve_product_for_meeting",
         lambda *_a, **_k: (
             {"locator_code": "ok", "prod": "myprod", "repos": [], "docs": []},
-            {"synapse_url": "http://h:10001", "gitnexus_url": "http://h:11011", "gnx_cache_base_dir": "/gnx"},
+            {"synapse_url": "http://h:10001"},
         ),
     )
     monkeypatch.setattr(

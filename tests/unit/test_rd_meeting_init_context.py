@@ -20,7 +20,7 @@ def test_format_node_init_log_is_json(monkeypatch):
         "synapse.rd_meeting.init_context.resolve_product_for_meeting",
         lambda *_a, **_k: (
             {"locator_status": "pending"},
-            {"synapse_url": "", "gitnexus_url": "", "gnx_cache_base_dir": ""},
+            {"synapse_url": ""},
         ),
     )
     text = format_node_init_log("demand", "21881451", node_id="req_clarify")
@@ -38,7 +38,7 @@ def test_build_node_init_log_data_structure(monkeypatch):
         "synapse.rd_meeting.init_context.resolve_product_for_meeting",
         lambda *_a, **_k: (
             {"locator_status": "ok", "repos": [], "docs": []},
-            {"synapse_url": "http://h:10001", "gitnexus_url": "http://h:11011", "gnx_cache_base_dir": "/gnx"},
+            {"synapse_url": "http://h:10001"},
         ),
     )
     sec = build_node_init_log_data("demand", "x", node_id="req_clarify")
@@ -104,11 +104,7 @@ def test_open_meeting_step1_userwork_and_init_log(monkeypatch, tmp_path):
                 "repos": [],
                 "docs": [],
             },
-            {
-                "synapse_url": "http://127.0.0.1:10001",
-                "gitnexus_url": "http://127.0.0.1:11011",
-                "gnx_cache_base_dir": "/tmp/gnx",
-            },
+            {"synapse_url": "http://127.0.0.1:10001"},
         ),
     )
 
@@ -165,7 +161,8 @@ def test_open_meeting_step1_userwork_and_init_log(monkeypatch, tmp_path):
     assert "history_demands" not in init_data
     assert init_data["product"].get("locator_code") == "ok"
     assert init_data["product"].get("prod") == "p"
-    assert "gnx_cache_base_dir" in init_data.get("system", {})
+    assert "gitnexus_url" not in init_data.get("system", {})
+    assert "gnx_cache_base_dir" not in init_data.get("system", {})
     assert init_data.get("system", {}).get("work_order_dir")
     assert init_data.get("system", {}).get("product_code_root")
     assert init_data.get("system", {}).get("product_doc_root")

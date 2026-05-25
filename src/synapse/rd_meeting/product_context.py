@@ -9,12 +9,7 @@ from typing import Any, Literal
 import httpx
 
 from synapse.api.routes.dev_iwhalecloud import _snapshot_norm_id
-from synapse.rd_meeting.devservice import (
-    gnx_cache_base_dir,
-    gitnexus_service_base_url,
-    read_devservice_host,
-    unified_service_base_url,
-)
+from synapse.rd_meeting.devservice import read_devservice_host, unified_service_base_url
 from synapse.rd_meeting.paths import meeting_pipeline_path
 from synapse.rd_meeting.room_runtime import read_json_file, write_json_file
 from synapse.rd_meeting.userwork_sync import _scope_row
@@ -339,8 +334,6 @@ def resolve_product_for_meeting(
 
     system = {
         "synapse_url": unified_service_base_url(),
-        "gitnexus_url": gitnexus_service_base_url(),
-        "gnx_cache_base_dir": gnx_cache_base_dir(),
         "devservice_host": read_devservice_host() or "",
     }
 

@@ -35,7 +35,7 @@ def test_assemble_host_prompt_bundle_has_system_and_user(host_binding, monkeypat
         "synapse.rd_meeting.init_context.resolve_product_for_meeting",
         lambda *_a, **_k: (
             {"locator_code": "ok", "prod": "myprod", "repos": [], "docs": []},
-            {"synapse_url": "http://127.0.0.1:10001", "gitnexus_url": "http://127.0.0.1:11011"},
+            {"synapse_url": "http://127.0.0.1:10001"},
         ),
     )
     monkeypatch.setattr(

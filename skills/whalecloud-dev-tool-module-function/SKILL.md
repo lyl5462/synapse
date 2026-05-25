@@ -12,16 +12,32 @@ label: 模块功能技能
 
 与 SynapseService 交互的脚本位于技能 **`whalecloud-dev-tool-base-scripts`**（与本技能同级目录 `skills/whalecloud-dev-tool-base-scripts/`）。**BASE_SCRIPTS_DIR** 为该技能根目录（系统提示中「研发技能：whalecloud-dev-tool-base-scripts」下的 `**技能路径**:`）。下文凡写 `<BASE_SCRIPTS_DIR>/scripts/...` 均指该路径。
 
+## 研发会议室：工单目录读代码 / 文档（优先）
+
+在研发会议室中，`room_opened` 已将产品资产落盘到工单目录。**凡需读取代码或产品文档，必须优先使用下列路径，禁止臆造目录，也不要重复调用 `get_doc.py` 拉取已在工单目录中的文档。**
+
+| 用途 | 路径约定 | 说明 |
+|------|----------|------|
+| 工单根目录 | `{WORK_ORDER_DIR}` | 系统提示「产品工作区路径」或委派参数，形如 `work/<scope_id>/` |
+| 产品代码 | `{PRODUCT_CODE_ROOT}/<repo_name>/` | 默认 `{WORK_ORDER_DIR}/code/<repo_name>/` |
+| 产品文档 | `{PRODUCT_DOC_ROOT}/<doc_type>/` | 默认 `{WORK_ORDER_DIR}/doc/<doc_type>/`；架构文档在 `产品架构/` |
+
+- **FUNCTIONAL_ARCH / TECH_ARCH**：优先读 `{PRODUCT_DOC_ROOT}/产品架构/`
+- **代码确认**（Step 3）：在 `{PRODUCT_CODE_ROOT}` 各仓库目录内检索，路径标注为 `<repo_name>/相对路径`
+
 ---
 
 ## Parameters
 
 | Parameter | 必填 | 说明 / 示例 |
 |-----------|------|----------------|
-| `CLARIFY_DOC` | 是 | 需求澄清文档路径（`01-需求澄清.md`），包含范围定义、功能要点、澄清结论等结构化信息 |
+| `CLARIFY_DOC` | 是 | 需求澄清文档路径（通常为工单 `archive/` 下 `需求澄清.md`），须为可读绝对/相对路径 |
 | `PROD` | 是 | 产品名称 |
-| `SYNAPSE_URL` | 否 | SynapseService 服务地址，如 `192.168.1.100:8080`。用于获取产品架构文档 |
-| `TMP_DIR` | 否 | 临时文件目录，默认 `./.tmp/`，其下存储 `docs/`（架构文档）|
+| `WORK_ORDER_DIR` | 否 | 工单工作目录（研发会议室注入），如 `work/21881451`。提供时**必须**从此目录读代码/文档 |
+| `PRODUCT_CODE_ROOT` | 否 | 产品代码根目录，默认 `{WORK_ORDER_DIR}/code` |
+| `PRODUCT_DOC_ROOT` | 否 | 产品文档根目录，默认 `{WORK_ORDER_DIR}/doc` |
+| `SYNAPSE_URL` | 否 | SynapseService 地址。仅当工单目录无架构文档时，用于 `get_doc.py` 回退 |
+| `TMP_DIR` | 否 | 临时目录（回退下载用），默认 `./.tmp/`，其下 `docs/` |
 | `DEBUG` | 否 | 调试模式开关。如果显式传入 `true`，需将每一步的执行日志输出到调试文件中。默认 `false` |
 
 > **知识来源**：分析仅以实际存在的内容为依据，包括：代码（项目文件）、文档（FUNCTIONAL_ARCH、TECH_ARCH）、需求澄清文档（CLARIFY_DOC）。任何无法从上述来源验证的结论必须标注 `[待确认]`，严禁臆断想象。
@@ -44,8 +60,8 @@ label: 模块功能技能
   | 事实来源 | 说明 |
   |---------|------|
   | **需求澄清文档** | `CLARIFY_DOC`（01-需求澄清.md）— 包含范围定义、功能要点、澄清结论、约束与依赖 |
-  | **文档** | 功能架构文档（FUNCTIONAL_ARCH.md）、技术架构文档（TECH_ARCH.md）— 从 SynapseService 或本地获取 |
-  | **代码** | 项目的实际代码文件 — 通过文件系统直接读取或检索工具获取 |
+  | **文档** | 优先 `{PRODUCT_DOC_ROOT}/产品架构/`（FUNCTIONAL_ARCH、TECH_ARCH）；否则 SynapseService / `{TMP_DIR}/docs/` |
+  | **代码** | 优先 `{PRODUCT_CODE_ROOT}/<repo_name>/`；通过文件系统或检索工具读取，禁止臆造路径 |
 - 模块识别中凡涉及**文件路径、接口、类名**等结论，必须在代码或文档中有对应支撑依据，并标注来源。
 - 无法通过上述事实来源验证的条目必须标注 **`[待确认]`**，不得虚构。
 - 若某文档源未获取成功，涉及该文档的分析标注 `[待补充-文档未获取]`。
@@ -73,24 +89,24 @@ label: 模块功能技能
 Step 0 — 参数校验与环境准备
   0a. 校验必填参数：CLARIFY_DOC, PROD
   0b. Python 命令适配：优先使用 `python3`，若不可用则尝试 `py`（Windows），均不可用则尝试 `python`。以下用 `{PYTHON}` 指代实际可用的 Python 命令。
-  0c. 创建临时目录（若不存在）：
-        → mkdir -p {TMP_DIR} {TMP_DIR}/docs
-  0d. *(DEBUG)* 若 DEBUG=true，创建调试文件 {TMP_DIR}/module_function_debug.log，并将参数校验结果、Python 命令适配结果写入调试日志
+  0c. **解析工单目录**（研发会议室优先）：
+        - 若提供 `WORK_ORDER_DIR`：`CODE_ROOT = PRODUCT_CODE_ROOT`（缺省 `{WORK_ORDER_DIR}/code`），`DOC_ROOT = PRODUCT_DOC_ROOT`（缺省 `{WORK_ORDER_DIR}/doc`）
+        - 否则：`DOC_ROOT` 回退 `{TMP_DIR}/docs`，`mkdir -p {TMP_DIR} {TMP_DIR}/docs`
+  0d. *(DEBUG)* 若 DEBUG=true，创建调试文件 `{TMP_DIR}/module_function_debug.log`（或 `{WORK_ORDER_DIR}/module_function_debug.log`），写入参数与目录解析结果
 
 Step 1 — 获取项目资料（已存在则跳过）
   1a. 读取 CLARIFY_DOC，验证文档存在且可读，若不存在则**中止**
-  1b. 尝试获取功能架构文档（若 `SYNAPSE_URL` 已提供）：
-      若 {TMP_DIR}/docs/ 下已存在 FUNCTIONAL_ARCH 相关文件 → 跳过，直接读取已有文件
-      否则执行：
-        {PYTHON} <BASE_SCRIPTS_DIR>/scripts/get_doc.py --doc_type=产品架构 --server_url {SYNAPSE_URL} --prod {PROD} --doc_name=FUNCTIONAL_ARCH --output {TMP_DIR}/docs
-      若获取失败且无已有文件则**中止**（功能架构是本技能的核心输入）
-      若 `SYNAPSE_URL` 未提供，需用户手动提供 FUNCTIONAL_ARCH.md 路径
-  1c. 尝试获取技术架构文档（补充参考）：
-      若 {TMP_DIR}/docs/ 下已存在 TECH_ARCH 相关文件 → 跳过，直接读取已有文件
-      若 `SYNAPSE_URL` 已提供则执行：
-        {PYTHON} <BASE_SCRIPTS_DIR>/scripts/get_doc.py --doc_type=产品架构 --server_url {SYNAPSE_URL} --prod {PROD} --doc_name=TECH_ARCH --output {TMP_DIR}/docs
-      若获取失败且无已有文件则继续执行，仅以 FUNCTIONAL_ARCH.md 为准
-  1d. *(DEBUG)* 若 DEBUG=true，将 get_doc.py 的调用命令、返回状态写入调试日志
+  1b. **功能架构文档**（优先 `{DOC_ROOT}/产品架构/`，禁止重复下载）：
+      若该目录下已有 FUNCTIONAL_ARCH 相关 `.md` → 直接读取
+      否则且 `SYNAPSE_URL` 已提供 →
+        `{PYTHON} <BASE_SCRIPTS_DIR>/scripts/get_doc.py --doc_type=产品架构 --server_url {SYNAPSE_URL} --prod {PROD} --doc_name=FUNCTIONAL_ARCH --output {DOC_ROOT}/产品架构`
+      若获取失败且无已有文件则**中止**
+      若既无工单目录文档又无 `SYNAPSE_URL`，需人工提供 FUNCTIONAL_ARCH.md 路径
+  1c. **技术架构文档**（补充，同 1b 优先读 `{DOC_ROOT}/产品架构/`）：
+      已有 TECH_ARCH 相关文件 → 跳过下载
+      否则且 `SYNAPSE_URL` 已提供 → get_doc 输出到 `{DOC_ROOT}/产品架构`
+      失败则继续，仅以 FUNCTIONAL_ARCH 为准
+  1d. *(DEBUG)* 若 DEBUG=true，记录文档来源路径（工单目录 vs get_doc 回退）及命令状态
 
 Step 2 — 提取功能模块列表与需求拆分
   2a. 读取 FUNCTIONAL_ARCH.md，提取"核心功能详解"章节中的**功能模块列表**（每个模块的名称、功能描述、涉及的源代码文件），记为 ARCH_MODULE_LIST
@@ -116,10 +132,10 @@ Step 3 — 功能点匹配与代码确认
 
   3b. **代码确认**（对每个匹配到的功能模块）：
       功能架构是指导性文档，必须通过实际代码确认匹配结论是否准确：
-      - 在项目代码中搜索模块关键类名/接口名（通过文件系统直接检索或搜索工具）
+      - 在 `{PRODUCT_CODE_ROOT}`（或 `{WORK_ORDER_DIR}/code`）下各 `<repo_name>/` 目录中搜索模块关键类名/接口名
       - 在关键模块路径下搜索相关业务逻辑代码
-      - 读取模块核心代码文件
-      - **识别核心类**：从搜索结果中提取该模块的核心类（Controller/Service/DAO/Model 等关键类），记录类名和文件路径
+      - 读取模块核心代码文件（路径格式：`<repo_name>/相对路径`）
+      - **识别核心类**：从搜索结果中提取该模块的核心类（Controller/Service/DAO/Model 等），记录类名与**工单代码目录内**文件路径
 
   3c. **确认结论**（以代码为准）：
       - 代码确认该模块确实存在且需要改造 → 确定为**修改模块**，记录核心类列表和来源路径
@@ -147,7 +163,7 @@ Step 4 — 生成模块功能文档
 
 | 脚本 | 用途 | 详细文档 |
 |------|------|----------|
-| `<BASE_SCRIPTS_DIR>/scripts/get_doc.py` | 从 SynapseService 下载产品文档 | [../whalecloud-dev-tool-base-scripts/references/get_doc_readme.md](../whalecloud-dev-tool-base-scripts/references/get_doc_readme.md) |
+| `<BASE_SCRIPTS_DIR>/scripts/get_doc.py` | **回退**：工单目录无文档时从 SynapseService 下载 | [../whalecloud-dev-tool-base-scripts/references/get_doc_readme.md](../whalecloud-dev-tool-base-scripts/references/get_doc_readme.md) |
 
 ---
 
@@ -157,8 +173,8 @@ Step 4 — 生成模块功能文档
 |------|------|
 | 缺少必填参数（CLARIFY_DOC/PROD） | **中止**，列出缺失参数 |
 | CLARIFY_DOC 文件不存在 | **中止**，提示需求澄清文档路径无效 |
-| FUNCTIONAL_ARCH.md 获取失败且无已有文件 | **中止**，功能架构是本技能的核心输入 |
-| SYNAPSE_URL 未提供且本地无 FUNCTIONAL_ARCH.md | **中止**，提示需提供 SYNAPSE_URL 或手动提供 FUNCTIONAL_ARCH.md 路径 |
+| 工单目录与 get_doc 均无 FUNCTIONAL_ARCH | **中止**，功能架构是本技能的核心输入 |
+| SYNAPSE_URL 未提供且工单目录 / 本地均无 FUNCTIONAL_ARCH | **中止**，提示需提供路径或 SYNAPSE_URL |
 | TECH_ARCH.md 获取失败 | 继续执行，仅以 FUNCTIONAL_ARCH.md 为准 |
 | 代码检索无结果 | 标注 `[待确认]`，不得虚构内容 |
 

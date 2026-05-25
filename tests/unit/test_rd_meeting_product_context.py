@@ -8,7 +8,6 @@ import pytest
 
 from synapse.rd_meeting.devservice import (
     format_host_authority,
-    gitnexus_service_base_url,
     read_devservice_host,
     unified_service_base_url,
 )
@@ -112,16 +111,9 @@ def test_resolve_product_by_userwork_prod(monkeypatch, tmp_path):
         "synapse.rd_meeting.product_context.unified_service_base_url",
         lambda: "http://10.0.0.1:10001",
     )
-    monkeypatch.setattr(
-        "synapse.rd_meeting.product_context.gitnexus_service_base_url",
-        lambda: "http://10.0.0.1:11011",
-    )
-    monkeypatch.setattr(
-        "synapse.rd_meeting.product_context.gnx_cache_base_dir",
-        lambda: str(tmp_path / "gnx"),
-    )
-
-    product, _ = resolve_product_for_meeting("demand", scope_id)
+    product, system = resolve_product_for_meeting("demand", scope_id)
+    assert "gitnexus_url" not in system
+    assert "gnx_cache_base_dir" not in system
     assert product["locator_code"] == "ok"
     assert product["prod"] == prod_name
     assert product["prod_feature"] == "客户管理:CRM模块|订单中心:订单处理"

@@ -114,10 +114,11 @@ def normalize_node_init_log_data(data: dict[str, Any]) -> dict[str, Any]:
     system = out.get("system")
     if isinstance(system, dict):
         s = dict(system)
-        s.pop("work_order_dir", None)
+        # work_order_dir / product_code_root / product_doc_root 由 room_opened 落盘注入，保留供四段式与 SKILL 使用
         s.pop("repo_name", None)
-        if "gnx_cache_dir" in s and "gnx_cache_base_dir" not in s:
-            s["gnx_cache_base_dir"] = s.pop("gnx_cache_dir")
+        s.pop("gitnexus_url", None)
+        s.pop("gnx_cache_base_dir", None)
+        s.pop("gnx_cache_dir", None)
         out["system"] = s
     if "order" in out:
         return out

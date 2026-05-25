@@ -47,6 +47,8 @@ def _format_section_product(product: dict[str, Any]) -> str:
         lines.append(f"- PROD_FEATURE：{product['prod_feature']}")
     if product.get("version"):
         lines.append(f"- version：`{product['version']}`")
+    if product.get("work_order_dir"):
+        lines.append(f"- **工单工作目录**：`{product['work_order_dir']}`")
     if product.get("code_root"):
         lines.append(f"- **产品代码根目录**：`{product['code_root']}`")
     if product.get("doc_root"):
@@ -97,8 +99,6 @@ def _format_section_system(
     lines: list[str] = []
     for key, label in (
         ("synapse_url", "SYNAPSE_URL"),
-        ("gitnexus_url", "GITNEXUS_URL"),
-        ("gnx_cache_base_dir", "TMP_DIR"),
         ("work_order_dir", "工单工作目录"),
         ("product_code_root", "产品代码根目录"),
         ("product_doc_root", "产品文档根目录"),
