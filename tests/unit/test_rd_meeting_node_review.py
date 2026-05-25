@@ -136,6 +136,57 @@ def test_aggregate_metrics_counts_delegations_and_workers(tmp_path):
     assert metrics.node_duration_seconds == 45
 
 
+def test_aggregate_worker_tools_from_pool_with_host_session_fallback(tmp_path):
+    """Worker 委派任务注册在 host session；sub_agent_states 截断时仍应从池化实例读全量 tools。"""
+    scope = "scope-pool"
+    room = "room-pool"
+    host_sid = f"rd_meeting:{room}:host"
+    worker_sid = f"rd_meeting:{room}:doc-gen"
+
+    # Task 挂在 host session（与 orchestrator._call_agent 一致）
+    worker_task = SimpleNamespace(
+        tools_executed=["grep", "read_file", "run_skill_script", "grep", "write_file"],
+        skills_executed=[{"skill": "doc-generate", "tool": "run_skill_script"}],
+        status=SimpleNamespace(value="completed"),
+        iteration=3,
+        session_id=host_sid,
+        task_id="abc12345",
+        description="",
+        usage_scene="",
+    )
+    worker_state = SimpleNamespace(
+        current_task=worker_task,
+        get_task_for_session=lambda sid: worker_task if sid == host_sid else None,
+    )
+    worker_agent = SimpleNamespace(
+        _context=SimpleNamespace(messages=[]),
+        agent_state=worker_state,
+        last_usage={"total_tokens": 1200},
+    )
+
+    pool = _FakePool({worker_sid: worker_agent})
+    # orchestrator 只有截断的 2 条工具名
+    orch = _FakeOrch(
+        [{"profile_id": "doc-gen", "tools_executed": ["write_file"], "tools_total": 5, "tokens_used": 100}]
+    )
+
+    metrics = aggregate_node_metrics(
+        scope_id=scope,
+        room_id=room,
+        node_id="req_clarify",
+        binding={"host_profile_id": "default", "worker_profile_ids": ["doc-gen"]},
+        agent_pool=pool,
+        orchestrator=orch,
+    )
+
+    doc = metrics.workers[0]
+    assert doc.tool_calls == 5
+    assert doc.tokens == 1200
+    names = {b["name"]: b["count"] for b in doc.tools}
+    assert names.get("grep") == 2
+    assert names.get("write_file") == 1
+
+
 def test_collect_artifact_files_lists_md_and_others(tmp_path):
     scope = "scope-B"
     stage_id = 2

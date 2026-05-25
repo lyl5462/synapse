@@ -288,6 +288,7 @@ async def get_node_review(
 
     # refresh=true 或缓存缺失：用 binding 重新装配（不走 LLM）
     try:
+        from synapse.rd_meeting.agent_session import resolve_meeting_orchestrator
         from synapse.rd_meeting.binding import resolve_node_binding
         from synapse.rd_sop.nodes import stage_id_for_node_id
 
@@ -305,7 +306,7 @@ async def get_node_review(
             duration_seconds=int(pending.get("duration_seconds") or 0) if isinstance(pending, dict) else 0,
             stage_id=int(pending.get("stage_id") or stage_id_for_node_id(target_node)) if isinstance(pending, dict) else stage_id_for_node_id(target_node),
             agent_pool=pool,
-            orchestrator=getattr(pool, "orchestrator", None) if pool is not None else None,
+            orchestrator=resolve_meeting_orchestrator(pool),
             use_llm_summary=False,  # refresh 仅刷新 metrics，不再二次跑 LLM
         )
         save_node_review(sid, target_node, payload)

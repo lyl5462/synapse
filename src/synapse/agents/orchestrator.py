@@ -752,7 +752,7 @@ class AgentOrchestrator:
                             **self._sub_agent_states.get(state_key, {}),
                             "status": "running",
                             "iteration": iter_n if iter_n > 0 else fp[0],
-                            "tools_executed": tools_list[-5:],
+                            "tools_executed": tools_list,
                             "tools_total": len(tools_list),
                             "skills_executed": skills_list[-20:],
                             "skills_total": len(skills_list),
@@ -787,6 +787,17 @@ class AgentOrchestrator:
             self._refresh_sub_agent_progress_snapshot(state_key, agent, session.id)
             self._update_sub_state(state_key, "completed", time.monotonic() - start)
             return result
+        except Exception:
+            # 委派失败时也尽量固化已执行的工具快照，供 metrics / Drawer 统计
+            try:
+                self._refresh_sub_agent_progress_snapshot(state_key, agent, session.id)
+            except Exception:
+                pass
+            if state_key in self._sub_agent_states:
+                entry = self._sub_agent_states[state_key]
+                if entry.get("status") in ("starting", "running"):
+                    entry["status"] = "failed"
+            raise
         except asyncio.CancelledError:
             if not task.done():
                 task.cancel()
@@ -952,7 +963,7 @@ class AgentOrchestrator:
         self._sub_agent_states[state_key] = {
             **existing,
             "iteration": max(int(existing.get("iteration") or 0), iter_n),
-            "tools_executed": tools_list[-5:],
+            "tools_executed": tools_list,
             "tools_total": max(int(existing.get("tools_total") or 0), len(tools_list)),
             "skills_executed": skills_list[-20:],
             "skills_total": max(int(existing.get("skills_total") or 0), len(skills_list)),

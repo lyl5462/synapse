@@ -213,13 +213,19 @@ def aggregate_node_metrics(
         node_duration_seconds=int(duration_seconds or 0),
     )
 
+    if orchestrator is None:
+        from synapse.rd_meeting.agent_session import resolve_meeting_orchestrator
+
+        orchestrator = resolve_meeting_orchestrator(agent_pool)
+
+    host_sid = host_session_id(room_id) if room_id else ""
+
     # ─── host ───
     host_messages: list[Any] = []
     host_tokens = 0
     host_tools_executed: list[str] = []
     host_skills_executed: list[Any] = []
     if agent_pool is not None and room_id:
-        host_sid = host_session_id(room_id)
         host_agent = None
         try:
             host_agent = agent_pool.get_existing(host_sid) if hasattr(agent_pool, "get_existing") else None
@@ -232,10 +238,18 @@ def aggregate_node_metrics(
             if isinstance(usage, dict):
                 host_tokens = int(usage.get("total_tokens") or usage.get("tokens") or 0)
             state = getattr(host_agent, "agent_state", None)
-            task = getattr(state, "current_task", None) if state is not None else None
-            if task is not None:
-                host_tools_executed = list(getattr(task, "tools_executed", None) or [])
-                host_skills_executed = list(getattr(task, "skills_executed", None) or [])
+            if state is not None and hasattr(state, "get_task_for_session"):
+                from synapse.rd_meeting.agent_context_probe import _task_snapshot
+
+                snap = _task_snapshot(host_agent, host_sid)
+                if snap:
+                    host_tools_executed = list(snap.get("tools_executed") or [])
+                    host_skills_executed = list(snap.get("skills_executed") or [])
+            elif state is not None:
+                task = getattr(state, "current_task", None)
+                if task is not None:
+                    host_tools_executed = list(getattr(task, "tools_executed", None) or [])
+                    host_skills_executed = list(getattr(task, "skills_executed", None) or [])
 
     host_tool_buckets = _count_buckets(host_tools_executed)
     host_skill_buckets = _count_skill_buckets(host_skills_executed)
@@ -274,27 +288,43 @@ def aggregate_node_metrics(
         rows = sub_rows_by_pid.get(wid, [])
         tools_acc: list[str] = []
         skills_acc: list[Any] = []
-        tokens_acc = 0
+        tokens_acc = sum(int(r.get("tokens_used") or 0) for r in rows)
         invocations = len(rows)
-        for r in rows:
-            tools_acc.extend(list(r.get("tools_executed") or []))
-            skills_acc.extend(list(r.get("skills_executed") or []))
-            tokens_acc += int(r.get("tokens_used") or 0)
-        if not rows and agent_pool is not None and room_id:
+
+        # 优先从池化 worker 读完整 TaskState（委派任务常注册在 host session）
+        if agent_pool is not None and room_id:
             worker_sid = f"rd_meeting:{room_id}:{wid}"
+            w_agent = None
             try:
                 w_agent = agent_pool.get_existing(worker_sid) if hasattr(agent_pool, "get_existing") else None
             except Exception:
                 w_agent = None
             if w_agent is not None:
-                state = getattr(w_agent, "agent_state", None)
-                task = getattr(state, "current_task", None) if state is not None else None
-                if task is not None:
-                    tools_acc = list(getattr(task, "tools_executed", None) or [])
-                    skills_acc = list(getattr(task, "skills_executed", None) or [])
+                from synapse.rd_meeting.agent_context_probe import _task_snapshot
+
+                snap = _task_snapshot(
+                    w_agent,
+                    worker_sid,
+                    fallback_session_ids=[host_sid] if host_sid else None,
+                )
+                if snap:
+                    tools_acc = list(snap.get("tools_executed") or [])
+                    skills_acc = list(snap.get("skills_executed") or [])
                 usage = getattr(w_agent, "last_usage", None) or {}
                 if isinstance(usage, dict):
-                    tokens_acc = int(usage.get("total_tokens") or usage.get("tokens") or 0)
+                    pool_tokens = int(usage.get("total_tokens") or usage.get("tokens") or 0)
+                    tokens_acc = max(tokens_acc, pool_tokens)
+
+        # orchestrator 子状态兜底（列表可能被截断为最近 5 条）
+        if rows:
+            if not tools_acc:
+                for r in rows:
+                    tools_acc.extend(list(r.get("tools_executed") or []))
+            if not skills_acc:
+                for r in rows:
+                    skills_acc.extend(list(r.get("skills_executed") or []))
+            if not tokens_acc:
+                tokens_acc = sum(int(r.get("tokens_used") or 0) for r in rows)
 
         tool_buckets = _count_buckets(tools_acc)
         skill_buckets = _count_skill_buckets(skills_acc)

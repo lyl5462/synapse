@@ -176,16 +176,9 @@ class MeetingRoomService:
 
     @staticmethod
     def _resolve_orchestrator(agent_pool: Any | None = None) -> Any | None:
-        try:
-            from synapse.main import _orchestrator
+        from synapse.rd_meeting.agent_session import resolve_meeting_orchestrator
 
-            if _orchestrator is not None:
-                return _orchestrator
-        except (ImportError, AttributeError):
-            pass
-        if agent_pool is not None:
-            return getattr(agent_pool, "orchestrator", None)
-        return None
+        return resolve_meeting_orchestrator(agent_pool)
 
     def get_agent_contexts(
         self,

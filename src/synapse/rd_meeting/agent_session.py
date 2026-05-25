@@ -11,6 +11,23 @@ def host_session_id(room_id: str) -> str:
     return f"rd_meeting:{(room_id or '').strip()}:host"
 
 
+def resolve_meeting_orchestrator(agent_pool: Any | None = None) -> Any | None:
+    """解析全局 AgentOrchestrator（委派子任务状态 / metrics 聚合用）。
+
+    ``AgentInstancePool`` 本身不带 ``orchestrator`` 属性；实际实例在 ``synapse.main._orchestrator``。
+    """
+    try:
+        from synapse.main import _orchestrator
+
+        if _orchestrator is not None:
+            return _orchestrator
+    except (ImportError, AttributeError):
+        pass
+    if agent_pool is not None:
+        return getattr(agent_pool, "orchestrator", None)
+    return None
+
+
 def ensure_host_session(room_id: str, host_profile_id: str) -> Session:
     """构造与 agent pool key 一致的 host Session（内存对象，供委派链路使用）。"""
     sid = host_session_id(room_id)

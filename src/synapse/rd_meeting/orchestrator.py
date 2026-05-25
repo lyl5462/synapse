@@ -1359,6 +1359,7 @@ class MeetingRoomOrchestrator:
             # human_confirm 节点：走 NODE_REVIEW pipeline 步骤装配「整体总结 / 工作摘要 /
             # 产出物 / 人工输入框」四段 payload，前端 NodeReviewPanel 渲染；不再用
             # hitl_form 多题问卷。
+            from synapse.rd_meeting.agent_session import resolve_meeting_orchestrator
             from synapse.rd_meeting.pipeline import run_node_review_step
 
             set_phase(sid, "result_gate")
@@ -1374,7 +1375,7 @@ class MeetingRoomOrchestrator:
                     duration_seconds=duration,
                     stage_id=stage_id,
                     agent_pool=agent_pool,
-                    orchestrator=getattr(agent_pool, "orchestrator", None),
+                    orchestrator=resolve_meeting_orchestrator(agent_pool),
                 )
             except Exception as exc:  # pragma: no cover - 装配失败降级
                 logger.warning("run_node_review_step failed scope=%s: %s", sid, exc)
