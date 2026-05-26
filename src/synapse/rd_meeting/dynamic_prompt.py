@@ -89,7 +89,7 @@ def _format_section_system(system: dict[str, Any]) -> str:
     current_os = str(sys.get("current_os") or _detect_current_os_type()).strip().upper()
     if current_os not in {"WINDOWS", "LINUX", "MACOS"}:
         current_os = _detect_current_os_type()
-    lines.append(f"- CURRENT_OS：`{current_os}`")
+    lines.append(f"- CURRENT_OS：`{current_os}` 请使用该操作系统对应的命令, 不要尝试非本操作系统的命令")
 
     synapse_url = str(sys.get("synapse_url") or unified_service_base_url() or "").strip()
     if synapse_url:

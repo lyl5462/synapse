@@ -107,7 +107,7 @@ UNPRODUCTIVE_ADMIN_TOOLS = frozenset(
         "complete_todo",
         "search_memory",
         "add_memory",
-        "list_directory",
+        # "list_directory",
     }
 )
 
