@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from synapse.rd_meeting.node_review import (
+    _extract_llm_text,
+    _is_invalid_summary_response,
     build_activity_summary_context,
     aggregate_node_metrics,
     build_node_review_payload,
@@ -524,3 +526,49 @@ async def test_build_payload_fallback_uses_activity_when_no_conversation(tmp_pat
     )
     summary_md = payload["summaries"][0]["summary_markdown"]
     assert "需求澄清" in summary_md or "节点产出" in summary_md or "反馈" in summary_md
+
+
+def test_invalid_summary_response_detection():
+    assert _is_invalid_summary_response(
+        "已收到您的提示。本次任务（撰写需求澄清工作总结摘要）已在上一轮完成输出，无需进一步调用工具。"
+    )
+    assert _is_invalid_summary_response("太短")
+    assert not _is_invalid_summary_response(
+        "在需求澄清环节中，分别委派给浩鲸需求分析专家与产品研发专家各一次，"
+        "与研发人员交互一次，最终完成需求澄清文档编写并提交问卷确认。"
+    )
+
+
+@pytest.mark.asyncio
+async def test_summarize_via_host_agent_uses_isolated_brain_call():
+    from synapse.rd_meeting.node_review import _summarize_via_host_agent
+
+    class _FakeBlock:
+        text = (
+            "在需求澄清环节中，分别委派给浩鲸需求分析专家与产品研发专家各一次，"
+            "与研发人员交互一次，最终完成需求澄清文档编写并提交问卷确认。"
+        )
+
+    class _FakeResponse:
+        content = [_FakeBlock()]
+
+    class _FakeBrain:
+        max_tokens = 2048
+
+        async def messages_create_async(self, **kwargs):
+            assert kwargs.get("tools") == []
+            assert len(kwargs.get("messages") or []) == 1
+            assert kwargs.get("usage_scene") == "rd_meeting_scope-llm_node_review"
+            return _FakeResponse()
+
+    out = await _summarize_via_host_agent(
+        scope_id="scope-llm",
+        room_id="room-llm",
+        host_agent=SimpleNamespace(brain=_FakeBrain()),
+        host_profile_id="default",
+        target_profile_id="default",
+        target_role="host",
+        target_display="小鲸",
+        prompt="【独立审阅任务】请撰写摘要",
+    )
+    assert "需求澄清" in out

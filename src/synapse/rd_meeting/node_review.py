@@ -13,8 +13,8 @@ LLM 跑完后组装并落盘到 ``meeting_pipeline.json.context.node_review[node
 3. **artifacts**：本节点 ``archive/<stage>/<node>/`` 下所有文件（含 mtime / size）
 4. **report_body**：兼容字段，保留 LLM 终稿，前端可不显示
 
-LLM 摘要走 host agent 的 ``execute_task_from_message``（与 run_current_node
-共用 host 实例），不重新创建 agent，token 也算在 host 头上。
+LLM 摘要走 host agent 的 ``brain.messages_create_async`` 独立调用（无工具、无会话历史），
+避免 ``execute_task_from_message`` 复用节点内 messages 导致模型误判「已完成」。
 """
 
 from __future__ import annotations
@@ -27,11 +27,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from synapse.rd_meeting.agent_session import (
-    bind_meeting_agent_session,
-    clear_meeting_agent_session,
-    ensure_host_session,
-)
 from synapse.rd_meeting.paths import agent_node_dir, archive_node_dir, meeting_pipeline_path
 from synapse.rd_meeting.room_runtime import (
     load_room_state,
@@ -49,7 +44,27 @@ REVIEW_SCHEMA_VERSION = 1
 _SUMMARY_PROMPT_BUDGET_CHARS = 6000  # 单 agent 摘要 prompt 上下文最大字符数
 _DELEGATION_TOOL_NAMES = frozenset({"delegate_to_agent", "delegate_parallel"})
 _SKILL_CATEGORIES = frozenset({"skill_load", "skill_exec", "skill", "skill_load_blocked"})
-_TASK_SNIPPET_LIMIT = 240
+_TASK_SNIPPET_LIMIT = 120
+_OUTPUT_SNIPPET_LIMIT = 80
+_MAX_OUTPUT_ROWS = 3
+
+_NODE_REVIEW_SYSTEM = (
+    "你是研发会议室的节点审阅摘要助手。"
+    "根据用户提供的结构化活动汇总，撰写该智能体在本 SOP 节点的工作总结摘要。"
+    "只输出 1-3 段自然中文摘要正文。"
+    "禁止调用任何工具；"
+    "禁止输出「已收到您的提示」「无需进一步调用工具」「已在上一轮完成」等元话语；"
+    "禁止 Markdown 标题、列表或代码块。"
+)
+
+_INVALID_SUMMARY_MARKERS = (
+    "无需进一步调用工具",
+    "无需再调用工具",
+    "无需调用工具",
+    "已在上一轮完成",
+    "已收到您的提示",
+    "已收到你的提示",
+)
 
 
 def _truncate_excerpt(body: str, limit: int = _SUMMARY_PROMPT_BUDGET_CHARS) -> str:
@@ -187,13 +202,15 @@ def _aggregate_host_delegation_section(rows: list[dict[str, Any]]) -> list[str]:
     ]
     if outputs:
         lines.append(f"- 节点产出/反馈：{len(outputs)} 条")
-        for row in outputs[:8]:
+        for row in outputs[:_MAX_OUTPUT_ROWS]:
             title = str(row.get("title") or row.get("display_title") or "产出").strip()
-            summary = _truncate_snippet(str(row.get("summary") or ""))
+            summary = _truncate_snippet(str(row.get("summary") or ""), limit=_OUTPUT_SNIPPET_LIMIT)
             ok = row.get("success") is not False
             status = "成功" if ok else "失败"
             detail = f" — {summary}" if summary else ""
             lines.append(f"  - {title}{detail}（{status}）")
+        if len(outputs) > _MAX_OUTPUT_ROWS:
+            lines.append(f"  - …（另有 {len(outputs) - _MAX_OUTPUT_ROWS} 条未展开）")
 
     if not lines:
         return ["- （本节点 activity 中无委派或人类交互记录）"]
@@ -638,6 +655,31 @@ def collect_artifact_files(scope_id: str, stage_name: str, node_id: str) -> list
 # ─── 工作摘要（LLM 生成） ─────────────────────────────────────────────
 
 
+def _extract_llm_text(response: Any) -> str:
+    from synapse.core.response_handler import clean_llm_response
+
+    content = getattr(response, "content", None)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if hasattr(block, "text"):
+                parts.append(str(block.text or ""))
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+        raw = "\n".join(p for p in parts if p.strip())
+    else:
+        raw = str(content or "")
+    return clean_llm_response(raw)
+
+
+def _is_invalid_summary_response(text: str) -> bool:
+    """识别模型误把摘要任务当成「已完成的对话续接」时的元话语回复。"""
+    s = (text or "").strip()
+    if len(s) < 50:
+        return True
+    return any(marker in s for marker in _INVALID_SUMMARY_MARKERS)
+
+
 def _build_summary_prompt(
     *,
     role: str,
@@ -647,10 +689,12 @@ def _build_summary_prompt(
     activity_context: str,
 ) -> str:
     role_label = "主控智能体（主持人小鲸）" if role == "host" else f"协作智能体「{profile_display_name}」"
+    intent_short = _truncate_snippet(node_intent, limit=400)
     if role == "host":
         example = (
-            f"在[{node_name}]研发环节中，分别委派给文档专家智能体 2 次需求整理工作，"
-            "与研发人员交互 3 次，最终完成了需求澄清文档的编写与归档。"
+            f"在[{node_name}]研发环节中，分别委派给浩鲸需求分析专家 1 次需求澄清问题整理工作、"
+            f"浩鲸产品研发专家 1 次代码调研工作，与研发人员交互 1 次，"
+            f"最终完成了需求澄清文档编写并提交人工确认问卷。"
         )
         role_hint = (
             "- 须涵盖：委派了哪些协作智能体、各委派几次及任务要点、与研发人员交互次数、"
@@ -658,7 +702,7 @@ def _build_summary_prompt(
         )
     else:
         example = (
-            f"在[{node_name}]研发环节中，收到了 2 次委派工作，主要工作内容是整理需求澄清要点并生成文档，"
+            f"在[{node_name}]研发环节中，收到了 1 次委派工作，主要工作内容是整理需求澄清要点并生成文档，"
             "期间使用了 `grep`、`write_file` 工具和 `whalecloud-dev-tool-requirement-clarify` 技能，"
             "完成情况为已产出需求澄清文档并通过主控验收。"
         )
@@ -666,17 +710,20 @@ def _build_summary_prompt(
             "- 须涵盖：收到几次委派、主要工作内容、使用了哪些工具与技能、完成情况。\n"
         )
     return (
-        f"# 任务：撰写 SOP 节点「{node_name}」的 {role_label} 工作总结摘要\n\n"
-        f"## 节点目标\n{node_intent or '（未配置）'}\n\n"
+        f"【独立审阅任务】这是节点 `{node_name}` 结束后的系统自动摘要任务，"
+        f"与会议室此前任何对话无关。请忽略会话记忆，仅依据下方活动汇总，"
+        f"重新撰写 **{role_label}** 的工作总结摘要。\n\n"
+        f"## 节点目标\n{intent_short or '（未配置）'}\n\n"
         f"## 本智能体节点活动汇总（已结构化，请据此撰写，勿编造）\n"
-        f"```\n{activity_context}\n```\n\n"
+        f"{activity_context}\n\n"
         "## 输出要求\n"
-        "- 这是一段**工作总结摘要**（不是对话回放、不是原始日志）。\n"
+        "- 这是一段**工作总结摘要**（不是对话回放、不是原始日志、不是对用户的回复）。\n"
         f"- 视角始终是 **{role_label}**。\n"
         f"{role_hint}"
         "- 用 1-3 段自然中文，不要 Markdown 标题，不要列表，不要代码块。\n"
         "- 语气简洁客观，审阅者 30 秒内能读懂本智能体在本节点的贡献。\n"
         "- 严禁编造汇总数据中未出现的事实。\n"
+        "- **禁止**回复「已收到」「无需调用工具」「上一轮已完成」等元话语。\n"
         "- 直接输出摘要正文，不要任何前后缀说明。\n\n"
         "## 输出样例（格式与风格参考，内容须替换为实际汇总数据）\n"
         f"{example}\n"
@@ -689,31 +736,52 @@ async def _summarize_via_host_agent(
     room_id: str,
     host_agent: Any,
     host_profile_id: str,
+    target_profile_id: str,
+    target_role: str,
+    target_display: str,
     prompt: str,
 ) -> str:
-    """复用 host agent 跑一次 LLM 总结。失败时返回空串。"""
+    """隔离调用 host 的 brain 生成摘要（无工具、无节点内 messages 历史）。"""
     if host_agent is None:
         return ""
-    meeting_session = ensure_host_session(room_id, host_profile_id)
-    bind_meeting_agent_session(host_agent, meeting_session)
-    try:
-        result = await host_agent.execute_task_from_message(
-            prompt,
-            usage_scene=f"rd_meeting_{scope_id}_node_review",
-        )
-        if getattr(result, "success", False):
-            return str(getattr(result, "data", "") or "").strip()
-        logger.info(
-            "node_review summary llm not success scope=%s err=%s",
-            scope_id,
-            getattr(result, "error", ""),
-        )
+    brain = getattr(host_agent, "brain", None)
+    if brain is None:
+        logger.warning("node_review summary: host agent has no brain scope=%s", scope_id)
         return ""
+    usage_scene = f"rd_meeting_{scope_id}_node_review"
+    try:
+        response = await brain.messages_create_async(
+            system=_NODE_REVIEW_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+            tools=[],
+            max_tokens=getattr(brain, "max_tokens", 4096),
+            usage_scene=usage_scene,
+        )
+        markdown = _extract_llm_text(response)
+        logger.info(
+            "[node_review summary response] scope=%s room=%s target_profile=%s target_role=%s "
+            "target_display=%s chars=%d valid=%s\n--- response begin ---\n%s\n--- response end ---",
+            scope_id,
+            room_id,
+            target_profile_id,
+            target_role,
+            target_display,
+            len(markdown),
+            not _is_invalid_summary_response(markdown),
+            markdown,
+        )
+        if _is_invalid_summary_response(markdown):
+            logger.info(
+                "node_review summary rejected as meta/refusal scope=%s profile=%s role=%s",
+                scope_id,
+                target_profile_id,
+                target_role,
+            )
+            return ""
+        return markdown
     except Exception as exc:  # pragma: no cover - LLM 调用本身可能抛
         logger.warning("node_review summary llm failed scope=%s: %s", scope_id, exc)
         return ""
-    finally:
-        clear_meeting_agent_session(host_agent)
 
 
 def _fallback_summary(
@@ -814,6 +882,9 @@ async def generate_agent_summaries(
                 room_id=room_id,
                 host_agent=host_agent,
                 host_profile_id=host_profile_id,
+                target_profile_id=pid,
+                target_role=role,
+                target_display=display,
                 prompt=prompt,
             )
             if markdown:
