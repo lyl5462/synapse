@@ -6,40 +6,116 @@ from synapse.rd_meeting.chat_display import expand_history_event_to_chat
 from synapse.rd_meeting.room_runtime import history_to_chat_logs
 
 
-def test_node_started_splits_context_and_participants() -> None:
+def test_node_init_context_once_with_pipeline() -> None:
+    ev = {
+        "event": "node_init",
+        "room_id": "mr_d_1",
+        "node_id": "req_clarify",
+        "agent_id": "default",
+        "text": '{"order":{"id":"1","title":"T"},"product":{"prod":"P"},"system":{}}',
+        "chat_text": "节点初始化\n\n已加载上下文。",
+        "ts": "2026-05-21T10:00:00",
+    }
+    rows = expand_history_event_to_chat(ev, 0)
+    kinds = [r["displayKind"] for r in rows]
+    assert kinds.count("node_context") == 1
+    assert "pipeline" in kinds
+
+
+def test_node_started_only_participants_no_duplicate_context() -> None:
     ev = {
         "event": "node_started",
         "room_id": "mr_d_1",
         "node_id": "req_clarify",
         "agent_id": "default",
         "text": '{"order":{"id":"1","title":"T"},"product":{"prod":"P"},"system":{}}',
-        "binding": {"host_profile_id": "default", "worker_profile_ids": ["w1", "w2"]},
+        "binding": {"host_profile_id": "default", "worker_profile_ids": ["w1"]},
         "participants": [
             {"profile_id": "default", "role": "host", "display_name": "小鲸"},
             {"profile_id": "w1", "role": "worker", "display_name": "专家A"},
         ],
-        "ts": "2026-05-21T10:00:00",
+        "ts": "2026-05-21T10:00:01",
     }
-    rows = expand_history_event_to_chat(ev, 0)
+    rows = expand_history_event_to_chat(ev, 1)
     kinds = [r["displayKind"] for r in rows]
-    assert "node_context" in kinds
-    assert "participants" in kinds
-    assert all(r["speakerRole"] == "system" for r in rows)
+    assert kinds == ["participants"]
+    assert rows[0]["text"] == "参会人员名单"
+    assert rows[0]["speakerRole"] == "system"
+    assert "node_context" not in kinds
 
 
-def test_work_plan_is_system_role() -> None:
+def test_prewarm_workers_skipped() -> None:
+    assert history_to_chat_logs(
+        [
+            {
+                "event": "prewarm_workers",
+                "room_id": "mr_d_1",
+                "node_id": "req_clarify",
+                "worker_profile_ids": ["w1"],
+                "agent_id": "default",
+                "ts": "2026-05-21T10:00:02",
+            }
+        ]
+    ) == []
+
+
+def test_work_plan_host_and_unwrap_json_message() -> None:
     rows = expand_history_event_to_chat(
         {
             "event": "work_plan_submitted",
-            "text": "# 工作安排计划\n\n**目标**：澄清",
+            "text": '{"message":"# 工作安排计划\\n\\n**目标**：澄清"}',
             "agent_id": "default",
             "ts": "2026-05-21T10:01:00",
         },
-        1,
+        2,
     )
     assert len(rows) == 1
-    assert rows[0]["speakerRole"] == "system"
+    assert rows[0]["speakerRole"] == "host"
     assert rows[0]["displayKind"] == "work_plan"
+    assert rows[0]["text"].startswith("# 工作安排计划")
+
+
+def test_host_llm_begin_is_host() -> None:
+    rows = expand_history_event_to_chat(
+        {
+            "event": "host_llm_begin",
+            "agent_id": "default",
+            "reused_host_prompt_cache": False,
+            "ts": "2026-05-21T10:02:00",
+        },
+        3,
+    )
+    assert rows[0]["speakerRole"] == "host"
+    assert rows[0]["agentId"] == "default"
+
+
+def test_hitl_dynamic_is_host() -> None:
+    rows = expand_history_event_to_chat(
+        {
+            "event": "hitl_dynamic",
+            "detail": "主控通过工具提交问卷 kind=interactive questions=22",
+            "agent_id": "default",
+            "source": "tool",
+            "ts": "2026-05-21T11:00:00",
+        },
+        4,
+    )
+    assert rows[0]["speakerRole"] == "host"
+
+
+def test_node_pending_confirm_waiting_feedback() -> None:
+    rows = expand_history_event_to_chat(
+        {
+            "event": "node_pending_confirm",
+            "duration_seconds": 964,
+            "dynamic_form": True,
+            "agent_id": "default",
+            "ts": "2026-05-21T11:01:00",
+        },
+        5,
+    )
+    assert rows[0]["speakerRole"] == "host"
+    assert "等待问卷反馈" in rows[0]["text"]
 
 
 def test_delegation_roles() -> None:
@@ -52,10 +128,9 @@ def test_delegation_roles() -> None:
             "plan_item_id": "t1",
             "ts": "2026-05-21T10:02:00",
         },
-        2,
+        6,
     )[0]
     assert start["speakerRole"] == "host"
-    assert start["displayKind"] == "delegation_start"
 
     done = expand_history_event_to_chat(
         {
@@ -65,22 +140,6 @@ def test_delegation_roles() -> None:
             "ok": True,
             "ts": "2026-05-21T10:10:00",
         },
-        3,
+        7,
     )[0]
     assert done["speakerRole"] == "worker"
-    assert done["displayKind"] == "delegation_done"
-
-
-def test_hitl_dynamic_system() -> None:
-    rows = expand_history_event_to_chat(
-        {
-            "event": "hitl_dynamic",
-            "detail": "主控通过工具提交问卷 kind=interactive questions=22",
-            "agent_id": "default",
-            "source": "tool",
-            "ts": "2026-05-21T11:00:00",
-        },
-        4,
-    )
-    assert rows[0]["speakerRole"] == "system"
-    assert rows[0]["displayKind"] == "hitl_tool"

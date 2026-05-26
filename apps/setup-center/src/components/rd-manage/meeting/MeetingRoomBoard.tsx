@@ -1259,7 +1259,7 @@ const InterventionDialog = ({
           <div className="p-3 border-b border-border bg-[color:var(--panel2)] shrink-0 h-[72px] flex flex-col justify-center">
             <div className="flex items-center justify-between mb-1.5">
                <span className="text-sm font-semibold text-foreground flex items-center gap-2">
-                 <MessageSquare className="w-4 h-4 text-blue-400" />
+                 <MessageSquare className="w-4 h-4 text-violet-400" />
                  协作会议流
                </span>
                <Tag color={room.status === 'human_intervention' ? 'error' : 'processing'} className="m-0 border-0 text-[10px]">
@@ -1267,7 +1267,7 @@ const InterventionDialog = ({
                </Tag>
             </div>
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-               <span>在线成员:</span>
+               <span>参会成员:</span>
                <div className="flex items-center gap-2">
                  <Avatar size="small" className="bg-muted text-[10px] ring-2 ring-background">我</Avatar>
                  <span className="mx-1 text-muted-foreground/70">|</span>

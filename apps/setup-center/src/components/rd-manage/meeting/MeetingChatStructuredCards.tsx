@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Bot,
   CheckCircle2,
@@ -11,6 +11,12 @@ import {
   XCircle,
 } from 'lucide-react';
 import { ReviewMarkdown } from './ReviewMarkdown';
+import {
+  HOST_PROFILE_ID,
+  MeetingAgentAvatar,
+  stubWorkerAgent,
+} from './MeetingAgentAvatar';
+import type { RoomAgent } from './meetingChatTypes';
 import type { ChatDisplayKind, MeetingChatLog } from './meetingChatUtils';
 
 function SectionTitle({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
@@ -86,44 +92,109 @@ export function NodeContextCard({ payload }: { payload: Record<string, unknown> 
   );
 }
 
+const HOST_ROSTER_AGENT: RoomAgent = {
+  id: HOST_PROFILE_ID,
+  name: '小鲸',
+  role: '会议主持',
+  avatarColor: 'bg-violet-500',
+  icon: <Bot className="w-3.5 h-3.5" />,
+  status: 'idle',
+  currentAction: '主持',
+};
+
+function resolveWorkerRoster(
+  payload: Record<string, unknown>,
+): { hostId: string; workers: RoomAgent[] } {
+  const hostId = String(payload.host_profile_id || HOST_PROFILE_ID);
+  const rawParts =
+    (payload.participants as { profile_id?: string; display_name?: string; role?: string }[]) || [];
+  const workerIds = (payload.worker_profile_ids as string[]) || [];
+
+  const seen = new Set<string>();
+  const workers: RoomAgent[] = [];
+
+  const addWorker = (profileId: string, displayName?: string) => {
+    const pid = profileId.trim();
+    if (!pid || pid === hostId || seen.has(pid)) return;
+    seen.add(pid);
+    const label = (displayName || '').trim();
+    workers.push(
+      stubWorkerAgent(
+        pid,
+        label && label !== pid ? label : undefined,
+      ),
+    );
+  };
+
+  for (const p of rawParts) {
+    const pid = String(p.profile_id || '');
+    const role = String(p.role || '').toLowerCase();
+    if (role === 'host' || pid === hostId) continue;
+    addWorker(pid, p.display_name);
+  }
+  for (const id of workerIds) {
+    addWorker(String(id));
+  }
+
+  return { hostId, workers };
+}
+
 export function ParticipantsCard({ payload }: { payload: Record<string, unknown> }) {
-  const workers = (payload.worker_profile_ids as string[]) || [];
-  const participants = (payload.participants as { profile_id?: string; display_name?: string; role?: string }[]) || [];
+  const { workers } = useMemo(() => resolveWorkerRoster(payload), [payload]);
 
   return (
     <div className="rd-chat-card rd-chat-card--roster">
-      <SectionTitle icon={<Users className="w-4 h-4" />}>参会智能体</SectionTitle>
-      <div className="rd-chat-card__meta-row">
-        <span className="font-mono text-[11px]">room: {String(payload.room_id || '—')}</span>
-        <span className="font-mono text-[11px]">node: {String(payload.node_id || '—')}</span>
+      <SectionTitle icon={<Users className="w-4 h-4" />}>参会人员名单</SectionTitle>
+      <div className="rd-chat-card__meta-row rd-roster-meta">
+        <span className="font-mono text-[11px]">节点 {String(payload.node_id || '—')}</span>
       </div>
-      <div className="rd-chat-card__chips">
-        <span className="rd-chat-chip rd-chat-chip--host">
-          <Bot className="w-3 h-3" />
-          主持 · {String(payload.host_profile_id || 'default')}
-        </span>
-        {(participants.length ? participants : workers.map((id) => ({ profile_id: id, display_name: id }))).map(
-          (p) => {
-            const pid = String(p.profile_id || '');
-            if (!pid || pid === String(payload.host_profile_id || 'default')) return null;
-            return (
-              <span key={pid} className="rd-chat-chip">
-                {String(p.display_name || pid)}
-                <span className="opacity-60 font-mono text-[10px]">{pid}</span>
-              </span>
-            );
-          },
-        )}
-      </div>
+      <ul className="rd-roster-list">
+        <li className="rd-roster-item rd-roster-item--host">
+          <MeetingAgentAvatar agent={HOST_ROSTER_AGENT} size="small" showStatusBadge={false} />
+          <div className="rd-roster-item__text">
+            <span className="rd-roster-item__name">小鲸</span>
+            <span className="rd-roster-item__role">会议主持</span>
+          </div>
+          <span className="rd-roster-item__badge rd-roster-item__badge--host">主持</span>
+        </li>
+        {workers.map((agent) => (
+          <li key={agent.id} className="rd-roster-item">
+            <MeetingAgentAvatar agent={agent} size="small" showStatusBadge={false} />
+            <div className="rd-roster-item__text">
+              <span className="rd-roster-item__name">{agent.name}</span>
+              <span className="rd-roster-item__role font-mono text-[10px]">{agent.id}</span>
+            </div>
+            <span className={`rd-roster-item__dot ${agent.avatarColor}`} title={agent.id} />
+          </li>
+        ))}
+      </ul>
+      {workers.length === 0 ? (
+        <p className="rd-chat-card__desc mt-2">暂无协作智能体，仅小鲸主持本节点。</p>
+      ) : null}
     </div>
   );
 }
 
+function unwrapMarkdownBody(text: string): string {
+  const raw = (text || '').trim();
+  if (!raw.startsWith('{')) return raw;
+  try {
+    const obj = JSON.parse(raw) as { message?: string };
+    if (typeof obj.message === 'string' && obj.message.trim()) {
+      return obj.message.trim();
+    }
+  } catch {
+    /* 非 JSON，按 Markdown 原文展示 */
+  }
+  return raw;
+}
+
 export function WorkPlanCard({ text }: { text: string }) {
+  const md = unwrapMarkdownBody(text);
   return (
     <div className="rd-chat-card rd-chat-card--plan">
       <SectionTitle icon={<ClipboardList className="w-4 h-4" />}>工作安排计划</SectionTitle>
-      <ReviewMarkdown content={text} compact className="rd-meeting-chat-markdown" />
+      <ReviewMarkdown content={md} compact className="rd-meeting-chat-markdown" />
     </div>
   );
 }
@@ -200,7 +271,7 @@ export function HumanReportCard({ payload, text }: { payload: Record<string, unk
 export function HitlToolCard({ text }: { text: string }) {
   return (
     <div className="rd-chat-card rd-chat-card--hitl">
-      <SectionTitle icon={<ClipboardList className="w-4 h-4" />}>问卷提交</SectionTitle>
+      <SectionTitle icon={<Bot className="w-4 h-4" />}>问卷提交</SectionTitle>
       <p className="rd-chat-card__desc">{text}</p>
     </div>
   );
@@ -209,7 +280,7 @@ export function HitlToolCard({ text }: { text: string }) {
 export function PendingConfirmCard({ payload, text }: { payload: Record<string, unknown>; text: string }) {
   return (
     <div className="rd-chat-card rd-chat-card--pending">
-      <SectionTitle icon={<Server className="w-4 h-4" />}>节点待确认</SectionTitle>
+      <SectionTitle icon={<Bot className="w-4 h-4" />}>等待问卷反馈</SectionTitle>
       <p className="rd-chat-card__desc">{text}</p>
       <dl className="rd-chat-card__kv">
         {payload.duration_seconds != null ? (

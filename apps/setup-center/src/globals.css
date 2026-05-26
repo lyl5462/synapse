@@ -333,6 +333,22 @@
   color: color-mix(in srgb, var(--text) 92%, transparent);
 }
 
+.rd-meeting-chat-speaker--host {
+  color: #c4b5fd;
+}
+
+.rd-meeting-chat-speaker--system {
+  color: #94a3b8;
+}
+
+.rd-meeting-chat-speaker--worker {
+  color: #7dd3fc;
+}
+
+.rd-meeting-chat-speaker--user {
+  color: #93c5fd;
+}
+
 .rd-meeting-chat-time {
   font-family: ui-monospace, monospace;
   font-size: 10px;
@@ -346,64 +362,82 @@
   font-size: 13px;
   line-height: 1.65;
   word-break: break-word;
+  border-width: 2px;
+  border-style: solid;
 }
 
-.rd-meeting-chat-bubble--user {
+/* --- 按角色统一外框（粗细、色相一致） --- */
+.rd-meeting-chat-bubble--role-host {
+  border-color: rgba(139, 92, 246, 0.72);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #5b21b6 18%, var(--panel2)) 0%,
+    color-mix(in srgb, var(--panel) 92%, var(--background)) 100%
+  );
+  border-radius: 14px 14px 14px 4px;
+  box-shadow:
+    0 0 0 1px rgba(139, 92, 246, 0.12),
+    0 10px 28px rgba(124, 58, 237, 0.14);
+  color: var(--text);
+}
+
+.rd-meeting-chat-bubble--role-system {
+  border-color: rgba(100, 116, 139, 0.55);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #334155 14%, var(--panel2)) 0%,
+    color-mix(in srgb, var(--panel) 94%, var(--background)) 100%
+  );
+  border-radius: 14px 14px 14px 4px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+  color: var(--text);
+}
+
+.rd-meeting-chat-bubble--role-worker {
+  border-color: rgba(14, 165, 233, 0.62);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #0c4a6e 14%, var(--panel2)) 0%,
+    color-mix(in srgb, var(--panel) 94%, var(--background)) 100%
+  );
+  border-radius: 14px 14px 14px 4px;
+  box-shadow: 0 8px 22px rgba(14, 165, 233, 0.1);
+  color: var(--text);
+}
+
+.rd-meeting-chat-bubble--role-user {
   padding: 10px 14px;
+  border: 2px solid rgba(59, 130, 246, 0.85);
   background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
   color: #fff;
   border-radius: 14px 14px 4px 14px;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28);
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.32);
 }
 
-.rd-meeting-chat-bubble--agent {
+.rd-meeting-chat-bubble--has-body {
   padding: 10px 14px;
-  background: color-mix(in srgb, var(--panel2) 88%, var(--background));
-  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-  color: var(--text);
-  border-radius: 14px 14px 14px 4px;
 }
 
-.rd-meeting-chat-bubble--error {
-  padding: 10px 14px;
-  background: color-mix(in srgb, #450a0a 55%, var(--panel));
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #fecaca;
-  border-radius: 14px 14px 14px 4px;
+.rd-meeting-chat-bubble--has-card {
+  padding: 4px;
 }
 
-.rd-meeting-chat-bubble--warning {
-  padding: 10px 14px;
-  background: color-mix(in srgb, #451a03 50%, var(--panel));
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  color: #fde68a;
-  border-radius: 14px 14px 14px 4px;
+.rd-meeting-chat-bubble--status-error {
+  border-color: rgba(239, 68, 68, 0.55) !important;
+  background: color-mix(in srgb, #450a0a 50%, var(--panel)) !important;
+  color: #fecaca !important;
 }
 
-.rd-meeting-chat-bubble--success {
-  padding: 10px 14px;
-  background: color-mix(in srgb, #052e16 45%, var(--panel));
-  border: 1px solid rgba(34, 197, 94, 0.3);
-  color: #bbf7d0;
-  border-radius: 14px 14px 14px 4px;
+.rd-meeting-chat-bubble--status-warning {
+  border-color: rgba(245, 158, 11, 0.55) !important;
+  background: color-mix(in srgb, #451a03 45%, var(--panel)) !important;
+  color: #fde68a !important;
 }
 
-.rd-meeting-chat-bubble--pipeline,
-.rd-meeting-chat-bubble--delegation {
-  padding: 0;
-  border: none;
-  background: transparent;
-  border-radius: 12px;
-}
-
-.rd-meeting-chat-bubble--rich {
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
-  background: color-mix(in srgb, var(--panel) 92%, #0f172a);
-  border-radius: 12px;
-  overflow: hidden;
-  max-height: min(70vh, 480px);
-  overflow-y: auto;
+.rd-meeting-chat-bubble--status-success {
+  border-color: rgba(34, 197, 94, 0.5) !important;
+  background: color-mix(in srgb, #052e16 40%, var(--panel)) !important;
+  color: #bbf7d0 !important;
 }
 
 .rd-meeting-chat-bubble--typing {
@@ -482,19 +516,57 @@ button.rd-meeting-chat-avatar:hover {
   text-align: center;
 }
 
+.rd-meeting-chat-bubble--inner-pipeline .rd-meeting-chat-pipeline,
+.rd-meeting-chat-bubble--role-system.rd-meeting-chat-bubble--inner-pipeline .rd-meeting-chat-pipeline {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 8%, transparent);
+  box-shadow: none;
+}
+
+.rd-meeting-chat-bubble--role-host.rd-meeting-chat-bubble--inner-pipeline .rd-meeting-chat-pipeline {
+  border-color: rgba(139, 92, 246, 0.22);
+  background: color-mix(in srgb, #4c1d95 12%, transparent);
+}
+
+.rd-meeting-chat-bubble--role-host .rd-meeting-chat-pipeline__icon {
+  background: rgba(139, 92, 246, 0.28);
+  color: #c4b5fd;
+}
+
+.rd-meeting-chat-bubble--role-host .rd-meeting-chat-pipeline__title {
+  color: #ddd6fe;
+}
+
+.rd-meeting-chat-bubble--role-host .rd-meeting-chat-pipeline__desc {
+  color: color-mix(in srgb, var(--text) 88%, transparent);
+}
+
+.rd-meeting-chat-bubble--role-host .rd-meeting-chat-rich {
+  background: color-mix(in srgb, #1e1b4b 28%, transparent);
+  border-radius: 10px;
+}
+
+.rd-meeting-chat-bubble--role-host .rd-chat-card--plan .rd-chat-card__title-icon,
+.rd-meeting-chat-bubble--role-host .rd-chat-card--delegation-start .rd-chat-card__title-icon,
+.rd-meeting-chat-bubble--role-host .rd-chat-card--pending .rd-chat-card__title-icon {
+  background: rgba(139, 92, 246, 0.28);
+  color: #c4b5fd;
+}
+
 .rd-meeting-chat-pipeline {
   display: flex;
   gap: 10px;
   width: 100%;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, #1e3a8a 22%, var(--panel)) 0%,
-    color-mix(in srgb, var(--panel2) 90%, var(--background)) 100%
-  );
-  border: 1px solid color-mix(in srgb, #3b82f6 35%, var(--line));
-  box-shadow: 0 0 20px rgba(59, 130, 246, 0.08);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 40%, transparent);
+  box-shadow: none;
 }
 
 .rd-meeting-chat-pipeline__icon {
@@ -527,9 +599,9 @@ button.rd-meeting-chat-avatar:hover {
 .rd-meeting-chat-delegation {
   width: 100%;
   padding: 10px 12px;
-  border-radius: 12px;
-  background: color-mix(in srgb, #312e81 28%, var(--panel));
-  border: 1px solid color-mix(in srgb, #818cf8 40%, var(--line));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 65%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
 }
 
 .rd-meeting-chat-delegation__head {
@@ -569,6 +641,14 @@ button.rd-meeting-chat-avatar:hover {
   color: color-mix(in srgb, var(--text) 85%, transparent);
   max-height: 200px;
   overflow-y: auto;
+}
+
+.rd-meeting-chat-rich {
+  border-radius: 10px;
+  overflow: hidden;
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
 }
 
 .rd-meeting-chat-rich .rd-meeting-chat-markdown {
@@ -634,16 +714,35 @@ button.rd-meeting-chat-avatar:hover {
   max-width: 100%;
 }
 
-.rd-meeting-chat-bubble--structured {
-  padding: 0;
-  border: none;
-  background: transparent;
+/* 结构化卡片：内嵌在角色外框内，不再单独变浅 */
+.rd-meeting-chat-bubble--has-card .rd-chat-card {
   width: 100%;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  background: color-mix(in srgb, var(--panel) 88%, var(--background));
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: none;
+}
+
+.rd-meeting-chat-bubble--role-host .rd-chat-card {
+  border-color: rgba(139, 92, 246, 0.28);
+  background: color-mix(in srgb, #1e1b4b 35%, var(--panel));
+}
+
+.rd-meeting-chat-bubble--role-system .rd-chat-card {
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.rd-meeting-chat-bubble--role-worker .rd-chat-card {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: color-mix(in srgb, #0c4a6e 18%, var(--panel));
 }
 
 .rd-chat-card {
   width: 100%;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
   background: color-mix(in srgb, var(--panel2) 90%, var(--background));
   padding: 12px 14px;
@@ -817,14 +916,81 @@ button.rd-meeting-chat-avatar:hover {
   margin-top: 6px;
 }
 
-.rd-chat-card--delegation-start {
-  border-color: color-mix(in srgb, #6366f1 35%, var(--line));
+/* --- 参会人员名单 --- */
+.rd-roster-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.rd-chat-card--delegation-done.is-ok {
-  border-color: color-mix(in srgb, #22c55e 35%, var(--line));
+.rd-roster-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--line) 35%, transparent);
+  transition: background 0.15s ease;
 }
 
-.rd-chat-card--delegation-done.is-fail {
-  border-color: color-mix(in srgb, #ef4444 35%, var(--line));
+.rd-roster-item:hover {
+  background: color-mix(in srgb, var(--muted) 25%, transparent);
+}
+
+.rd-roster-item--host {
+  border-color: rgba(139, 92, 246, 0.35);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, #5b21b6 22%, transparent) 0%,
+    color-mix(in srgb, var(--panel) 50%, transparent) 100%
+  );
+}
+
+.rd-roster-item__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rd-roster-item__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 95%, transparent);
+}
+
+.rd-roster-item__role {
+  font-size: 11px;
+  color: var(--muted2);
+}
+
+.rd-roster-item__badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+
+.rd-roster-item__badge--host {
+  color: #ddd6fe;
+  background: rgba(139, 92, 246, 0.25);
+  border: 1px solid rgba(167, 139, 250, 0.4);
+}
+
+.rd-roster-item__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.15);
+}
+
+.rd-roster-meta {
+  margin-top: 2px;
 }

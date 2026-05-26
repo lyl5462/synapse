@@ -12,15 +12,31 @@ import { ReviewMarkdown } from './ReviewMarkdown';
 import { MeetingAgentAvatar } from './MeetingAgentAvatar';
 import { StructuredChatBody } from './MeetingChatStructuredCards';
 import {
+  chatBubbleRoleClass,
+  chatRowRoleClass,
+  chatSpeakerAccentClass,
+} from './chatRoleTheme';
+import {
   classifyMeetingChat,
   isStructuredDisplayKind,
   parseDelegationMessage,
   splitPipelineMessage,
+  type ChatSpeakerRole,
   type MeetingChatLog,
 } from './meetingChatUtils';
 import type { RoomAgent } from './meetingChatTypes';
 
 export type { MeetingChatLog };
+
+function resolveBubbleRole(log: MeetingChatLog, isUser: boolean): ChatSpeakerRole {
+  if (isUser || log.speakerRole === 'user') return 'user';
+  if (log.speakerRole === 'host' || log.speakerRole === 'worker' || log.speakerRole === 'system') {
+    return log.speakerRole;
+  }
+  if (log.agentId === 'user') return 'user';
+  if (log.agentId === 'system') return 'system';
+  return 'host';
+}
 
 function StatusIcon({ type }: { type: MeetingChatLog['type'] }) {
   if (type === 'error') return <ShieldAlert className="w-3.5 h-3.5 text-red-400 shrink-0" />;
@@ -97,6 +113,7 @@ export function MeetingChatMessage({
   const isUser = kind === 'user';
   const isStructured = kind === 'structured' || isStructuredDisplayKind(log.displayKind);
   const isLegacySystemPill = kind === 'system' && !isStructured && log.speakerRole !== 'system';
+  const role = resolveBubbleRole(log, isUser);
 
   if (isLegacySystemPill) {
     return (
@@ -112,23 +129,18 @@ export function MeetingChatMessage({
   const rowClass = [
     'rd-meeting-chat-row',
     isUser ? 'rd-meeting-chat-row--user' : 'rd-meeting-chat-row--agent',
-    log.speakerRole === 'system' ? 'rd-meeting-chat-row--system-agent' : '',
+    chatRowRoleClass(role),
     isStructured ? 'rd-meeting-chat-row--structured' : '',
-    kind === 'pipeline' ? 'rd-meeting-chat-row--pipeline' : '',
-    kind === 'rich' ? 'rd-meeting-chat-row--rich' : '',
   ]
     .filter(Boolean)
     .join(' ');
 
   const bubbleClass = [
     'rd-meeting-chat-bubble',
-    isUser ? 'rd-meeting-chat-bubble--user' : '',
-    kind === 'status' ? `rd-meeting-chat-bubble--${log.type}` : '',
-    kind === 'pipeline' ? 'rd-meeting-chat-bubble--pipeline' : '',
-    kind === 'delegation' ? 'rd-meeting-chat-bubble--delegation' : '',
-    kind === 'rich' ? 'rd-meeting-chat-bubble--rich' : '',
-    isStructured ? 'rd-meeting-chat-bubble--structured' : '',
-    kind === 'agent' ? 'rd-meeting-chat-bubble--agent' : '',
+    chatBubbleRoleClass(role),
+    isStructured ? 'rd-meeting-chat-bubble--has-card' : 'rd-meeting-chat-bubble--has-body',
+    kind === 'status' ? `rd-meeting-chat-bubble--status-${log.type}` : '',
+    kind === 'pipeline' ? 'rd-meeting-chat-bubble--inner-pipeline' : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -187,7 +199,9 @@ export function MeetingChatMessage({
       {!isUser && <AvatarSlot />}
       <div className="rd-meeting-chat-col">
         <div className="rd-meeting-chat-meta">
-          <span className="rd-meeting-chat-speaker">{speakerName}</span>
+          <span className={`rd-meeting-chat-speaker ${chatSpeakerAccentClass(role)}`}>
+            {speakerName}
+          </span>
           <span className="rd-meeting-chat-time">{log.timestamp}</span>
         </div>
         <div className={bubbleClass}>{body}</div>
