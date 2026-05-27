@@ -726,8 +726,19 @@ def build_meeting_runtime_header(
             node_id=context.node_id,
         )
     )
-    # 之前SOP环节已产出内容说明：基于当前环节、历史环节开关、历史环节产出物要求、产出物综合的使用方法来补充提示词
-    # 之前SOP环节产出物使用方法：技能强制要求、流程强制转换、大模型自主判断
+    from synapse.rd_meeting.prior_outputs import (
+        format_prior_sop_outputs_section,
+        load_skipped_node_ids,
+    )
+
+    prior_block = format_prior_sop_outputs_section(
+        context.scope_id,
+        context.node_id,
+        skipped_node_ids=load_skipped_node_ids(context.scope_id),
+    )
+    if prior_block:
+        lines.append("")
+        lines.append(prior_block.rstrip())
 
     lines.append(f"- **当前时间**：{now}")
     lines.append("- **回复语言**：中文")

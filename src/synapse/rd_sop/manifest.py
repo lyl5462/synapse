@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from synapse.rd_sop.nodes import ALL_NODES, STAGES
+
+PriorOutputUseMode = Literal["skill_required", "flow_required", "llm_judge"]
 
 DEFAULT_HOST_PROFILE_ID = "default"
 DEFAULT_LLM_ENDPOINT_KEY = "default"
@@ -172,3 +174,99 @@ def node_output_artifacts(node_id: str) -> list[str]:
     if items:
         return list(items)
     return [f"archive/<stage_name>/{node_id}/ 目录下的节点交付 Markdown"]
+
+
+# 当前节点消费前序产出物的显式规则（未列出的已归档产出默认为 llm_judge）
+# use_mode: skill_required | flow_required | llm_judge
+NODE_PRIOR_OUTPUT_RULES: dict[str, list[dict[str, Any]]] = {
+    "boundary": [
+        {
+            "source_node_id": "req_clarify",
+            "artifacts": ["需求澄清.md"],
+            "use_mode": "flow_required",
+            "note": "边界判定须引用已澄清需求要点",
+        },
+    ],
+    "module_func": [
+        {
+            "source_node_id": "req_clarify",
+            "artifacts": ["需求澄清.md"],
+            "use_mode": "skill_required",
+            "note": "whalecloud-dev-tool-module-function 固定路径",
+        },
+    ],
+    "acceptance": [
+        {
+            "source_node_id": "module_func",
+            "artifacts": ["模块功能.md"],
+            "use_mode": "flow_required",
+            "note": "验收标准须基于模块功能清单",
+        },
+        {
+            "source_node_id": "req_clarify",
+            "artifacts": ["需求澄清.md"],
+            "use_mode": "llm_judge",
+        },
+    ],
+    "func_solution": [
+        {
+            "source_node_id": "module_confirm",
+            "artifacts": ["模块范围确认.md"],
+            "use_mode": "flow_required",
+            "note": "函数级方案须对齐已确认模块范围",
+        },
+        {
+            "source_node_id": "module_func",
+            "artifacts": ["模块功能.md"],
+            "use_mode": "flow_required",
+            "note": "函数级方案须基于模块功能清单",
+        },
+    ],
+    "solution_review": [
+        {
+            "source_node_id": "func_solution",
+            "artifacts": ["函数级方案.md"],
+            "use_mode": "flow_required",
+            "note": "方案评审须对照函数级方案全文",
+        },
+    ],
+    "unit_test": [
+        {
+            "source_node_id": "acceptance",
+            "artifacts": ["验收标准.md"],
+            "use_mode": "skill_required",
+            "note": "单元测试用例须覆盖验收标准",
+        },
+    ],
+    "solution_consistency": [
+        {
+            "source_node_id": "func_solution",
+            "artifacts": ["函数级方案.md"],
+            "use_mode": "skill_required",
+            "note": "一致性检查须对照函数级方案",
+        },
+    ],
+}
+
+
+def prior_output_use_mode_for(
+    consumer_node_id: str,
+    *,
+    source_node_id: str,
+    artifact: str,
+) -> tuple[PriorOutputUseMode | None, str]:
+    """解析当前节点对某前序产出物的用法；无显式规则且应展示时默认 llm_judge。"""
+    rules = NODE_PRIOR_OUTPUT_RULES.get((consumer_node_id or "").strip()) or []
+    for rule in rules:
+        if str(rule.get("source_node_id") or "") != source_node_id:
+            continue
+        artifacts = rule.get("artifacts")
+        if isinstance(artifacts, list) and artifacts:
+            if artifact not in [str(a) for a in artifacts]:
+                continue
+        mode = str(rule.get("use_mode") or "llm_judge")
+        if mode not in ("skill_required", "flow_required", "llm_judge"):
+            mode = "llm_judge"
+        note = str(rule.get("note") or "").strip()
+        return mode, note  # type: ignore[return-value]
+    return "llm_judge", ""
