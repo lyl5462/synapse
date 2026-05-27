@@ -21,8 +21,12 @@ MEETING_ROOM_TOOLS = [
             "- ``kind``：``interactive``（会中澄清）/ ``result_confirm``（节点终稿确认）/ ``exception``（异常裁决）\n"
             "- ``await_confirm``：true 表示提交后等待确认才推进；result_confirm 默认 true，其余默认 false\n"
             "- ``questions``：至少 1 条 questionnaire v1.0 题目；每题需含 id / type / title\n"
-            "- ``summary``：可选 Markdown，表单上方「待确认总结」；**仅**列本节点待确认简表（与 questions 题号对齐），"
+            "- ``summary``：可选 Markdown，**会渲染在表单顶部**「待确认总结」；写核心变化、产出文件、与 questions 对齐的简表；"
             "**禁止**写 ``### 下一步``、SOP 下一节点预告、Worker 文档 Phase 1~N 路线图（见 meeting-room SKILL §4.5.2）\n\n"
+            "**context 可审阅性（强约束，工具会校验）**：\n"
+            "- title 含「（N项）」「共 N 条」→ context 须逐条列出 N 条完整内容（Markdown 列表/表格）；\n"
+            "- 「是否满足/完整/覆盖」类签收题 → context 须嵌入该章节/清单全文或逐条列表（从归档 Markdown read_file 摘录）；\n"
+            "- **禁止** context 仅写「含 A/B/C 维度」类关键词。\n\n"
             "**题目颗粒度（强约束）**：每个独立可决策点 = 一道独立题。\n"
             "- 禁止把 N 个决策点合并成一道「整体确认 / 部分修改 / 拒绝」单选；\n"
             "- 即使你已经给出推荐默认结论，**仍要**把每个决策点单独成题，把默认结论作为推荐选项；\n"
@@ -72,7 +76,13 @@ MEETING_ROOM_TOOLS = [
                                 "enum": ["single", "multiple", "boolean", "text", "textarea"],
                             },
                             "title": {"type": "string"},
-                            "context": {"type": "string"},
+                            "context": {
+                                "type": "string",
+                                "description": (
+                                    "题目下方展示的场景说明；签收/（N项）类题须嵌入完整待审阅正文"
+                                    "（Markdown 列表或表格），禁止仅写维度关键词"
+                                ),
+                            },
                             "required": {"type": "boolean"},
                             "options": {"type": "array"},
                             "inputEnabled": {"type": "boolean"},

@@ -33,9 +33,43 @@ _PROMPT_WITH_FREE_TEXT = """
 **本次要求**：
 1. **先总结**：逐条整理「本轮人工确认反馈（结构化）」JSON——每题的用户选项与用户输入，形成「用户意图与约束摘要」（不得省略任何输入细节）。
 2. **再推进**：基于该摘要，结合工单、产品、代码真实信息，继续分析、委派协作智能体、更新产出物；凡用户输入中的新要求、例外、约束必须显式响应。
-3. **多轮处理**：若仍有未澄清点，可再次 ``submit_hitl_questionnaire(kind="interactive")``；否则推进产出物直至可验收。
+3. **多轮问卷（允许且常见）**：收敛后**应**再次 ``submit_hitl_questionnaire(kind="interactive")`` 让用户对更新后的章节/清单签收；若无新未决点则推进产出物直至可验收。
 4. 禁止用泛泛复述代替对用户输入的针对性回应。
 """.strip()
+
+_PROMPT_FOLLOWUP_INTERACTIVE_ROUND = """
+## 系统提示：第 {round_n} 轮会中问卷（内容签收 / 续澄清）
+
+用户已在前面轮次完成澄清；本轮问卷用于**呈现已收敛内容供人工签收**，或继续未决决策点。
+
+**硬约束（工具会校验，不达标将拒绝提交）**：
+1. **summary**：表单顶部会渲染给用户——写本节点核心变化、产出文件、与 ``questions`` 对齐的待确认简表（可含表格）；**禁止** SOP 下一节点 / Phase 路线图预告。
+2. **每题 context 必须可独立审阅**：
+   - 题目标题含「（N项）」「共 N 条」→ context **逐条列出 N 条完整内容**（Markdown 列表或表格），禁止只用「含 A/B/C 维度」。
+   - 题为「XX 是否满足/完整/覆盖」类签收 → context 必须嵌入**该章节/清单的全文或逐条列表**（从已写归档 Markdown ``read_file`` 摘录），让用户不离开表单即可核对。
+3. **禁止空壳 meta 题**：不得只问「7 项验收标准是否 OK」却在 context 里只写「含配置/触发/日志…」关键词。
+4. 调用 ``submit_hitl_questionnaire`` 后立即停止；正文摘要由 ``summary`` + 各题 ``context`` 承担，勿依赖 tool 返回后的聊天输出。
+""".strip()
+
+
+def prompt_for_followup_interactive_round(round_n: int) -> str:
+    """第 2 轮及以后会中问卷：注入内容签收约束。"""
+    n = max(2, int(round_n or 2))
+    return _PROMPT_FOLLOWUP_INTERACTIVE_ROUND.format(round_n=n)
+
+
+def prompt_after_hitl_feedback(mode: HitlFeedbackMode, *, followup_round: int = 0) -> str:
+    base = _PROMPT_WITH_FREE_TEXT if mode == "with_free_text" else _PROMPT_OPTIONS_ONLY
+    if followup_round >= 2:
+        return f"{base}\n\n{prompt_for_followup_interactive_round(followup_round)}"
+    if followup_round == 1 and mode == "with_free_text":
+        return (
+            f"{base}\n\n"
+            "## 续跑提示\n"
+            "用户已提供自由文本纠偏；更新产出物后，**建议**再交一轮 ``interactive`` 问卷"
+            "让用户对收敛后的章节/清单签收（每题 context 须含完整待审阅正文）。"
+        )
+    return base
 
 
 def _normalize_option_key(raw: Any, idx: int = 0) -> str:
@@ -243,12 +277,6 @@ def format_hitl_feedback_structured(
         lines.append("")
 
     return "\n".join(lines).strip()
-
-
-def prompt_after_hitl_feedback(mode: HitlFeedbackMode) -> str:
-    if mode == "with_free_text":
-        return _PROMPT_WITH_FREE_TEXT
-    return _PROMPT_OPTIONS_ONLY
 
 
 def _now_iso() -> str:

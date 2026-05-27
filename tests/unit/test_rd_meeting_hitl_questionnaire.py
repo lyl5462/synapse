@@ -458,6 +458,69 @@ def test_coerce_normalizes_python_bool_option_values():
     assert [o["value"] for o in q["options"]] == ["true", "false"]
 
 
+def test_coerce_rejects_empty_meta_review_context():
+    """签收式 meta 题：context 仅关键词 → 拒绝。"""
+    with pytest.raises(ValueError) as excinfo:
+        coerce_questionnaire_schema(
+            kind="interactive",
+            questions=[
+                {
+                    "id": "q5",
+                    "type": "boolean",
+                    "title": "验收标准（7项）是否满足本节点交付要求？",
+                    "context": "含配置/触发/手动/日志/重试告警/异步/互补关系",
+                }
+            ],
+            summary="## 待确认\n| Q5 | 验收标准7项 |",
+        )
+    assert "context" in str(excinfo.value).lower() or "关键词" in str(excinfo.value)
+
+
+def test_coerce_accepts_meta_review_with_full_list():
+    """签收题 context 含逐条列表 → 通过。"""
+    context = "\n".join(
+        f"{i}. AC{i}：支持定时触发备份任务，配置项 BackupInterval 可独立设置"
+        for i in range(1, 8)
+    )
+    schema = coerce_questionnaire_schema(
+        kind="interactive",
+        questions=[
+            {
+                "id": "q5",
+                "type": "boolean",
+                "title": "验收标准（7项）是否满足本节点交付要求？",
+                "context": context,
+            }
+        ],
+        summary="## 本节点\n- 产出：需求澄清.md",
+    )
+    assert schema["questions"][0]["context"] == context
+
+
+def test_coerce_rejects_count_title_without_list_items():
+    with pytest.raises(ValueError) as excinfo:
+        coerce_questionnaire_schema(
+            kind="interactive",
+            questions=[
+                {
+                    "id": "q1",
+                    "type": "boolean",
+                    "title": "行为场景（3条）是否完整？",
+                    "context": "场景1定时；场景2手动",
+                }
+            ],
+        )
+    assert "3" in str(excinfo.value)
+
+
+def test_prompt_after_hitl_feedback_followup_round():
+    from synapse.rd_meeting.hitl_feedback import prompt_after_hitl_feedback
+
+    p = prompt_after_hitl_feedback("with_free_text", followup_round=2)
+    assert "第 2 轮" in p
+    assert "context" in p.lower() or "签收" in p
+
+
 def test_default_exception_schema_shape():
     schema = default_exception_hitl_schema("req_clarify", reason="解析失败")
     assert schema["type"] == "questionnaire"

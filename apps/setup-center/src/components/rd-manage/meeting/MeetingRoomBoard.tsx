@@ -1169,6 +1169,11 @@ const InterventionDialog = ({
                   <MeetingHitlForm
                     key={`hitl-${room.id}-${room.hitlFormSchema.title ?? ''}-${room.hitlFormSchema.questions?.length ?? 0}`}
                     schema={room.hitlFormSchema}
+                    summaryMarkdown={
+                      room.hitlPendingSummary ??
+                      room.hitlFormSchema.summary_markdown ??
+                      undefined
+                    }
                     submitLabel={
                       hitlKind?.summary_kind === 'result_confirm' ||
                       hitlKind?.intervention_kind === 'result_confirm'

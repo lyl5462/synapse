@@ -233,14 +233,13 @@ export function DelegationDoneCard({
   const ok = payload?.ok !== false;
   const headline = String(payload?.headline || text.split('\n')[0] || '');
   const summary = String(payload?.result_summary || '');
-  const elapsed = payload?.elapsed_s != null ? `${payload.elapsed_s}s` : '';
 
   return (
     <div className={`rd-chat-card rd-chat-card--delegation-done ${ok ? 'is-ok' : 'is-fail'}`}>
       <SectionTitle
         icon={ok ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <XCircle className="w-4 h-4 text-red-400" />}
       >
-        协作完成 {elapsed ? `· ${elapsed}` : ''}
+        协作完成
       </SectionTitle>
       <p className="rd-chat-card__emph">{headline}</p>
       {summary ? <pre className="rd-chat-card__preview">{summary.slice(0, 1200)}</pre> : null}

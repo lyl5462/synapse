@@ -690,6 +690,17 @@ class MeetingRoomService:
 
         kind = str(room_state.get("intervention_kind") or "interactive").strip().lower()
         node_id = str(room_state.get("current_node_id") or "pending")
+        followup_round = 0
+        if kind == "interactive" and node_id not in ("", "pending"):
+            try:
+                from synapse.rd_meeting.binding import resolve_node_binding
+                from synapse.rd_meeting.hitl_context import read_hitl_context
+
+                hitl_binding = resolve_node_binding(node_id)
+                prior = read_hitl_context(sid, node_id, binding=hitl_binding)
+                followup_round = len(prior.get("rounds") or []) + 1
+            except Exception:
+                followup_round = 1
         round_record = build_hitl_round_record(
             form_values,
             schema,
@@ -853,7 +864,9 @@ class MeetingRoomService:
         set_hitl_feedback_mode(sid, feedback_mode)
         rs2 = dict(load_room_state(sid) or {})
         rs2["status"] = "processing"
-        rs2["rework_instruction"] = prompt_after_hitl_feedback(feedback_mode)
+        rs2["rework_instruction"] = prompt_after_hitl_feedback(
+            feedback_mode, followup_round=followup_round
+        )
         save_room_state(sid, rs2)
         schedule_run_node(
             scope_type=scope_type,  # type: ignore[arg-type]

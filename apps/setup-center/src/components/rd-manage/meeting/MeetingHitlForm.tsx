@@ -4,8 +4,9 @@
  */
 import React, { useCallback, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { AlertTriangle, CheckCircle2, ChevronRight, Sparkles } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronRight, FileText, Sparkles } from 'lucide-react';
 import { Button, Input, Progress } from 'antd';
+import { ReviewMarkdown } from './ReviewMarkdown';
 
 const { TextArea } = Input;
 
@@ -171,6 +172,57 @@ function isBooleanQuestion(q: HitlQuestion): boolean {
   return keys.includes('true') && keys.includes('false');
 }
 
+function isRichMarkdownText(text: string): boolean {
+  const t = (text || '').trim();
+  if (!t) return false;
+  return (
+    t.includes('\n') ||
+    /^#{1,3}\s/m.test(t) ||
+    /^\s*[-*•]\s/m.test(t) ||
+    /^\s*\d+\.\s/m.test(t) ||
+    t.includes('|') ||
+    t.includes('**')
+  );
+}
+
+function resolveEffectiveSummary(schema: HitlFormSchema, summaryMarkdown?: string): string {
+  const fromProp = (summaryMarkdown || '').trim();
+  const fromSchema = (schema.summary_markdown || '').trim();
+  if (fromProp && fromSchema && fromProp !== fromSchema) {
+    return `${fromProp}\n\n---\n\n${fromSchema}`;
+  }
+  return fromProp || fromSchema;
+}
+
+const HitlSummaryPanel: React.FC<{
+  markdown: string;
+  accent: ReturnType<typeof accentClasses>;
+  kind?: HitlSummaryKind;
+}> = ({ markdown, accent, kind }) => {
+  const text = (markdown || '').trim();
+  if (!text) return null;
+  const label =
+    kind === 'result_confirm' ? '待确认总结' : kind === 'exception' ? '异常摘要' : '待确认内容';
+  return (
+    <div
+      className={`rounded-xl border ${accent.ring} bg-background/55 backdrop-blur-md shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] overflow-hidden`}
+    >
+      <div className={`flex items-center gap-2 px-3.5 py-2.5 border-b border-border/40 bg-gradient-to-r ${accent.bg}`}>
+        <FileText className={`w-3.5 h-3.5 shrink-0 ${accent.text}`} />
+        <span className={`text-[11px] font-semibold tracking-wide ${accent.text}`}>{label}</span>
+        <span className="text-[10px] text-muted-foreground ml-auto">表单上方 · 请先阅读再答题</span>
+      </div>
+      <div className="relative max-h-[min(42vh,320px)] overflow-y-auto custom-scrollbar px-3.5 py-3">
+        <ReviewMarkdown content={text} compact className="rd-meeting-hitl-summary-md text-[12px]" />
+        <div
+          className="pointer-events-none sticky bottom-0 left-0 right-0 h-8 -mb-3 bg-gradient-to-t from-background/90 to-transparent"
+          aria-hidden
+        />
+      </div>
+    </div>
+  );
+};
+
 function accentClasses(accent?: string): { ring: string; bg: string; text: string; bar: string } {
   switch (accent) {
     case 'violet':
@@ -217,6 +269,11 @@ const HitlQuestionnaireForm: React.FC<{
   const questions = normalizedSchema.questions || [];
   const stepped = schema.render?.layout === 'stepped';
   const accent = accentClasses(schema.render?.accent);
+  const summaryKind = schema.summary_kind ?? schema.intervention_kind;
+  const effectiveSummary = useMemo(
+    () => resolveEffectiveSummary(schema, summaryMarkdown),
+    [schema, summaryMarkdown],
+  );
   const [step, setStep] = useState(0);
   const hydrateFromInitial = (vals?: HitlFormValues) => {
     const selInit: Record<string, Set<string>> = {};
@@ -459,9 +516,18 @@ const HitlQuestionnaireForm: React.FC<{
         ) : null}
       </div>
       {q.context ? (
-        <p className="text-[11px] text-muted-foreground leading-relaxed pl-0.5 border-l-2 border-border/50 pl-2.5 mt-1.5">
-          {q.context}
-        </p>
+        isRichMarkdownText(q.context) ? (
+          <div className="mt-2 rounded-lg border border-border/45 bg-muted/15 px-3 py-2.5">
+            <div className="text-[10px] font-medium text-muted-foreground mb-1.5 uppercase tracking-wider">
+              待审阅内容
+            </div>
+            <ReviewMarkdown content={q.context} compact className="rd-meeting-hitl-context-md text-[11px]" />
+          </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground leading-relaxed pl-0.5 border-l-2 border-border/50 pl-2.5 mt-1.5">
+            {q.context}
+          </p>
+        )
       ) : null}
       {(q.type === 'textarea' || q.type === 'text') && (
         <TextArea
@@ -519,11 +585,15 @@ const HitlQuestionnaireForm: React.FC<{
             </div>
             <p className="text-[12px] text-foreground/95 leading-relaxed m-0">{reason}</p>
             <p className="text-[10px] text-muted-foreground mt-2 leading-relaxed">
-              请选择处置方式后提交；interactive / 结果确认场景不展示长文「待确认总结」，避免与表单题目重复或误导。
+              请选择处置方式后提交。
             </p>
           </div>
         );
       })()}
+
+      {effectiveSummary ? (
+        <HitlSummaryPanel markdown={effectiveSummary} accent={accent} kind={summaryKind} />
+      ) : null}
 
       <AnimatePresence mode="wait">
         {visibleQuestions.map((q) => (

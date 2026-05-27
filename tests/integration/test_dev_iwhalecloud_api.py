@@ -343,8 +343,10 @@ class TestGetRepoDetailByProdBranch:
                                         "productModuleDto": {"repoId": 7506},
                                         "adBranchVersionGitList": [
                                             {
+                                                "repoProductModuleId": 1001,
                                                 "sourceBranchName": "master",
                                                 "destBranchName": "UNI_online",
+                                                "destBranchType": "RELEASE",
                                             },
                                         ],
                                     },
@@ -367,7 +369,7 @@ class TestGetRepoDetailByProdBranch:
             _ensure.return_value = ("t", "c=1")
             resp = await client.post(
                 "/api/dev/iwhalecloud/get_repo_detail_by_prod_branch",
-                json={"prod_branch": 4531, "projectId": 562722},
+                json={"prod_branch": 4531, "projectId": 562722, "productModuleId": 1001},
             )
         assert resp.status_code == 200
         assert resp.json().get("errorcode") == 0
@@ -445,7 +447,7 @@ class TestGetRepoDetailByProdBranch:
             _e.return_value = ("t", "c=1")
             resp = await client.post(
                 "/api/dev/iwhalecloud/get_repo_detail_by_prod_branch",
-                json={"prod_branch": 1, "projectId": 1},
+                json={"prod_branch": 1, "projectId": 1, "productModuleId": 1},
             )
         assert resp.status_code == 200
         row = (resp.json().get("data") or [{}])[0]

@@ -1318,13 +1318,14 @@ export type RdRepoDetailRow = {
 };
 
 /**
- * 按产品分支版本 ID 拉取仓库明细（POST /api/dev/iwhalecloud/get_repo_detail_by_prod_branch）。
+ * 按产品分支版本 ID + 应用模块 ID 拉取仓库明细（POST /api/dev/iwhalecloud/get_repo_detail_by_prod_branch）。
  * data 为 `{ repositoryId, repoUrl, branchName, destBranchName }[]`。
  */
 export async function fetchRepoDetailByProdBranch(
   synapseApiBase: string,
   prodBranchVersionId: number,
   projectId: number,
+  productModuleId: number,
 ): Promise<RdRepoDetailRow[]> {
   const data = await fetchSynapseJson<unknown>(
     synapseApiBase,
@@ -1332,10 +1333,27 @@ export async function fetchRepoDetailByProdBranch(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prod_branch: prodBranchVersionId, projectId }),
+      body: JSON.stringify({
+        prod_branch: prodBranchVersionId,
+        projectId,
+        productModuleId,
+      }),
     },
   );
   return sanitizeRepoDetailListPayload(Array.isArray(data) ? data : []);
+}
+
+/** 仓库明细缓存键：产品分支版本 ID + 应用模块 ID */
+export function repoDetailFetchCacheKey(
+  prodBranchComposite: string,
+  repoModuleComposite: string,
+): string | null {
+  const pb = String(prodBranchComposite ?? "").trim();
+  const rm = String(repoModuleComposite ?? "").trim();
+  const vid = pb.includes("|") ? pb.slice(0, pb.indexOf("|")).trim() : pb;
+  const mid = rm.includes("|") ? rm.slice(0, rm.indexOf("|")).trim() : rm;
+  if (!vid || !mid || !/^\d+$/.test(vid) || !/^\d+$/.test(mid)) return null;
+  return `${vid}|${mid}`;
 }
 
 /** 仓库行：与 get_repo_detail_by_prod_branch 对齐；去重、去无效项，避免下拉重复 key 导致崩溃 */

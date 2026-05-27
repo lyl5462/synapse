@@ -1375,6 +1375,19 @@ class MeetingRoomOrchestrator:
                 user_ctx = drain_user_context_for_prompt(sid)
                 if user_ctx:
                     prompt = f"{prompt}\n\n{user_ctx}"
+                try:
+                    from synapse.rd_meeting.hitl_context import read_hitl_context
+                    from synapse.rd_meeting.hitl_feedback import prompt_for_followup_interactive_round
+
+                    prior_ctx = read_hitl_context(sid, node_id, binding=binding)
+                    prior_rounds = len(prior_ctx.get("rounds") or [])
+                    if prior_rounds >= 1:
+                        prompt = (
+                            f"{prompt}\n\n"
+                            f"{prompt_for_followup_interactive_round(prior_rounds + 1)}"
+                        )
+                except Exception:
+                    pass
                 if rework:
                     prompt = f"{prompt}\n\n## 人工返工意见\n{rework}\n"
                 rs_cont = load_room_state(sid) or {}

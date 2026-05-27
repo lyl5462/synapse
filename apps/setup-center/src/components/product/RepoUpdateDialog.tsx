@@ -7,9 +7,11 @@ import {
   displayIdPipeName,
   defaultProdBranchForAppModuleSelection,
   filterAppModuleOptionsForRow,
+  filterProdBranchOptionsForRow,
   isValidRepoBranchComposite,
   patchRepositoryRepoBranchFromModuleDetail,
   productRepositoriesToRdRepoInfo,
+  prodBranchRowsToOptions,
 } from "./types";
 import { SearchableVirtualSelect, type SearchableOption } from "./SearchableVirtualSelect";
 import { RepoBranchDerivedDisplay } from "./RepoBranchDerivedDisplay";
@@ -31,8 +33,10 @@ import { IS_TAURI } from "@/platform";
 import {
   changeRepoInfo,
   fetchModuleNameList,
+  fetchProductBranchList,
   fetchRepoDetailByProdBranch,
   getProdProcessInfo,
+  repoDetailFetchCacheKey,
 } from "@/api/rdUnifiedService";
 import type {
   ProdProcessDataPayload,
@@ -105,6 +109,8 @@ export function RepoUpdateDialog({
   const [appModuleOptions, setAppModuleOptions] = useState<SearchableOption[]>([]);
   const [appModuleRows, setAppModuleRows] = useState<RdModuleNameItem[]>([]);
   const [modulesLoading, setModulesLoading] = useState(false);
+  const [prodBranchOptions, setProdBranchOptions] = useState<SearchableOption[]>([]);
+  const [prodBranchLoading, setProdBranchLoading] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -154,26 +160,57 @@ export function RepoUpdateDialog({
     };
   }, [open, product, product?.space, product?.version, synapseApiBase, t]);
 
+  useEffect(() => {
+    if (!open || !product) return;
+    const vid = parseCompositeLeadingId(product.version ?? "");
+    if (vid == null) {
+      setProdBranchOptions([]);
+      setProdBranchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setProdBranchLoading(true);
+    fetchProductBranchList(synapseApiBase, vid)
+      .then((rows) => {
+        if (!cancelled) setProdBranchOptions(prodBranchRowsToOptions(rows));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        console.error(e);
+        setProdBranchOptions([]);
+        toast.error(t("workbench.products.modal.prodBranchLoadFailed"));
+      })
+      .finally(() => {
+        if (!cancelled) setProdBranchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, product, product?.version, synapseApiBase, t]);
+
   /** 各产品分支版本 ID 对应的仓库明细（选仓库分支、填 repoUrl） */
   useEffect(() => {
     if (!open || !product) return;
     const projectId = parseProjectIdFromSpaceValue(product.space ?? "");
     if (projectId == null) return;
 
-    const vids = [
+    const fetchKeys = [
       ...new Set(
         rows
-          .map((r) => parseCompositeLeadingId(r.prodBranch ?? ""))
-          .filter((x): x is number => x != null),
+          .map((r) => repoDetailFetchCacheKey(r.prodBranch ?? "", r.repoModule ?? ""))
+          .filter((x): x is string => x != null),
       ),
     ];
 
-    for (const vid of vids) {
-      const key = String(vid);
+    for (const key of fetchKeys) {
       if (repoDetailFetchStartedRef.current.has(key)) continue;
+      const sep = key.indexOf("|");
+      const vid = Number(key.slice(0, sep));
+      const moduleId = Number(key.slice(sep + 1));
+      if (!Number.isFinite(vid) || !Number.isFinite(moduleId)) continue;
       repoDetailFetchStartedRef.current.add(key);
       setRepoDetailLoadingVid((m) => ({ ...m, [key]: true }));
-      fetchRepoDetailByProdBranch(synapseApiBase, vid, projectId)
+      fetchRepoDetailByProdBranch(synapseApiBase, vid, projectId, moduleId)
         .then((list) => {
           setRepoDetailByProdBranchVid((prev) => ({ ...prev, [key]: list }));
         })
@@ -196,9 +233,8 @@ export function RepoUpdateDialog({
       let changed = false;
       const next = prev.map((repo) => {
         if (repo.branchLocked) return repo;
-        const pbVid = parseCompositeLeadingId(repo.prodBranch ?? "");
-        if (pbVid == null) return repo;
-        const key = String(pbVid);
+        const key = repoDetailFetchCacheKey(repo.prodBranch ?? "", repo.repoModule ?? "");
+        if (key == null) return repo;
         if (repoDetailLoadingVid[key]) return repo;
         const list = repoDetailByProdBranchVid[key];
         if (!list?.length) return repo;
@@ -231,6 +267,10 @@ export function RepoUpdateDialog({
   const handleRepoModuleSelect = (index: number, v: string) => {
     const defaultPb = defaultProdBranchForAppModuleSelection(v, appModuleRows);
     updateRow(index, { repoModule: v, prodBranch: defaultPb, branch: "", url: "" });
+  };
+
+  const handleProdBranchSelect = (index: number, v: string) => {
+    updateRow(index, { prodBranch: v, branch: "", url: "" });
   };
 
   const addRow = () => {
@@ -302,6 +342,11 @@ export function RepoUpdateDialog({
         toast.error(t("workbench.products.modal.repoModuleDuplicate"));
         return;
       }
+      const pbVals = rows.map((r) => r.prodBranch?.trim() ?? "").filter(Boolean);
+      if (new Set(pbVals).size !== pbVals.length) {
+        toast.error(t("workbench.products.modal.prodBranchDuplicate"));
+        return;
+      }
     }
 
     setSaving(true);
@@ -355,11 +400,11 @@ export function RepoUpdateDialog({
             <p className="text-sm text-muted-foreground">{t("workbench.products.repoUpdateDialog.empty")}</p>
           ) : (
             rows.map((repo, index) => {
-              const rbVid = parseCompositeLeadingId(repo.prodBranch ?? "");
-              const rbVidKey = rbVid != null ? String(rbVid) : "";
+              const rbVidKey =
+                repoDetailFetchCacheKey(repo.prodBranch ?? "", repo.repoModule ?? "") ?? "";
               const repoBranchLoading =
                 !repo.branchLocked &&
-                rbVid != null &&
+                rbVidKey !== "" &&
                 !!(repo.repoModule?.trim()) &&
                 !!repoDetailLoadingVid[rbVidKey];
 
@@ -436,6 +481,21 @@ export function RepoUpdateDialog({
                     loading={repoBranchLoading}
                     locked={repo.branchLocked}
                     showRequired={!repo.branchLocked}
+                    prodBranchOptions={
+                      repo.branchLocked
+                        ? undefined
+                        : filterProdBranchOptionsForRow(
+                            prodBranchOptions,
+                            rows,
+                            index,
+                            repo.prodBranch ?? "",
+                          )
+                    }
+                    prodBranchLoading={prodBranchLoading}
+                    prodBranchDisabled={repoModuleSelectDisabled}
+                    onProdBranchChange={
+                      repo.branchLocked ? undefined : (v) => handleProdBranchSelect(index, v)
+                    }
                   />
                   <div className="col-span-12 space-y-1.5">
                     <Label className="text-xs">{t("workbench.products.modal.url")}</Label>

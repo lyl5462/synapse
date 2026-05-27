@@ -281,6 +281,52 @@ export function defaultProdBranchForAppModuleSelection(
   return defaultProdBranchCompositeFromModuleRow(mod) ?? "";
 }
 
+/** 与产品分支下拉的 value 一致：branchVersionId|branchName */
+export function rdProductBranchItemToCompositeValue(row: {
+  branchVersionId?: number | string | null;
+  branchName?: string | null;
+}): string {
+  const id = row.branchVersionId ?? "";
+  const name = (row.branchName ?? "").trim() || String(id);
+  return `${id}|${name}`;
+}
+
+/** get_product_branch_list 行 → SearchableVirtualSelect 选项 */
+export function prodBranchRowsToOptions(
+  rows: { branchVersionId?: number | string | null; branchName?: string | null }[],
+): { label: string; value: string }[] {
+  return rows.map((row) => {
+    const value = rdProductBranchItemToCompositeValue(row);
+    return { label: value, value };
+  });
+}
+
+/** 当前值不在列表中时补入选项，避免已保存/模块默认分支无法展示 */
+export function ensureProdBranchOptionInList(
+  options: { label: string; value: string }[],
+  currentValue: string,
+): { label: string; value: string }[] {
+  const v = currentValue.trim();
+  if (!v || options.some((o) => o.value === v)) return options;
+  return [{ label: v, value: v }, ...options];
+}
+
+/** 多仓库时产品分支下拉：排除其它行已选的 prodBranch（当前行已选保留可选） */
+export function filterProdBranchOptionsForRow(
+  options: { label: string; value: string }[],
+  repos: { prodBranch?: string }[],
+  rowIndex: number,
+  currentProdBranch: string,
+): { label: string; value: string }[] {
+  const cur = currentProdBranch.trim();
+  const taken = new Set(
+    repos
+      .map((r, j) => (j !== rowIndex && r.prodBranch?.trim() ? r.prodBranch.trim() : null))
+      .filter((x): x is string => !!x),
+  );
+  return options.filter((o) => !taken.has(o.value) || o.value === cur);
+}
+
 /** 多仓库时应用模块下拉：排除其它行已选的 `value`（当前行已选保留可选） */
 export function filterAppModuleOptionsForRow(
   options: SearchableOption[],

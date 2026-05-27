@@ -724,8 +724,9 @@ def _dest_branch_name_from_git_rows(
     second_data: list,
     repository_id: object,
     branch_name: object,
+    product_module_id: object,
 ) -> object:
-    """在第二接口 data 中按 productModuleDto.repoId 对齐，再在 adBranchVersionGitList 中按 sourceBranchName 取 destBranchName。"""
+    """在第二接口 data 中按 productModuleDto.repoId 对齐，再在 adBranchVersionGitList 中按 repoProductModuleId 匹配，按 destBranchType 取目标分支。"""
     for row2 in second_data:
         if not isinstance(row2, dict):
             continue
@@ -740,10 +741,15 @@ def _dest_branch_name_from_git_rows(
         for g in git_list:
             if not isinstance(g, dict):
                 continue
-            if g.get("sourceBranchName") != branch_name:
+            if not _repo_ids_equal(g.get("repoProductModuleId"), product_module_id):
                 continue
-            dest = g.get("destBranchName")
-            return dest if dest is not None else branch_name
+            dest_type = g.get("destBranchType")
+            if dest_type == "RELEASE":
+                dest = g.get("destBranchName")
+                return dest if dest is not None else branch_name
+            if dest_type == "PROD":
+                src = g.get("sourceBranchName")
+                return src if src is not None else branch_name
         return branch_name
     return branch_name
 
@@ -751,6 +757,10 @@ def _dest_branch_name_from_git_rows(
 class GetRepoDetailByProdBranchRequest(BaseModel):
     prod_branch: int = Field(..., description="产品分支版本 ID（对应上游路径中的分支 ID）")
     projectId: int = Field(..., description="项目空间 ID")
+    productModuleId: int = Field(
+        ...,
+        description="应用模块 ID（与 adBranchVersionGitList.repoProductModuleId 对齐）",
+    )
 
 
 def _build_get_repo_detail_by_prod_branch_headers(
@@ -865,7 +875,7 @@ async def _get_repo_detail_by_prod_branch(body: GetRepoDetailByProdBranchRequest
         repo_url = row.get("repoUrl")
         bname = row.get("branchName")
         mname = row.get("moduleName")
-        dest = _dest_branch_name_from_git_rows(second_rows, rid, bname)
+        dest = _dest_branch_name_from_git_rows(second_rows, rid, bname, body.productModuleId)
         out.append(
             {
                 "repositoryId": rid,

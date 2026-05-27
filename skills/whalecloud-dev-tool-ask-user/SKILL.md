@@ -89,7 +89,7 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 | `id` | 唯一 ID；**结果确认**须含 `decision`（`approve`/`reject`）、可选 `comment` |
 | `type` | `single` / `multiple` / `text` / `textarea`；判断题用 `single` + `optionStyle: boolean` |
 | `title` | 题目标题 |
-| `context` | 场景说明（展示在题目下方） |
+| `context` | **用户可见**的场景说明（展示在题目下方）。**强约束**：title 含「（N项）」须逐条列出 N 条完整内容；「是否满足/完整/覆盖」类签收题须嵌入章节/清单全文（从归档 Markdown 摘录）。禁止仅写「含 A/B/C 维度」关键词（工具会拒绝） |
 | `options` | `[{ "value", "label", "selected": false }]` |
 | `required` | 是否必填 |
 | `inputEnabled` | 是否允许选项外的自定义输入 |

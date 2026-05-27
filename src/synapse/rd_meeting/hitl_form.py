@@ -246,6 +246,26 @@ _LIST_ITEM_PATTERNS = [
     re.compile(r"(?m)^\s*Q\d{1,3}\s*[\.\、\):：]\s*\S", re.IGNORECASE),
 ]
 
+# 题目标题中的「N 项/条」计数（如「验收标准（7项）」）
+_COUNT_IN_TITLE_RE = re.compile(
+    r"（(\d{1,3})\s*[项条个]）|\((\d{1,3})\s*(?:items?|项|条)\)|共\s*(\d{1,3})\s*[项条个]",
+    re.IGNORECASE,
+)
+# 章节/清单「签收式」meta 题（须附带可审阅正文，不能只给维度关键词）
+_META_REVIEW_TITLE_RE = re.compile(
+    r"是否(?:满足|完整|准确|覆盖|可接受|充分|达标)|(?:完整|准确|充分)(?:覆盖|记录)",
+    re.IGNORECASE,
+)
+# 仅维度关键词、无实质正文的 context（如「含配置/触发/手动/日志」）
+_KEYWORD_ONLY_CONTEXT_RE = re.compile(
+    r"^[\s含包括涵盖涉及]*(?:[\u4e00-\u9fffA-Za-z0-9_/、,，\s]+(?:关系|维度|方面)?)[\s。．.]*$",
+    re.IGNORECASE,
+)
+_CONTEXT_LIST_LINE_RE = re.compile(
+    r"(?m)^\s*(?:[-*•]|\d{1,3}\s*[\.\、\)\）]|Q\d+\.|AC\d+[\.:：]|\|\s*\d+\s*\|)\s*\S",
+    re.IGNORECASE,
+)
+
 
 # summary 禁止混入 SOP 预告 / Worker Phase 路线图（见 meeting-room SKILL §4.5.2）
 _SUMMARY_ROADMAP_CHECKS: list[tuple[re.Pattern[str], str]] = [
@@ -274,6 +294,109 @@ def _validate_summary_no_roadmap(summary: str, *, kind: str) -> None:
         "勿写 ### 下一步、确认后进入某阶段、Phase 1~N 或 SOP 下一节点预告"
         "（见 whalecloud-dev-tool-meeting-room SKILL §4.5.2）。"
     )
+
+
+def _extract_count_from_title(title: str) -> int:
+    """从题目标题解析「N 项/条」计数；无法解析则 0。"""
+    text = (title or "").strip()
+    if not text:
+        return 0
+    best = 0
+    for m in _COUNT_IN_TITLE_RE.finditer(text):
+        for g in m.groups():
+            if g is None:
+                continue
+            try:
+                n = int(g)
+            except (TypeError, ValueError):
+                continue
+            if 2 <= n <= 200:
+                best = max(best, n)
+    return best
+
+
+def _count_context_list_items(context: str) -> int:
+    """统计 context 中列表/表格行数量（用于校验「N 项」题是否列全）。"""
+    text = (context or "").strip()
+    if not text:
+        return 0
+    return len(_CONTEXT_LIST_LINE_RE.findall(text))
+
+
+def _is_keyword_only_context(context: str) -> bool:
+    """context 是否仅为维度关键词枚举（无逐条正文）。"""
+    text = (context or "").strip()
+    if not text or len(text) > 160:
+        return False
+    if _count_context_list_items(text) >= 2:
+        return False
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) >= 80:
+        return False
+    return bool(_KEYWORD_ONLY_CONTEXT_RE.match(text))
+
+
+def _validate_question_context_substance(
+    question: dict[str, Any],
+    *,
+    idx: int,
+    kind: str,
+) -> None:
+    """interactive / result_confirm：禁止「有题无内容」的签收式空壳题。"""
+    kind_norm = (kind or "").strip().lower()
+    if kind_norm not in ("interactive", "result_confirm"):
+        return
+
+    qid = str(question.get("id") or "").strip() or f"q{idx + 1}"
+    title = str(question.get("title") or "").strip()
+    context = str(question.get("context") or "").strip()
+    qtype = str(question.get("type") or "").strip().lower()
+
+    if qid == HUMAN_SUPPLEMENT_QUESTION_ID or qtype in ("text", "textarea"):
+        return
+
+    expected_n = _extract_count_from_title(title)
+    is_meta_review = bool(_META_REVIEW_TITLE_RE.search(title))
+
+    if expected_n >= 2:
+        listed = _count_context_list_items(context)
+        min_required = min(expected_n, max(3, expected_n // 2 + 1))
+        if listed < min_required and len(context) < expected_n * 40:
+            raise ValueError(
+                f"questions[{idx}]（id={qid}）title 声明 {expected_n} 项/条，"
+                f"但 context 仅列出 {listed} 条或正文过短。"
+                "请在 context 中用 Markdown 列表或表格**逐条写出**待用户审阅的完整内容"
+                "（不可只用「含 A/B/C 维度」类关键词替代）。"
+            )
+
+    if is_meta_review:
+        if not context:
+            raise ValueError(
+                f"questions[{idx}]（id={qid}）为章节/清单签收题（{title[:40]}…），"
+                "必须填写 context，嵌入待审阅的**完整章节正文或逐条清单**，"
+                "让用户无需离开表单即可核对内容。"
+            )
+        if _is_keyword_only_context(context):
+            raise ValueError(
+                f"questions[{idx}]（id={qid}）context 仅为维度关键词"
+                f"（{context[:60]}…），不可作为签收依据。"
+                "请把被询问的章节/清单**全文或逐条列表**写入 context。"
+            )
+        if len(context) < 80 and _count_context_list_items(context) < 2:
+            raise ValueError(
+                f"questions[{idx}]（id={qid}）签收题 context 过短（{len(context)} 字），"
+                "请补充完整待审阅内容后再提交问卷。"
+            )
+
+
+def _validate_questions_context_substance(
+    questions: list[dict[str, Any]],
+    *,
+    kind: str,
+) -> None:
+    for idx, q in enumerate(questions):
+        if isinstance(q, dict):
+            _validate_question_context_substance(q, idx=idx, kind=kind)
 
 
 def _infer_expected_question_count(summary: str) -> int:
@@ -413,6 +536,8 @@ def coerce_questionnaire_schema(
                 "每个待澄清问题（如「问题1～问题14」）都要单独成题，把可默认结论作为"
                 "推荐选项（可标 ✅），即使你已经给出建议值也不要合并题目。"
             )
+
+    _validate_questions_context_substance(valid_questions, kind=kind_norm)
 
     return normalize_hitl_schema(schema) or schema
 
