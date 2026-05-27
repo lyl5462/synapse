@@ -135,10 +135,14 @@ export function MeetingChatMessage({
     .filter(Boolean)
     .join(' ');
 
+  const bubbleUsesInnerCard =
+    isStructured || kind === 'pipeline' || kind === 'delegation';
   const bubbleClass = [
     'rd-meeting-chat-bubble',
     chatBubbleRoleClass(role),
-    isStructured ? 'rd-meeting-chat-bubble--has-card' : 'rd-meeting-chat-bubble--has-body',
+    bubbleUsesInnerCard
+      ? 'rd-meeting-chat-bubble--has-card'
+      : 'rd-meeting-chat-bubble--has-body',
     kind === 'status' ? `rd-meeting-chat-bubble--status-${log.type}` : '',
     kind === 'pipeline' ? 'rd-meeting-chat-bubble--inner-pipeline' : '',
   ]

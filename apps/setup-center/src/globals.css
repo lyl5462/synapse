@@ -516,6 +516,8 @@ button.rd-meeting-chat-avatar:hover {
   text-align: center;
 }
 
+/* 流程内卡：与 --has-card 结构化卡片同款外内框间距（4px） */
+.rd-meeting-chat-bubble--has-card.rd-meeting-chat-bubble--inner-pipeline .rd-meeting-chat-pipeline,
 .rd-meeting-chat-bubble--inner-pipeline .rd-meeting-chat-pipeline,
 .rd-meeting-chat-bubble--role-system.rd-meeting-chat-bubble--inner-pipeline .rd-meeting-chat-pipeline {
   display: flex;
