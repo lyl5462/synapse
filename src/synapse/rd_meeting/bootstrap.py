@@ -56,6 +56,10 @@ def append_node_init_chat(
             "chat_text": format_node_init_chat(),
             "agent_id": host_id,
             "log_type": "info",
+            "binding": {
+                "host_profile_id": host_id,
+                "worker_profile_ids": list(binding.get("worker_profile_ids") or []),
+            },
             "participants": participants,
             "flow_stage": "节点初始化",
         },

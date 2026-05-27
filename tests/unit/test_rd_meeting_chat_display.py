@@ -6,7 +6,7 @@ from synapse.rd_meeting.chat_display import expand_history_event_to_chat
 from synapse.rd_meeting.room_runtime import history_to_chat_logs
 
 
-def test_node_init_context_once_with_pipeline() -> None:
+def test_node_init_context_pipeline_then_participants() -> None:
     ev = {
         "event": "node_init",
         "room_id": "mr_d_1",
@@ -14,15 +14,21 @@ def test_node_init_context_once_with_pipeline() -> None:
         "agent_id": "default",
         "text": '{"order":{"id":"1","title":"T"},"product":{"prod":"P"},"system":{}}',
         "chat_text": "节点初始化\n\n已加载上下文。",
+        "binding": {"host_profile_id": "default", "worker_profile_ids": ["w1"]},
+        "participants": [
+            {"profile_id": "default", "role": "host", "display_name": "小鲸"},
+            {"profile_id": "w1", "role": "worker", "display_name": "专家A"},
+        ],
         "ts": "2026-05-21T10:00:00",
     }
     rows = expand_history_event_to_chat(ev, 0)
     kinds = [r["displayKind"] for r in rows]
-    assert kinds.count("node_context") == 1
-    assert "pipeline" in kinds
+    assert kinds == ["node_context", "pipeline", "participants"]
+    assert rows[-1]["text"] == "参会人员名单"
+    assert rows[-1]["speakerRole"] == "system"
 
 
-def test_node_started_only_participants_no_duplicate_context() -> None:
+def test_node_started_emits_no_chat_rows() -> None:
     ev = {
         "event": "node_started",
         "room_id": "mr_d_1",
@@ -36,12 +42,7 @@ def test_node_started_only_participants_no_duplicate_context() -> None:
         ],
         "ts": "2026-05-21T10:00:01",
     }
-    rows = expand_history_event_to_chat(ev, 1)
-    kinds = [r["displayKind"] for r in rows]
-    assert kinds == ["participants"]
-    assert rows[0]["text"] == "参会人员名单"
-    assert rows[0]["speakerRole"] == "system"
-    assert "node_context" not in kinds
+    assert expand_history_event_to_chat(ev, 1) == []
 
 
 def test_prewarm_workers_skipped() -> None:

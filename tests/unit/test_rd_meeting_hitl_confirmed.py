@@ -1,4 +1,4 @@
-"""hitl_confirmed.md 累积台账：写入与 prompt 注入。"""
+"""人机交互清单.md 人类台账：写入（不注入 prompt）。"""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import pytest
 from synapse.rd_meeting.hitl_confirmed import (
     HITL_CONFIRMED_FILENAME,
     append_hitl_confirmed,
-    format_hitl_confirmed_cumulative_prompt,
     hitl_confirmed_path,
     read_hitl_confirmed,
     split_hitl_confirmed_rounds,
 )
+from synapse.rd_meeting.hitl_feedback import format_hitl_current_round_prompt
 from synapse.rd_meeting.user_context import (
     append_user_context_pending,
     drain_user_context_for_prompt,
@@ -42,7 +42,7 @@ def test_append_hitl_confirmed_creates_and_appends_rounds(synapse_work_home):
     text = p2.read_text(encoding="utf-8")
     assert "第 1 轮" in text
     assert "第 2 轮" in text
-    assert text.index("第 1 轮") < text.index("第 2 轮")
+    assert "人机交互清单" in text
 
 
 def test_split_hitl_confirmed_rounds():
@@ -61,45 +61,27 @@ def test_split_hitl_confirmed_rounds():
     assert "第 2 轮" in latest2
 
 
-def test_cumulative_prompt_excludes_latest_round(synapse_work_home):
-    scope_id = "21883521"
-    node_id = "req_clarify"
-    append_hitl_confirmed(scope_id, node_id, "round-one-body", intervention_kind="interactive")
-    append_hitl_confirmed(scope_id, node_id, "round-two-body", intervention_kind="interactive")
-
-    cumulative = format_hitl_confirmed_cumulative_prompt(scope_id, node_id)
-    assert "本节点已确认的人工决策（累积）" in cumulative
-    assert "round-one-body" in cumulative
-    assert "round-two-body" not in cumulative
-
-
-def test_cumulative_empty_when_single_round(synapse_work_home):
-    scope_id = "21883524"
-    node_id = "req_clarify"
-    append_hitl_confirmed(scope_id, node_id, "only-round", intervention_kind="interactive")
-    assert format_hitl_confirmed_cumulative_prompt(scope_id, node_id) == ""
-
-
-def test_cumulative_plus_pending_pattern(synapse_work_home):
-    """累积段（先前轮）+ pending（本轮）组合，与 orchestrator 注入顺序一致。"""
+def test_pending_injects_current_round_json_only(synapse_work_home):
+    """与 orchestrator 一致：仅 pending 注入本轮 JSON，不读累积 md。"""
     scope_id = "21883522"
-    node_id = "req_clarify"
-    append_hitl_confirmed(scope_id, node_id, "prior-round-content", intervention_kind="interactive")
-    append_hitl_confirmed(scope_id, node_id, "current-round-content", intervention_kind="interactive")
-    append_user_context_pending(scope_id, "current-round-content")
-
-    cumulative = format_hitl_confirmed_cumulative_prompt(scope_id, node_id)
-    pending = drain_user_context_for_prompt(scope_id)
-
-    assert "prior-round-content" in cumulative
-    assert "current-round-content" not in cumulative
-    assert "current-round-content" in pending
+    pending_block = format_hitl_current_round_prompt(
+        {
+            "intervention_kind": "interactive",
+            "feedback_mode": "options_only",
+            "questions": [{"id": "q1", "title": "Q", "user_input": "x"}],
+        }
+    )
+    append_user_context_pending(scope_id, pending_block)
+    drained = drain_user_context_for_prompt(scope_id)
+    assert "本轮人工确认反馈（结构化）" in drained
+    assert '"current_round"' in drained
+    assert "hitl_context.json" in drained
 
 
 def test_hitl_confirmed_path_uses_stage_name(synapse_work_home):
     scope_id = "21883523"
     node_id = "req_clarify"
     path = hitl_confirmed_path(scope_id, "需求分析", node_id)
-    assert path.as_posix().endswith("archive/需求分析/req_clarify/hitl_confirmed.md")
+    assert path.as_posix().endswith("archive/需求分析/req_clarify/人机交互清单.md")
     append_hitl_confirmed(scope_id, node_id, "x", stage_name="需求分析")
     assert read_hitl_confirmed(scope_id, node_id, stage_name="需求分析") != ""

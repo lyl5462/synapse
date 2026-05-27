@@ -139,7 +139,8 @@
 |----|------|
 | 归档位置 | 上方「四、系统信息 · 本节点归档目录（阶段名 · 节点名）」展示的完整路径下；按友好名识别即可，无需手算路径 |
 | **命名（强约束）** | **必须**与运行时头「会议产出」（= 系统信息段同名清单）**逐字一致**（如 `需求澄清.md`、`模块功能.md`）；**禁止**改名、加前后缀，**禁止**用 `result.md` 替代清单中的语义化文件名 |
-| **生成方式（强约束）** | **必须**调用 `whalecloud-dev-tool-doc-generate`：①`get_skill_info` 读 SKILL.md → ②确认 `templates/` 下有与预期产出物**同名**的模板 → ③`write_file` 根据 `OUTPUT_DIR`（归档目录）/`OUTPUT`（产出物文件名）/`CONTEXT_JSON`（已核验上下文）落盘 |
+| **生成方式（强约束）** | **必须**调用 `whalecloud-dev-tool-doc-generate`：①`get_skill_info` 读 SKILL.md → ②确认 `templates/` 下有与预期产出物**同名**的模板 → ③若运行时头给出 `hitl_context.json` 且文件存在，**必须先** `read_file` 并以之为 `CONTEXT_JSON` → ④`write_file` 根据 `OUTPUT_DIR`/`OUTPUT` 落盘；**禁止**自写 `clarify_context.json` 等替代台账 |
+| **人机台账** | `hitl_context.json`（机器，仅 interactive 问卷维护）+ `人机交互清单.md`（人类可读）；清单**不**注入模型，生成产出物以 JSON 为准 |
 | **模板缺失** | 若 `templates/` 下找不到与预期产出物同名的模板，或模板字段无法满足本节点需求，**立即** `submit_hitl_questionnaire(kind="exception", summary="doc-generate 缺少 <文件名> 模板…")` 请求人工补齐模板 / 调整清单；**禁止**自行手写 Markdown 绕过模板 |
 | 一级标题 | 由模板提供并描述节点产物（如 `# 需求澄清`） |
 | 验收字样 | 产物末尾包含「结论」「完成」或「交付」之一，便于 `validation.py` 校验（模板已内置） |

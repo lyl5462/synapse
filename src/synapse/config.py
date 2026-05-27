@@ -34,9 +34,9 @@ class Settings(BaseSettings):
     # Agent 配置
     agent_name: str = Field(default="Synapse", description="Agent 名称")
     max_iterations: int = Field(
-        default=30,
+        default=100,
         ge=5,
-        description="Ralph 循环最大迭代次数（最小值 5，推荐 20~50）",
+        description="Ralph 循环最大迭代次数（最小值 5，默认 100）",
     )
 
     # Plan 模式建议阈值（ComplexitySignal.score 达到此值时建议用户使用 Plan 模式）
@@ -552,13 +552,13 @@ class Settings(BaseSettings):
     task_budget_tokens: int = Field(default=0, description="单次任务最大 token 消耗 (0=不限制)")
     task_budget_cost: float = Field(default=0.0, description="单次任务最大成本 USD (0=不限制)")
     task_budget_duration: int = Field(
-        default=600, description="单次任务最大时长秒 (0=不限制，默认 600=10分钟)"
+        default=0, description="单次任务最大时长秒 (0=不限制)"
     )
     task_budget_iterations: int = Field(
-        default=50, description="单次任务最大迭代次数 (0=不限制，默认 50)"
+        default=0, description="单次任务最大迭代次数 (0=不限制)"
     )
     task_budget_tool_calls: int = Field(
-        default=30, description="单次任务最大工具调用次数 (0=不限制，默认 30)"
+        default=0, description="单次任务最大工具调用次数 (0=不限制)"
     )
 
     # === 追踪配置 ===

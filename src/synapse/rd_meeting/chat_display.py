@@ -172,8 +172,34 @@ def _participants_payload(ev: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _append_participants_chat_row(
+    out: list[dict[str, Any]],
+    ev: dict[str, Any],
+    index: int,
+    *,
+    suffix: str = "-roster",
+) -> None:
+    """参会阵容：仅在 node_init 后展示一次。"""
+    part = _participants_payload(ev)
+    if not (part.get("worker_profile_ids") or part.get("participants")):
+        return
+    out.append(
+        _row(
+            ev,
+            index,
+            text="参会人员名单",
+            agent_id=SPEAKER_SYSTEM,
+            speaker_role=SPEAKER_SYSTEM,
+            display_kind="participants",
+            payload=part,
+            suffix=suffix,
+        )
+    )
+
+
 def _expand_node_init(ev: dict[str, Any], index: int, host_id: str) -> list[dict[str, Any]]:
-    """node_init：完整节点上下文（仅此处展示一次）+ 流程说明「节点初始化」。"""
+    """node_init：节点上下文 + 流程说明「节点初始化」+ 参会人员名单（仅此处）。"""
+    _ = host_id
     out: list[dict[str, Any]] = []
     raw_text = str(ev.get("text") or "").strip()
     obj = _try_parse_json(raw_text)
@@ -203,25 +229,15 @@ def _expand_node_init(ev: dict[str, Any], index: int, host_id: str) -> list[dict
                 suffix="-pipe",
             )
         )
+    _append_participants_chat_row(out, ev, index)
     return out
 
 
 def _expand_node_started(ev: dict[str, Any], index: int, host_id: str) -> list[dict[str, Any]]:
-    """node_started：仅参会阵容（上下文已在 node_init 展示，不再重复 JSON）。"""
+    """node_started：运行态事件，参会名单已在 node_init 展示，协作流不再重复。"""
     _ = host_id
-    part = _participants_payload(ev)
-    if part.get("worker_profile_ids") or part.get("participants"):
-        return [
-            _row(
-                ev,
-                index,
-                text="参会人员名单",
-                agent_id=SPEAKER_SYSTEM,
-                speaker_role=SPEAKER_SYSTEM,
-                display_kind="participants",
-                payload=part,
-            )
-        ]
+    _ = index
+    _ = ev
     return []
 
 
@@ -352,13 +368,9 @@ def expand_history_event_to_chat(ev: dict[str, Any], index: int) -> list[dict[st
                 "report_preview",
                 "success",
                 "host_profile_id",
-                "tokens_used",
             )
             if k in ev
         }
-        if payload.get("tokens_used") is not None:
-            payload["tokens_used_hint"] = int(payload["tokens_used"])
-            payload["tokens_note"] = "该值为流程占位估计，非精确计量"
         return [
             _row(
                 ev,
@@ -385,10 +397,6 @@ def expand_history_event_to_chat(ev: dict[str, Any], index: int) -> list[dict[st
             )
             if k in ev
         }
-        tokens = ev.get("tokens_used")
-        if tokens is not None:
-            payload["tokens_used_hint"] = int(tokens)
-            payload["tokens_note"] = "该值为流程占位估计，非精确计量"
         dur = payload.get("duration_seconds", "?")
         text = f"等待问卷反馈 · 已运行 {dur}s"
         return [

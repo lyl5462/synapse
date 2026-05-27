@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from typing import Any, Literal
 
 from synapse.rd_meeting.hitl_form import HUMAN_SUPPLEMENT_QUESTION_ID
@@ -16,7 +18,7 @@ _PROMPT_OPTIONS_ONLY = """
 用户已通过会中问卷做出选择，**未**在题目自定义输入框或末尾补充栏填写额外说明。
 
 **本次要求**：
-1. **逐条阅读**上方「用户问卷反馈（结构化）」：以用户选项为约束，结合工单、产品、代码仓库等**真实上下文**，更新或落盘本节点约定产出物（NODE_OUTPUTS 中的 Markdown）。
+1. **逐条阅读**上方「本轮人工确认反馈（结构化）」JSON：以用户选项为约束，结合工单、产品、代码仓库等**真实上下文**，更新或落盘本节点约定产出物（NODE_OUTPUTS 中的 Markdown）。
 2. 不得无视或弱化用户选项；选项即用户决策，写入产出物时必须体现。
 3. 若选项与现有产物/分析冲突，以用户选项为准并简要说明调整点。
 4. 无需再次提交 interactive 问卷，除非出现新的未决决策点。
@@ -29,7 +31,7 @@ _PROMPT_WITH_FREE_TEXT = """
 用户在题目自定义输入框和/或末尾「还有什么需要补充的吗」中提供了**自由文本**。
 
 **本次要求**：
-1. **先总结**：逐条整理「用户问卷反馈（结构化）」——每题的用户选项与用户输入，形成「用户意图与约束摘要」（不得省略任何输入细节）。
+1. **先总结**：逐条整理「本轮人工确认反馈（结构化）」JSON——每题的用户选项与用户输入，形成「用户意图与约束摘要」（不得省略任何输入细节）。
 2. **再推进**：基于该摘要，结合工单、产品、代码真实信息，继续分析、委派协作智能体、更新产出物；凡用户输入中的新要求、例外、约束必须显式响应。
 3. **多轮处理**：若仍有未澄清点，可再次 ``submit_hitl_questionnaire(kind="interactive")``；否则推进产出物直至可验收。
 4. 禁止用泛泛复述代替对用户输入的针对性回应。
@@ -247,3 +249,88 @@ def prompt_after_hitl_feedback(mode: HitlFeedbackMode) -> str:
     if mode == "with_free_text":
         return _PROMPT_WITH_FREE_TEXT
     return _PROMPT_OPTIONS_ONLY
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def build_hitl_round_record(
+    values: dict[str, Any],
+    schema: dict[str, Any] | None,
+    *,
+    comment: str = "",
+    intervention_kind: str = "interactive",
+    feedback_mode: HitlFeedbackMode | str = "options_only",
+) -> dict[str, Any]:
+    """构建单轮问卷结构化记录（与 ``hitl_context.json`` rounds[] 项同构）。"""
+    mode = feedback_mode if isinstance(feedback_mode, str) else feedback_mode
+    qmap = _question_by_id(schema)
+    ordered_ids: list[str] = []
+    for q in (schema or {}).get("questions") or []:
+        if isinstance(q, dict):
+            qid = str(q.get("id") or "").strip()
+            if qid and qid != HUMAN_SUPPLEMENT_QUESTION_ID:
+                ordered_ids.append(qid)
+    for qid in values:
+        if qid not in ordered_ids and qid != HUMAN_SUPPLEMENT_QUESTION_ID:
+            ordered_ids.append(qid)
+
+    questions: list[dict[str, Any]] = []
+    for qid in ordered_ids:
+        raw = values.get(qid)
+        if raw is None or str(raw).strip() == "":
+            continue
+        q = qmap.get(qid, {"id": qid, "title": qid})
+        title = str(q.get("title") or qid).strip()
+        opts, custom = split_question_answer(q, raw)
+        opt_index = _question_option_index(q)
+        questions.append(
+            {
+                "id": qid,
+                "title": title,
+                "selected_options": opts,
+                "option_labels": [opt_index.get(k, k) for k in opts],
+                "user_input": custom,
+            }
+        )
+
+    supplement_q = qmap.get(HUMAN_SUPPLEMENT_QUESTION_ID, {})
+    supplement_raw = values.get(HUMAN_SUPPLEMENT_QUESTION_ID)
+    supplement_text = ""
+    if supplement_raw is not None:
+        _, supplement_text = split_question_answer(
+            supplement_q or {"id": HUMAN_SUPPLEMENT_QUESTION_ID, "type": "textarea"},
+            supplement_raw,
+        )
+    if supplement_text:
+        supplement_title = str(supplement_q.get("title") or "请问您还有什么需要补充的吗？").strip()
+        questions.append(
+            {
+                "id": HUMAN_SUPPLEMENT_QUESTION_ID,
+                "title": supplement_title,
+                "selected_options": [],
+                "option_labels": [],
+                "user_input": supplement_text,
+            }
+        )
+
+    kind = (intervention_kind or "interactive").strip().lower() or "interactive"
+    return {
+        "intervention_kind": kind,
+        "submitted_at": _now_iso(),
+        "feedback_mode": str(mode),
+        "comment": (comment or "").strip(),
+        "questions": questions,
+    }
+
+
+def format_hitl_current_round_prompt(round_record: dict[str, Any]) -> str:
+    """格式化为注入 host prompt 的「仅本轮」结构化反馈块。"""
+    payload = {"current_round": round_record}
+    body = json.dumps(payload, ensure_ascii=False, indent=2)
+    return (
+        "## 本轮人工确认反馈（结构化）\n\n"
+        "以下为**本轮**问卷提交结果；全节点历史见节点归档 ``hitl_context.json``（生成会议产出前须 read_file）。\n\n"
+        f"```json\n{body}\n```\n"
+    )

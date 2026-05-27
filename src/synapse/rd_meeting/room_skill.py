@@ -631,6 +631,44 @@ def _human_confirm_label(binding: dict[str, Any] | None) -> str:
         return "**开启**（中途待确认内容及会议结果均需用户表单确认后才能推进）"
     return "关闭（自动处理推进会议, 不需要和人工交互）"
 
+
+def _format_hitl_artifact_lines(
+    binding: dict[str, Any] | None,
+    *,
+    scope_id: str,
+    stage_name: str,
+    node_id: str,
+) -> list[str]:
+    """``human_confirm`` 开启时展示人机台账绝对路径与用途说明。"""
+    if not isinstance(binding, dict) or not binding.get("human_confirm"):
+        return []
+    nid = (node_id or "").strip()
+    sid = (scope_id or "").strip()
+    if not sid or not nid or nid == "pending":
+        return []
+
+    from synapse.rd_meeting.hitl_confirmed import (
+        HITL_CONFIRMED_FILENAME,
+        hitl_confirmed_path,
+        resolve_stage_name_for_node,
+    )
+    from synapse.rd_meeting.hitl_context import HITL_CONTEXT_FILENAME, hitl_context_path
+
+    stg = (stage_name or "").strip() or resolve_stage_name_for_node(nid, binding)
+    if not stg:
+        return []
+
+    ctx_abs = str(hitl_context_path(sid, stg, nid).resolve())
+    md_abs = str(hitl_confirmed_path(sid, stg, nid).resolve())
+    return [
+        f"- **人工确认产物（机器台账）**：`{ctx_abs}`（`{HITL_CONTEXT_FILENAME}`）",
+        "  - 仅 **interactive** 问卷提交时由系统自动维护；含各轮结构化确认与 ``confirmed_by_id`` 汇总。",
+        "  - 生成上方「会议产出」Markdown **之前**必须 ``read_file`` 该路径并综合全量确认项；"
+        f"``whalecloud-dev-tool-doc-generate`` 的 ``CONTEXT_JSON`` 应指向该文件；**禁止**自写 ``clarify_context.json`` 等替代台账。",
+        f"- **人机交互清单（人类可读）**：`{md_abs}`（`{HITL_CONFIRMED_FILENAME}`）",
+        "  - 按轮追加 Markdown，供人工查阅；**禁止**用其替代 read_file 机器台账。",
+    ]
+
 def _format_meeting_outputs(binding: dict[str, Any] | None) -> str:
     """从 binding.node_outputs 渲染「会议产出」展示串（与归档强约束一一对应）。"""
     if not isinstance(binding, dict):
@@ -687,6 +725,14 @@ def build_meeting_runtime_header(
     lines.append(f"- **会议产出**：{meeting_outputs_label}（最终归档文件名必须**完全等于**这里列出的名字；详见下方归档约束）")
     lines.append(f"- **会议目标**：{context.node_intent}")
     lines.append(f"- **人工确认**：{confirm_label}")
+    lines.extend(
+        _format_hitl_artifact_lines(
+            binding,
+            scope_id=context.scope_id,
+            stage_name=context.stage_name,
+            node_id=context.node_id,
+        )
+    )
     lines.append(f"- **当前时间**：{now}")
     lines.append("- **回复语言**：中文")
     if supplement:
@@ -718,7 +764,8 @@ def build_meeting_runtime_header(
         lines.append("- **`human_confirm: false` 时**：不发表单，由你自评收敛质量——若三项校验（契合度 / 真实性 / 准确性）有任一不通过、证据缺失、Worker 产出相互矛盾、或决策高影响，则**必须再迭代一轮**；三项全过且产出已覆盖「会议产出」清单时才能归档；自主迭代原则上**不超过 3 轮**，仍未收敛时升级为 `submit_hitl_questionnaire(kind=\"exception\", ...)` 请求人工介入。")
         lines.append("- 节点目标完成且通过自检后，按下方规范第 6 节归档到「本节点归档目录」（系统信息段已展示完整路径，并带阶段名 · 节点名便于识别）并报告结论。")
         lines.append("- **会议产出 = 归档文件名（硬约束）**：上方「会议产出」列出的就是本节点必须落盘的文件，归档文件名必须与之**逐字一致**（如 `需求澄清.md`、`模块功能.md`），**禁止**改名 / 加前后缀 / 用 `result.md` 替代；多文件时每一项都要落盘，且不能多出清单之外的文件。")
-        lines.append('- **必须走 `whalecloud-dev-tool-doc-generate` 生成产出物**：先 `get_skill_info(whalecloud-dev-tool-doc-generate)` 读 SKILL.md、确认 `templates/` 下存在与预期产出物**同名**的模板，再 `write_file` 以utf8编码按模板落盘；若模板缺失或与本节点产出物不匹配，**立即** `submit_hitl_questionnaire(kind="exception", summary="doc-generate 缺少 <文件名> 模板，需人工补齐模板或调整产出物清单")` 请求人工介入，**禁止**自行手写 Markdown 兜底。')
+        lines.append('- **必须走 `whalecloud-dev-tool-doc-generate` 生成产出物**：先 `get_skill_info(whalecloud-dev-tool-doc-generate)` 读 SKILL.md、确认 `templates/` 下存在与预期产出物**同名**的模板；若运行时头已给出 `hitl_context.json` 路径且文件存在，**必须先** `read_file` 该路径，再以之为 `CONTEXT_JSON` 调用 doc-generate 落盘；若模板缺失或与本节点产出物不匹配，**立即** `submit_hitl_questionnaire(kind="exception", summary="doc-generate 缺少 <文件名> 模板，需人工补齐模板或调整产出物清单")` 请求人工介入，**禁止**自行手写 Markdown 兜底。')
+        lines.append('- **`result_confirm` 不得整篇覆盖会议产出**：节点验收问卷仅用于确认/返工指令，禁止用验收轮反馈直接重写已归档的「会议产出」全文。')
         lines.append("- `human_confirm` 开启或出现异常 / 风险不可控时，必须调用 `submit_hitl_questionnaire`，**禁止伪造用户答复**，**禁止只口头宣称问卷已提交**。")
         lines.append("- 可用 worker 名单与能力边界见下方「参会能力卡片」（已排除你自己）；派单时 task 描述应指向卡片上的具体 skill / 能力，便于 Worker 加载对应 SKILL。")
         lines.append("- 派单时 `message` 只写编排指令（skill/Phase/边界/原文引用），**禁止**替 Worker 撰写方案描述或需求拆解框架；违规示例见规范 §3.0。")

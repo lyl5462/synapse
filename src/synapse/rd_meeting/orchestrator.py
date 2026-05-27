@@ -29,7 +29,6 @@ from synapse.rd_meeting.binding import resolve_node_binding
 from synapse.rd_meeting.bootstrap import build_node_init_message
 from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
 from synapse.rd_meeting.dynamic_prompt import build_meeting_user_turn_prompt
-from synapse.rd_meeting.hitl_confirmed import format_hitl_confirmed_cumulative_prompt
 from synapse.rd_meeting.hitl_form import (
     HitlGateFromReport,
     extract_hitl_from_agent_output,
@@ -1352,13 +1351,6 @@ class MeetingRoomOrchestrator:
                         binding=binding,
                         ticket_title=ticket_title,
                     )
-                hitl_cumulative = format_hitl_confirmed_cumulative_prompt(
-                    sid,
-                    node_id,
-                    binding=binding,
-                )
-                if hitl_cumulative:
-                    prompt = f"{prompt}\n\n{hitl_cumulative}"
                 user_ctx = drain_user_context_for_prompt(sid)
                 if user_ctx:
                     prompt = f"{prompt}\n\n{user_ctx}"

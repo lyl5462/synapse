@@ -1,4 +1,7 @@
-"""节点级人工确认累积台账：``archive/<stage>/<node_id>/hitl_confirmed.md``。"""
+"""节点级人机交互人类可读台账：``archive/<stage>/<node_id>/人机交互清单.md``。
+
+仅程序追加、供人工查阅；**不**注入大模型 prompt（见 ``hitl_context.json``）。
+"""
 
 from __future__ import annotations
 
@@ -13,7 +16,7 @@ from synapse.rd_sop.nodes import stage_id_for_node_id, stage_name_for_id
 
 logger = logging.getLogger(__name__)
 
-HITL_CONFIRMED_FILENAME = "hitl_confirmed.md"
+HITL_CONFIRMED_FILENAME = "人机交互清单.md"
 _ROUND_HEADER_RE = re.compile(r"^##\s+第\s+\d+\s+轮", re.MULTILINE)
 
 
@@ -49,7 +52,7 @@ def append_hitl_confirmed(
     binding: dict[str, Any] | None = None,
     intervention_kind: str = "interactive",
 ) -> Path | None:
-    """追加一轮人工确认到节点归档 ``hitl_confirmed.md``。"""
+    """追加一轮人工确认到节点归档 ``人机交互清单.md``。"""
     sid = (scope_id or "").strip()
     nid = (node_id or "").strip()
     content = (body or "").strip()
@@ -81,9 +84,9 @@ def append_hitl_confirmed(
         path.write_text(f"{existing}\n\n{block}".strip() + "\n", encoding="utf-8")
     else:
         header = (
-            "# 本节点人工确认累积台账\n\n"
-            "以下为用户在各轮 HITL 问卷中的确认与补充；"
-            "后续轮次须继承已确认项，仅推进未决部分。\n\n"
+            "# 本节点人机交互清单\n\n"
+            "以下为用户在各轮 HITL 问卷中的确认与补充（人类可读）；"
+            "机器台账与生成产出物请以同目录 ``hitl_context.json`` 为准。\n\n"
         )
         path.write_text(f"{header}{block}".strip() + "\n", encoding="utf-8")
     return path
@@ -96,7 +99,7 @@ def read_hitl_confirmed(
     stage_name: str = "",
     binding: dict[str, Any] | None = None,
 ) -> str:
-    """读取节点 ``hitl_confirmed.md`` 全文（无文件则空串）。"""
+    """读取节点 ``人机交互清单.md`` 全文（无文件则空串）。"""
     sid = (scope_id or "").strip()
     nid = (node_id or "").strip()
     if not sid or not nid or nid == "pending":
@@ -134,16 +137,3 @@ def split_hitl_confirmed_rounds(text: str) -> tuple[str, str]:
     return prior, latest
 
 
-def format_hitl_confirmed_cumulative_prompt(
-    scope_id: str,
-    node_id: str,
-    *,
-    stage_name: str = "",
-    binding: dict[str, Any] | None = None,
-) -> str:
-    """注入主控 prompt：先前各轮已确认内容（不含最新一轮，避免与 pending 重复）。"""
-    full = read_hitl_confirmed(scope_id, node_id, stage_name=stage_name, binding=binding)
-    prior, _ = split_hitl_confirmed_rounds(full)
-    if not prior:
-        return ""
-    return f"## 本节点已确认的人工决策（累积）\n\n{prior}\n"

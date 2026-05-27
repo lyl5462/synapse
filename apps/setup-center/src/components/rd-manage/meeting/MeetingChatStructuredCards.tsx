@@ -259,11 +259,6 @@ export function HumanReportCard({ payload, text }: { payload: Record<string, unk
         {success ? '等待人工确认' : '需关注'}
       </div>
       <p className="rd-chat-card__desc">{preview}</p>
-      {payload.tokens_used_hint != null ? (
-        <p className="rd-chat-card__hint">
-          tokens 提示值 {String(payload.tokens_used_hint)}（{String(payload.tokens_note || '仅供参考')}）
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -301,22 +296,15 @@ export function PendingConfirmCard({ payload, text }: { payload: Record<string, 
             <dd>{String(payload.source)}</dd>
           </>
         ) : null}
-        {payload.tokens_used_hint != null ? (
-          <>
-            <dt>tokens</dt>
-            <dd>
-              {String(payload.tokens_used_hint)}
-              <span className="rd-chat-card__hint-inline">（占位估计）</span>
-            </dd>
-          </>
-        ) : null}
       </dl>
     </div>
   );
 }
 
 export function FlowMetaCard({ payload, title }: { payload: Record<string, unknown>; title: string }) {
-  const keys = Object.keys(payload).filter((k) => !['message'].includes(k)).slice(0, 8);
+  const keys = Object.keys(payload)
+    .filter((k) => !['message', 'tokens_used', 'tokens_used_hint', 'tokens_note'].includes(k))
+    .slice(0, 8);
   return (
     <div className="rd-chat-card rd-chat-card--meta">
       <SectionTitle icon={<Server className="w-4 h-4" />}>{title}</SectionTitle>

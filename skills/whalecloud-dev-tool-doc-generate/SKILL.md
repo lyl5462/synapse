@@ -100,6 +100,17 @@ label: 文档生成工具
 
 ---
 
+## 研发会议室人机台账（HITL）
+
+当 Host 运行时头给出节点归档下的 **`hitl_context.json` 绝对路径**且文件存在时：
+
+1. **必须先** `read_file` 该路径（UTF-8 JSON），作为 `CONTEXT_JSON` 的主数据源（可传文件路径或解析后的对象字段）。
+2. 综合 `rounds[]` 与 `confirmed_by_id` 中的全量用户确认项填充模板；**禁止**仅凭本轮对话摘要或 `人机交互清单.md` 落盘。
+3. **禁止**自写 `clarify_context.json` 等替代文件名；会议室节点唯一机器台账为 `hitl_context.json`。
+4. `result_confirm` 验收问卷**不得**触发整篇覆盖已生成的会议产出。
+
+---
+
 ## 工作流程
 
 ```

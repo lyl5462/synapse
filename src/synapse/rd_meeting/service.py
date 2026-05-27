@@ -674,7 +674,9 @@ class MeetingRoomService:
         schema = submission.get("schema_snapshot") if isinstance(submission.get("schema_snapshot"), dict) else None
 
         from synapse.rd_meeting.hitl_feedback import (
+            build_hitl_round_record,
             classify_hitl_feedback_mode,
+            format_hitl_current_round_prompt,
             format_hitl_feedback_structured,
             prompt_after_hitl_feedback,
         )
@@ -685,13 +687,22 @@ class MeetingRoomService:
 
         feedback_mode = classify_hitl_feedback_mode(form_values, schema, comment=comment)
         instruction_text = format_hitl_feedback_structured(form_values, schema, comment=comment)
-        append_user_context_pending(sid, instruction_text)
 
         kind = str(room_state.get("intervention_kind") or "interactive").strip().lower()
         node_id = str(room_state.get("current_node_id") or "pending")
+        round_record = build_hitl_round_record(
+            form_values,
+            schema,
+            comment=comment,
+            intervention_kind=kind,
+            feedback_mode=feedback_mode,
+        )
+        append_user_context_pending(sid, format_hitl_current_round_prompt(round_record))
+
         try:
             from synapse.rd_meeting.binding import resolve_node_binding
             from synapse.rd_meeting.hitl_confirmed import append_hitl_confirmed
+            from synapse.rd_meeting.hitl_context import append_hitl_context_round
 
             hitl_binding = resolve_node_binding(node_id) if node_id not in ("", "pending") else None
             append_hitl_confirmed(
@@ -701,8 +712,15 @@ class MeetingRoomService:
                 binding=hitl_binding,
                 intervention_kind=kind,
             )
+            if kind == "interactive":
+                append_hitl_context_round(
+                    sid,
+                    node_id,
+                    round_record,
+                    binding=hitl_binding,
+                )
         except Exception as exc:
-            logger.debug("append hitl_confirmed failed scope=%s: %s", sid, exc)
+            logger.debug("append hitl artifacts failed scope=%s: %s", sid, exc)
         pending = room_state.get("pending_delivery")
         if not isinstance(pending, dict):
             pending = {}

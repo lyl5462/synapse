@@ -2294,7 +2294,7 @@ class ReasoningEngine:
             tools_executed_in_task = False
             _supervisor_intervened = False
             _tool_call_counter: dict[str, int] = {}
-            _MAX_SAME_TOOL_PER_TASK = 5
+            _MAX_SAME_TOOL_PER_TASK = 50
 
             def _make_tool_sig(tc: dict) -> str:
                 nonlocal _last_browser_url

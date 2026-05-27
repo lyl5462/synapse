@@ -45,4 +45,4 @@ def drain_user_context_for_prompt(scope_id: str) -> str:
     if not blocks:
         return ""
     body = "\n\n---\n\n".join(blocks)
-    return f"## 用户输入与表单反馈（自上次节点运行以来）\n\n{body}\n"
+    return f"## 用户输入与表单反馈（自上次节点运行以来，含本轮 HITL）\n\n{body}\n"
