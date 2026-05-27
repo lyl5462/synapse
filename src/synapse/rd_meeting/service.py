@@ -187,6 +187,7 @@ class MeetingRoomService:
         agent_pool: Any | None = None,
         dump: bool = False,
         message_char_limit: int = 12_000,
+        node_id: str | None = None,
     ) -> dict[str, Any] | None:
         """探测会议室各 Agent 池实例的 system prompt / messages（调试监控用）。"""
         detail = self.get_room_detail(room_id)
@@ -199,6 +200,7 @@ class MeetingRoomService:
             agent_pool,
             orchestrator=orchestrator,
             message_char_limit=message_char_limit,
+            node_id=node_id,
         )
         if dump and scope_id:
             payload["dump_path"] = dump_meeting_agent_contexts(payload, scope_id=scope_id)

@@ -340,10 +340,13 @@ def _delegation_runs_from_sub_rows(sub_rows: list[dict[str, Any]]) -> list[dict[
 def _delegation_runs_from_history(
     scope_id: str | None,
     profile_id: str,
+    *,
+    node_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """从 room_history 还原委派记录（任务结束后 sub_agent_states 会清理，历史为持久来源）。"""
     sid = (scope_id or "").strip()
     pid = (profile_id or "").strip()
+    nid_filter = (node_id or "").strip()
     if not sid or not pid:
         return []
     from synapse.rd_meeting.room_runtime import read_history
@@ -353,6 +356,10 @@ def _delegation_runs_from_history(
     for ev in read_history(sid, limit=500):
         if not isinstance(ev, dict):
             continue
+        if nid_filter:
+            ev_nid = str(ev.get("node_id") or "").strip()
+            if ev_nid and ev_nid != nid_filter:
+                continue
         et = str(ev.get("event") or "").strip()
         to_agent = str(ev.get("to_agent") or "").strip()
         if to_agent != pid:
@@ -395,9 +402,11 @@ def _delegation_runs_for_profile(
     scope_id: str | None,
     profile_id: str,
     sub_rows: list[dict[str, Any]],
+    *,
+    node_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """历史委派为主；进行中任务用 live sub_agent 状态覆盖指标。"""
-    hist = _delegation_runs_from_history(scope_id, profile_id)
+    hist = _delegation_runs_from_history(scope_id, profile_id, node_id=node_id)
     live = _delegation_runs_from_sub_rows(sub_rows)
     if not live:
         return hist
@@ -583,7 +592,9 @@ def probe_pooled_agent(
 
         "task": task,
 
-        "delegation_runs": _delegation_runs_for_profile(scope_id, profile_id, sub_rows),
+        "delegation_runs": _delegation_runs_for_profile(
+            scope_id, profile_id, sub_rows, node_id=current_node_id
+        ),
 
         "last_usage": getattr(agent, "last_usage", None),
 
@@ -618,8 +629,13 @@ def _sub_rows_for_profile(sub_agents: list[dict[str, Any]], profile_id: str) -> 
     return out
 
 
-def _worker_profile_ids_from_delegation_history(scope_id: str | None) -> list[str]:
+def _worker_profile_ids_from_delegation_history(
+    scope_id: str | None,
+    *,
+    node_id: str | None = None,
+) -> list[str]:
     sid = (scope_id or "").strip()
+    nid_filter = (node_id or "").strip()
     if not sid:
         return []
     from synapse.rd_meeting.room_runtime import read_history
@@ -629,6 +645,10 @@ def _worker_profile_ids_from_delegation_history(scope_id: str | None) -> list[st
     for ev in read_history(sid, limit=500):
         if not isinstance(ev, dict):
             continue
+        if nid_filter:
+            ev_nid = str(ev.get("node_id") or "").strip()
+            if ev_nid and ev_nid != nid_filter:
+                continue
         if str(ev.get("event") or "") not in ("delegation_started", "delegation_finished"):
             continue
         to_agent = str(ev.get("to_agent") or "").strip()
@@ -639,56 +659,39 @@ def _worker_profile_ids_from_delegation_history(scope_id: str | None) -> list[st
 
 
 def collect_meeting_agent_contexts(
-
     room_id: str,
-
     agent_pool: Any | None,
-
     *,
-
     orchestrator: Any | None = None,
-
     message_char_limit: int = _DEFAULT_MESSAGE_CHAR_LIMIT,
-
+    node_id: str | None = None,
 ) -> dict[str, Any]:
-
-    """汇总会议室下 host / worker 池化 Agent 的上下文。"""
-
+    """汇总会议室下 host / worker 的上下文；``node_id`` 指定 SOP 节点（默认同 dev.status 当前节点）。"""
     rid = (room_id or "").strip()
-
     scope_id = scope_id_for_room_id(rid)
 
-    current_node_id = "pending"
+    live_node_id = "pending"
     if scope_id:
         dev = load_dev_status(scope_id)
         if dev:
-            current_node_id = str(dev.get("current_node_id") or "pending")
+            live_node_id = str(dev.get("current_node_id") or "pending")
+
+    target_node_id = (node_id or "").strip() or live_node_id
+    probe_live_pool = target_node_id == live_node_id
 
     prefix = f"rd_meeting:{rid}:"
-
     host_sid = host_session_id(rid)
 
-
-
     sub_agents: list[dict[str, Any]] = []
-
-    if orchestrator is not None:
-
+    if probe_live_pool and orchestrator is not None:
         getter = getattr(orchestrator, "get_sub_agent_states", None)
-
         if callable(getter):
-
             sub_agents = list(getter(host_sid) or [])
 
-
-
     agents: list[dict[str, Any]] = []
-
     seen_profiles: set[str] = set()
 
-
-
-    if agent_pool is not None:
+    if probe_live_pool and agent_pool is not None:
 
         stats = agent_pool.get_stats() if hasattr(agent_pool, "get_stats") else {}
 
@@ -749,11 +752,8 @@ def collect_meeting_agent_contexts(
                         sub_agent_rows=sub_rows,
 
                         scope_id=scope_id,
-
-                        current_node_id=current_node_id,
-
+                        current_node_id=target_node_id,
                     )
-
                 )
 
     if scope_id:
@@ -761,15 +761,15 @@ def collect_meeting_agent_contexts(
         try:
             from synapse.rd_meeting.binding import resolve_node_binding
 
-            b = resolve_node_binding(current_node_id)
+            b = resolve_node_binding(target_node_id)
             host_profile_id = str(b.get("host_profile_id") or "default").strip() or "default"
         except Exception:
             host_profile_id = "default"
-        for pid in list_node_agent_profiles(scope_id, current_node_id):
+        for pid in list_node_agent_profiles(scope_id, target_node_id):
             if pid in seen_profiles:
                 continue
             activity_raw, processing_history = _load_agent_activity_bundle(
-                scope_id, current_node_id, pid
+                scope_id, target_node_id, pid
             )
             if not processing_history:
                 continue
@@ -781,7 +781,7 @@ def collect_meeting_agent_contexts(
                     "session_id": sid,
                     "profile_id": pid,
                     "role": role,
-                    "current_node_id": current_node_id,
+                    "current_node_id": target_node_id,
                     "system_prompt": "",
                     "messages": [],
                     "messages_count": 0,
@@ -792,16 +792,20 @@ def collect_meeting_agent_contexts(
                         scope_id,
                         pid,
                         _sub_rows_for_profile(sub_agents, pid),
+                        node_id=target_node_id,
                     ),
                     "offline_from_disk": True,
                 }
             )
 
-    for pid in _worker_profile_ids_from_delegation_history(scope_id):
+    for pid in _worker_profile_ids_from_delegation_history(scope_id, node_id=target_node_id):
         if pid in seen_profiles:
             continue
         runs = _delegation_runs_for_profile(
-            scope_id, pid, _sub_rows_for_profile(sub_agents, pid)
+            scope_id,
+            pid,
+            _sub_rows_for_profile(sub_agents, pid),
+            node_id=target_node_id,
         )
         if not runs:
             continue
@@ -810,7 +814,7 @@ def collect_meeting_agent_contexts(
                 "session_id": f"{prefix}{pid}",
                 "profile_id": pid,
                 "role": "worker",
-                "current_node_id": current_node_id,
+                "current_node_id": target_node_id,
                 "system_prompt": "",
                 "messages": [],
                 "messages_count": 0,
@@ -820,21 +824,14 @@ def collect_meeting_agent_contexts(
         )
 
     return {
-
         "room_id": rid,
-
         "scope_id": scope_id,
-
-        "current_node_id": current_node_id,
-
+        "current_node_id": target_node_id,
+        "live_node_id": live_node_id,
         "host_session_id": host_sid,
-
         "agents": agents,
-
-        "sub_agents": sub_agents,
-
+        "sub_agents": sub_agents if probe_live_pool else [],
         "probed_at": datetime.now().isoformat(timespec="seconds"),
-
     }
 
 

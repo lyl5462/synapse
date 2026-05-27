@@ -430,6 +430,7 @@ export interface MeetingAgentContextsPayload {
   room_id: string;
   scope_id?: string | null;
   current_node_id?: string;
+  live_node_id?: string;
   host_session_id?: string;
   agents: MeetingAgentContextEntry[];
   sub_agents?: MeetingRoomLivePayload['sub_agents'];
@@ -440,12 +441,16 @@ export interface MeetingAgentContextsPayload {
 export async function fetchMeetingAgentContexts(
   synapseApiBase: string,
   roomId: string,
-  options?: { messageCharLimit?: number },
+  options?: { messageCharLimit?: number; nodeId?: string },
 ): Promise<MeetingAgentContextsPayload> {
   const base = synapseApiBase.replace(/\/$/, '');
   const params = new URLSearchParams();
   if (options?.messageCharLimit != null) {
     params.set('message_char_limit', String(options.messageCharLimit));
+  }
+  const nodeId = (options?.nodeId || '').trim();
+  if (nodeId) {
+    params.set('node_id', nodeId);
   }
   const qs = params.toString();
   const path = `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/agent-contexts${qs ? `?${qs}` : ''}`;

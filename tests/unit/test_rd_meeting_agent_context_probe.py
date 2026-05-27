@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -204,3 +205,42 @@ def test_collect_merges_sub_agent_into_worker_probe():
     assert worker["delegation_runs"]
     host = next(a for a in payload["agents"] if a["profile_id"] == "default")
     assert "delegate_to_agent" in host["task"]["tools_executed"]
+
+
+def test_collect_agent_contexts_scopes_to_requested_node(synapse_work_home, monkeypatch):
+    """查看历史节点时不应读取当前运行中 Agent 池的 live 上下文。"""
+    scope_id = "ctx-node-scope"
+    work = synapse_work_home / scope_id
+    work.mkdir(parents=True)
+    (work / "dev.status").write_text(
+        json.dumps(
+            {
+                "current_node_id": "req_clarify",
+                "meeting_room": {"room_id": "mr_ctx", "active": True},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "synapse.rd_meeting.agent_context_probe.scope_id_for_room_id",
+        lambda rid: scope_id if rid == "mr_ctx" else None,
+    )
+
+    pool = _FakePool(
+        [
+            _FakePoolEntry("rd_meeting:mr_ctx:host", "default", _FakeAgent()),
+            _FakePoolEntry("rd_meeting:mr_ctx:worker-a", "worker-a", _FakeAgent()),
+        ]
+    )
+
+    live = collect_meeting_agent_contexts("mr_ctx", pool, node_id="req_clarify")
+    assert live["live_node_id"] == "req_clarify"
+    assert live["current_node_id"] == "req_clarify"
+    assert len(live["agents"]) == 2
+
+    historical = collect_meeting_agent_contexts("mr_ctx", pool, node_id="boundary")
+    assert historical["live_node_id"] == "req_clarify"
+    assert historical["current_node_id"] == "boundary"
+    assert historical["agents"] == []
+    assert historical["sub_agents"] == []

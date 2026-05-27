@@ -22,6 +22,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { ALL_NODES } from '../../../rd-sop/constants';
 import {
   fetchMeetingAgentContexts,
   type MeetingAgentContextEntry,
@@ -37,6 +38,8 @@ export interface AgentContextTarget {
   role: string;
   isHost?: boolean;
   avatarColor?: string;
+  /** 当前 UI 选中的 SOP 节点（与 agent-contexts API 的 node_id 对齐） */
+  nodeId?: string;
 }
 
 interface Props {
@@ -1065,14 +1068,16 @@ export function MeetingAgentContextDrawer({
     if (!base || !roomId) return;
     setLoading(true);
     try {
-      const data = await fetchMeetingAgentContexts(base, roomId);
+      const data = await fetchMeetingAgentContexts(base, roomId, {
+        nodeId: agent?.nodeId,
+      });
       setPayload(data);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [synapseApiBase, roomId]);
+  }, [synapseApiBase, roomId, agent?.nodeId]);
 
   useEffect(() => {
     if (open && agent) void load();
@@ -1081,7 +1086,7 @@ export function MeetingAgentContextDrawer({
       setView('all');
       setCategoryFilter('all');
     }
-  }, [open, agent?.profileId, load]);
+  }, [open, agent?.profileId, agent?.nodeId, load]);
 
   const entry: MeetingAgentContextEntry | undefined = useMemo(() => {
     if (!payload || !agent) return undefined;
@@ -1150,6 +1155,12 @@ export function MeetingAgentContextDrawer({
 
   const avatarColor = agent?.isHost ? 'bg-violet-500' : agent?.avatarColor || 'bg-sky-500';
 
+  const nodeLabel = useMemo(() => {
+    const nid = (agent?.nodeId || payload?.current_node_id || '').trim();
+    if (!nid) return '';
+    return ALL_NODES.find((n) => n.id === nid)?.name || nid;
+  }, [agent?.nodeId, payload?.current_node_id]);
+
   return (
     <Drawer
       open={open}
@@ -1176,6 +1187,11 @@ export function MeetingAgentContextDrawer({
               <Tag color={agent?.isHost ? 'purple' : 'blue'} className="m-0 text-[10px]">
                 {agent?.isHost ? '主控 · 小鲸' : '协作智能体'}
               </Tag>
+              {nodeLabel ? (
+                <Tag className="m-0 text-[10px]" color="default">
+                  节点 · {nodeLabel}
+                </Tag>
+              ) : null}
               {entry?.task?.status ? (
                 <Tag
                   color={

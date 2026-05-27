@@ -33,8 +33,7 @@ import {
   type SOPNode,
   type SOPStage,
 } from '../../../rd-sop/constants';
-import { RequirementAnalysisPanel } from './panels/RequirementAnalysisPanel';
-import type { MeetingNodeVisualState } from './panels/MeetingNodeDetailPanel';
+import { MeetingNodeDetailPanel, type MeetingNodeVisualState } from './panels/MeetingNodeDetailPanel';
 import { MeetingChatEmpty, MeetingChatMessage } from './MeetingChatMessage';
 import {
   HOST_PROFILE_ID,
@@ -807,6 +806,7 @@ const InterventionDialog = ({
       role: agent.role,
       avatarColor: agent.avatarColor,
       isHost: agent.id === HOST_PROFILE_ID || agent.role === '会议主持',
+      nodeId: chatNodeId,
     });
     setContextOpen(true);
   };
@@ -1121,8 +1121,8 @@ const InterventionDialog = ({
                         />
                       </div>
                     ) : (
-                      <div className="min-h-0 flex-1 overflow-hidden">
-                        <RequirementAnalysisPanel
+                      <div className="min-h-0 flex-1 overflow-hidden p-5">
+                        <MeetingNodeDetailPanel
                           synapseApiBase={synapseApiBase || ''}
                           roomId={room.id}
                           scopeType={room.scopeType}

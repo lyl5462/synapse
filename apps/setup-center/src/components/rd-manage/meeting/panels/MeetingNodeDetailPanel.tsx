@@ -38,6 +38,14 @@ import {
   type ProcessingHistoryEntry,
 } from '../../../../api/meetingRoomService';
 import { ReviewMarkdown } from '../ReviewMarkdown';
+import {
+  KnowledgeBaseTab,
+  KnowledgeGraphTab,
+  knowledgeBaseTabLabel,
+  knowledgeGraphTabLabel,
+  SimilarTicketsTab,
+  similarTicketsTabLabel,
+} from './MeetingNodeReferenceTabs';
 
 export type MeetingNodeVisualState =
   | 'pending'
@@ -54,6 +62,9 @@ interface Props {
   nodeId: string;
   nodeName: string;
   nodeDesc?: string;
+  nodeTypeLabel?: string;
+  nodeTypeColor?: string;
+  stageName?: string;
   nodeState: MeetingNodeVisualState;
   /** 轮询间隔（处理中节点），0 表示不轮询 */
   pollMs?: number;
@@ -274,6 +285,15 @@ function ArtifactCard({
   );
 }
 
+function PendingLivePlaceholder() {
+  return (
+    <div className="flex h-48 flex-col items-center justify-center gap-3 text-muted-foreground">
+      <CircleDashed className="h-10 w-10 opacity-40" />
+      <p className="text-sm">节点尚未开始，暂无产出与流程数据</p>
+    </div>
+  );
+}
+
 export function MeetingNodeDetailPanel({
   synapseApiBase,
   roomId,
@@ -282,6 +302,9 @@ export function MeetingNodeDetailPanel({
   nodeId,
   nodeName,
   nodeDesc,
+  nodeTypeLabel,
+  nodeTypeColor,
+  stageName,
   nodeState,
   pollMs = 0,
 }: Props) {
@@ -306,7 +329,7 @@ export function MeetingNodeDetailPanel({
         const sid = (scopeId || '').trim();
         const [reviewRes, ctxRes, summaryRes] = await Promise.allSettled([
           fetchNodeReview(synapseApiBase, roomId, { nodeId, refresh }),
-          fetchMeetingAgentContexts(synapseApiBase, roomId, { messageCharLimit: 0 }),
+          fetchMeetingAgentContexts(synapseApiBase, roomId, { messageCharLimit: 0, nodeId }),
           sid
             ? fetchMeetingSummary(synapseApiBase, scopeType, sid)
             : Promise.reject(new Error('missing_scope')),
@@ -382,14 +405,31 @@ export function MeetingNodeDetailPanel({
   const skillTotal = metrics?.skill_call_total ?? 0;
   const delegationTotal = metrics?.delegation_total ?? 0;
 
-  if (nodeState === 'pending') {
-    return (
-      <div className="flex h-48 flex-col items-center justify-center gap-3 text-muted-foreground">
-        <CircleDashed className="h-10 w-10 opacity-40" />
-        <p className="text-sm">节点尚未开始，暂无产出与流程数据</p>
+  const isPending = nodeState === 'pending';
+  const showNodeContext = Boolean(nodeTypeLabel || stageName);
+
+  const nodeContextHeader = showNodeContext ? (
+    <div className="mb-4 shrink-0 rounded-xl border border-border/60 bg-muted/30 p-4 shadow-inner">
+      <h5 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        <FileText className="h-3 w-3" /> 节点说明 / 会议目标
+      </h5>
+      {nodeDesc ? <p className="text-sm leading-relaxed text-foreground/90">{nodeDesc}</p> : null}
+      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border/50 pt-2.5 text-xs">
+        {nodeTypeLabel ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground/80">主要动作：</span>
+            <span className={nodeTypeColor}>{nodeTypeLabel}</span>
+          </div>
+        ) : null}
+        {stageName ? (
+          <div className="flex items-center gap-1.5">
+            <span className="text-muted-foreground/80">所属阶段：</span>
+            <span className="text-muted-foreground">{stageName}</span>
+          </div>
+        ) : null}
       </div>
-    );
-  }
+    </div>
+  ) : null;
 
   const header = (
     <div className="mb-4 flex items-center justify-between gap-3">
@@ -545,15 +585,97 @@ export function MeetingNodeDetailPanel({
     </div>
   );
 
+  const tabPaneClass = 'custom-scrollbar overflow-y-auto max-h-[min(52vh,520px)]';
+
+  const liveTabItems = [
+    {
+      key: 'output',
+      label: (
+        <span className="flex items-center gap-1.5 text-xs">
+          <FileText className="h-3 w-3" /> 产出
+          {!isPending && artifacts.length ? (
+            <span className="rounded-full bg-primary/20 px-1.5 font-mono text-[10px] text-primary">
+              {artifacts.length}
+            </span>
+          ) : null}
+        </span>
+      ),
+      children: (
+        <div className={`pt-3 ${tabPaneClass}`}>
+          {isPending ? <PendingLivePlaceholder /> : outputTab}
+        </div>
+      ),
+    },
+    {
+      key: 'metrics',
+      label: (
+        <span className="flex items-center gap-1.5 text-xs">
+          <Coins className="h-3 w-3" /> 消耗
+        </span>
+      ),
+      children: (
+        <div className={`pt-3 ${tabPaneClass}`}>
+          {isPending ? <PendingLivePlaceholder /> : metricsTab}
+        </div>
+      ),
+    },
+    {
+      key: 'process',
+      label: (
+        <span className="flex items-center gap-1.5 text-xs">
+          <Clock className="h-3 w-3" /> 流程
+          {!isPending && processEntries.length ? (
+            <span className="rounded-full bg-violet-500/20 px-1.5 font-mono text-[10px] text-violet-300">
+              {processEntries.length}
+            </span>
+          ) : null}
+        </span>
+      ),
+      children: (
+        <div className={`pt-3 ${tabPaneClass}`}>
+          {isPending ? <PendingLivePlaceholder /> : processTab}
+        </div>
+      ),
+    },
+    {
+      key: 'similar-tickets',
+      label: similarTicketsTabLabel(),
+      children: (
+        <div className={tabPaneClass}>
+          <SimilarTicketsTab />
+        </div>
+      ),
+    },
+    {
+      key: 'kb',
+      label: knowledgeBaseTabLabel(),
+      children: (
+        <div className={tabPaneClass}>
+          <KnowledgeBaseTab />
+        </div>
+      ),
+    },
+    {
+      key: 'kg',
+      label: knowledgeGraphTabLabel(),
+      children: (
+        <div className={tabPaneClass}>
+          <KnowledgeGraphTab />
+        </div>
+      ),
+    },
+  ];
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {header}
-      {loading && !review ? (
+      {nodeContextHeader}
+      {!isPending ? header : null}
+      {!isPending && loading && !review ? (
         <div className="flex flex-1 items-center justify-center gap-2 py-16 text-muted-foreground">
           <Spin indicator={<Loader2 className="h-5 w-5 animate-spin text-primary" />} />
           <span className="text-sm">加载 {nodeName} 实况…</span>
         </div>
-      ) : error && !review && !processEntries.length ? (
+      ) : !isPending && error && !review && !processEntries.length ? (
         <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
           加载失败：{error}
         </div>
@@ -562,46 +684,8 @@ export function MeetingNodeDetailPanel({
           activeKey={activeTab}
           onChange={setActiveTab}
           size="small"
-          className="meeting-node-detail-tabs flex-1 min-h-0"
-          items={[
-            {
-              key: 'output',
-              label: (
-                <span className="flex items-center gap-1.5 text-xs">
-                  <FileText className="h-3 w-3" /> 产出
-                  {artifacts.length ? (
-                    <span className="rounded-full bg-primary/20 px-1.5 font-mono text-[10px] text-primary">
-                      {artifacts.length}
-                    </span>
-                  ) : null}
-                </span>
-              ),
-              children: <div className="pt-3 custom-scrollbar overflow-y-auto max-h-[min(52vh,520px)]">{outputTab}</div>,
-            },
-            {
-              key: 'metrics',
-              label: (
-                <span className="flex items-center gap-1.5 text-xs">
-                  <Coins className="h-3 w-3" /> 消耗
-                </span>
-              ),
-              children: <div className="pt-3 custom-scrollbar overflow-y-auto max-h-[min(52vh,520px)]">{metricsTab}</div>,
-            },
-            {
-              key: 'process',
-              label: (
-                <span className="flex items-center gap-1.5 text-xs">
-                  <Clock className="h-3 w-3" /> 流程
-                  {processEntries.length ? (
-                    <span className="rounded-full bg-violet-500/20 px-1.5 font-mono text-[10px] text-violet-300">
-                      {processEntries.length}
-                    </span>
-                  ) : null}
-                </span>
-              ),
-              children: <div className="pt-3 custom-scrollbar overflow-y-auto max-h-[min(52vh,520px)]">{processTab}</div>,
-            },
-          ]}
+          className="meeting-node-detail-tabs req-analysis-tabs flex-1 min-h-0"
+          items={liveTabItems}
         />
       )}
     </div>

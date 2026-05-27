@@ -107,6 +107,7 @@ async def get_meeting_agent_contexts(
     request: Request,
     dump: bool = False,
     message_char_limit: int = 12_000,
+    node_id: str = "",
 ) -> dict:
     """临时探测各参会 Agent 的 system prompt / messages（调试用；dump=true 写入工单 debug 目录）。"""
     pool = getattr(request.app.state, "agent_pool", None)
@@ -116,6 +117,7 @@ async def get_meeting_agent_contexts(
             agent_pool=pool,
             dump=dump,
             message_char_limit=message_char_limit,
+            node_id=(node_id or "").strip() or None,
         )
     except ValueError as exc:
         return error_response(400, str(exc))
