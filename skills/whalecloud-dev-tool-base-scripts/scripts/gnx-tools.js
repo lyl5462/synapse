@@ -346,31 +346,21 @@ async function cmdMaterialize(args) {
   const repo = args.repo || process.env.GNX_REPO;
   const cache = args.cache || process.env.GNX_CACHE;
   if (!repo || !cache) die('materialize: need --repo and --cache');
-  // 默认不限制文件数量（传 --max-files 0 或不传均表示无上限）；仅在明确传了正整数时才限制
   const rawMaxFiles = parseInt(args.max_files || '0', 10);
   const maxFiles = rawMaxFiles > 0 ? Math.min(rawMaxFiles, 200000) : Infinity;
   const concurrency = Math.min(32, Math.max(1, parseInt(args.concurrency || '8', 10) || 8));
   const verbose = args.verbose === 'true' || args.verbose === true || args.v === 'true' || args.v === true;
   const progressEvery = Math.max(1, parseInt(args.progress_every || args.progressEvery || '40', 10) || 40);
-  const graphUrl = `${base}/api/graph?repo=${repoQ(repo)}`;
-  if (verbose) process.stderr.write(`materialize: GET ${graphUrl}\n`);
-  const raw = await httpGetText(graphUrl, 600000);
-  const graph = JSON.parse(raw);
-  const nodes = graph.nodes || [];
   const filesRoot = path.join(cache, 'files');
   fs.mkdirSync(filesRoot, { recursive: true });
   const manifest = { repo, url: base, fileCount: 0, errors: [] };
-  const tasks = [];
-  for (const n of nodes) {
-    if ((n.label || n.labels?.[0]) !== 'File') continue;
-    const fp = n.properties?.filePath || n.properties?.path;
-    if (!fp || typeof fp !== 'string') continue;
-    if (fp.includes('..')) continue;
-    const content = n.properties?.content;
-    tasks.push({ fp, content });
-    if (tasks.length >= maxFiles * 2) break;
-  }
-  let written = 0;
+  const limitClause = isFinite(maxFiles) ? `LIMIT ${maxFiles}` : '';
+  const filesCypher = `MATCH (f:File) WHERE f.filePath IS NOT NULL RETURN f.filePath AS filePath ${limitClause}`.trim();
+  if (verbose) process.stderr.write(`materialize: Cypher query: ${filesCypher}\n`);
+  const rows = await queryRows(base, repo, filesCypher);
+  const filePaths = rows.map(r => r.filePath || r[0]).filter(Boolean);
+  if (verbose) process.stderr.write(`materialize: found ${filePaths.length} files, fetching content via /api/file\n`);
+
   async function fetchOne(fp) {
     const u = `${base}/api/file?repo=${repoQ(repo)}&path=${encodeURIComponent(fp)}`;
     const txt = await httpGetText(u, 60000);
@@ -383,36 +373,14 @@ async function cmdMaterialize(args) {
     return j.content != null ? String(j.content) : null;
   }
 
-  const withBody = [];
-  const needPath = [];
-  for (const t of tasks) {
-    if (t.content != null && String(t.content).length > 0) withBody.push(t);
-    else needPath.push(t.fp);
-  }
-  let fromGraph = 0;
-  for (const t of withBody) {
-    if (written >= maxFiles) break;
-    try {
-      const full = safeCacheFile(cache, t.fp);
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, String(t.content), 'utf8');
-      written++;
-      fromGraph++;
-      if (verbose && fromGraph % progressEvery === 0) {
-        process.stderr.write(`materialize: embedded body ${fromGraph} files written (cap ${maxFiles})\n`);
-      }
-    } catch (e) {
-      manifest.errors.push({ path: t.fp, error: String(e.message || e) });
-    }
-  }
-  const uniqueFetch = [...new Set(needPath)];
-  const totalFetch = uniqueFetch.length;
+  let written = 0;
   let fetchAttempt = 0;
+  const totalFetch = filePaths.length;
   if (verbose && totalFetch) {
     process.stderr.write(`materialize: /api/file phase ${totalFetch} paths, concurrency=${concurrency}\n`);
   }
-  for (let i = 0; i < uniqueFetch.length && written < maxFiles; i += concurrency) {
-    const chunk = uniqueFetch.slice(i, i + concurrency);
+  for (let i = 0; i < filePaths.length && written < maxFiles; i += concurrency) {
+    const chunk = filePaths.slice(i, i + concurrency);
     const results = await Promise.all(
       chunk.map(async (fp) => {
         if (!fp) return { fp: null, ok: false };
