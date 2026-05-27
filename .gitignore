@@ -252,3 +252,4 @@ claude_code/
 botpy.log*
 web_tmp/
 .tmp_test_uw/
+.VSCodeCounter/

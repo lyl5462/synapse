@@ -647,11 +647,7 @@ def _format_hitl_artifact_lines(
     if not sid or not nid or nid == "pending":
         return []
 
-    from synapse.rd_meeting.hitl_confirmed import (
-        HITL_CONFIRMED_FILENAME,
-        hitl_confirmed_path,
-        resolve_stage_name_for_node,
-    )
+    from synapse.rd_meeting.hitl_confirmed import resolve_stage_name_for_node
     from synapse.rd_meeting.hitl_context import HITL_CONTEXT_FILENAME, hitl_context_path
 
     stg = (stage_name or "").strip() or resolve_stage_name_for_node(nid, binding)
@@ -659,14 +655,11 @@ def _format_hitl_artifact_lines(
         return []
 
     ctx_abs = str(hitl_context_path(sid, stg, nid).resolve())
-    md_abs = str(hitl_confirmed_path(sid, stg, nid).resolve())
     return [
         f"- **人工确认产物（机器台账）**：`{ctx_abs}`（`{HITL_CONTEXT_FILENAME}`）",
         "  - 仅 **interactive** 问卷提交时由系统自动维护；含各轮结构化确认与 ``confirmed_by_id`` 汇总。",
         "  - 生成上方「会议产出」Markdown **之前**必须 ``read_file`` 该路径并综合全量确认项；"
         f"``whalecloud-dev-tool-doc-generate`` 的 ``CONTEXT_JSON`` 应指向该文件；**禁止**自写 ``clarify_context.json`` 等替代台账。",
-        f"- **人机交互清单（人类可读）**：`{md_abs}`（`{HITL_CONFIRMED_FILENAME}`）",
-        "  - 按轮追加 Markdown，供人工查阅；**禁止**用其替代 read_file 机器台账。",
     ]
 
 def _format_meeting_outputs(binding: dict[str, Any] | None) -> str:
@@ -733,6 +726,9 @@ def build_meeting_runtime_header(
             node_id=context.node_id,
         )
     )
+    # 之前SOP环节已产出内容说明：基于当前环节、历史环节开关、历史环节产出物要求、产出物综合的使用方法来补充提示词
+    # 之前SOP环节产出物使用方法：技能强制要求、流程强制转换、大模型自主判断
+
     lines.append(f"- **当前时间**：{now}")
     lines.append("- **回复语言**：中文")
     if supplement:

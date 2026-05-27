@@ -7,9 +7,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from synapse.rd_meeting.flow_log import flow_log_to_text
+
+# host_llm_begin 会议流文案：按流程场景区分，与 host_prompt_cache 无关
+HostLlmBeginKind = Literal["start_work", "delivery_confirmed"]
 
 # --- 步骤完成说明（流程层，不含工单/产品等实例字段）---
 
@@ -36,12 +39,12 @@ PHASE_WAITING_SUMMARY = (
 
 STEP_HOST_FIRST_CALL_SUMMARY = (
     "主控触发执行\n\n"
-    "触发小鲸继续执行sop工作。"
+    "小鲸开始执行当前 SOP 节点（计划、委派、产出与人工确认等）。"
 )
 
 STEP_HOST_FIRST_CALL_REUSED_SUMMARY = (
     "主控触发总结\n\n"
-    "触发小鲸总结本阶段sop工作，并进入下一节点。"
+    "用户已确认本节点总结无误；系统归档交付物并推进 SOP（进入节点收尾 / 下一节点准备）。"
 )
 
 
@@ -68,9 +71,28 @@ def format_phase_change_chat(*, to_phase: str) -> str | None:
     return None
 
 
-def format_host_first_call_chat(*, reused_prompt: bool = False) -> str:
-    """步骤 4：主控首次 LLM 调用（流程说明）。"""
-    return STEP_HOST_FIRST_CALL_REUSED_SUMMARY if reused_prompt else STEP_HOST_FIRST_CALL_SUMMARY
+def format_host_first_call_chat(
+    *,
+    kind: HostLlmBeginKind = "start_work",
+    reused_prompt: bool | None = None,
+) -> str:
+    """``host_llm_begin`` 气泡文案（流程场景，非缓存命中）。
+
+    - ``start_work``：触发模型继续干活（Pipeline / 问卷反馈 / 驳回返工）
+    - ``delivery_confirmed``：用户确认总结无误后收尾推进
+    """
+    _ = reused_prompt  # 遗留参数，仅兼容旧调用方
+    if kind == "delivery_confirmed":
+        return STEP_HOST_FIRST_CALL_REUSED_SUMMARY
+    return STEP_HOST_FIRST_CALL_SUMMARY
+
+
+def resolve_host_llm_begin_kind(event: dict[str, Any]) -> HostLlmBeginKind:
+    """从 history 事件解析场景（兼容旧数据）。"""
+    raw = str(event.get("llm_begin_kind") or "").strip()
+    if raw == "delivery_confirmed":
+        return "delivery_confirmed"
+    return "start_work"
 
 
 def format_event_chat_display(event: dict[str, Any]) -> str:
@@ -91,8 +113,7 @@ def format_event_chat_display(event: dict[str, Any]) -> str:
     if et == "work_plan_submitted":
         return str(event.get("text") or "").strip()
     if et == "host_llm_begin":
-        reused = bool(event.get("reused_host_prompt_cache"))
-        return format_host_first_call_chat(reused_prompt=reused)
+        return format_host_first_call_chat(kind=resolve_host_llm_begin_kind(event))
     if et == "delegation_started":
         preview = str(event.get("task_preview") or "").strip()
         plan = str(event.get("plan_item_id") or "").strip()

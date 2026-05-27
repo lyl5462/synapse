@@ -128,9 +128,6 @@ def load_archive_delivery_body(scope_id: str, node_id: str) -> str:
     for name in node_output_artifacts(nid):
         if isinstance(name, str) and name.lower().endswith(".md") and not name.startswith("（"):
             candidates.append(name)
-    for extra in ("result.md", "需求澄清.md"):
-        if extra not in candidates:
-            candidates.append(extra)
 
     for name in candidates:
         path = dest / name

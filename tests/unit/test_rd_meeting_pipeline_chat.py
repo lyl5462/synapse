@@ -1,75 +1,26 @@
-"""Pipeline 步骤 chat_text 与会议流展示。"""
+"""pipeline_chat：host_llm_begin 流程场景区分。"""
 
 from __future__ import annotations
 
-from synapse.rd_meeting.flow_log import CHAT_VISIBLE_EVENTS
 from synapse.rd_meeting.pipeline_chat import (
-    PHASE_WAITING_SUMMARY,
-    STEP_OPEN_SUMMARY,
-    format_event_chat_display,
-    format_host_prompt_step_chat,
-    format_phase_change_chat,
-    format_room_opened_chat,
+    STEP_HOST_FIRST_CALL_REUSED_SUMMARY,
+    STEP_HOST_FIRST_CALL_SUMMARY,
+    format_host_first_call_chat,
+    resolve_host_llm_begin_kind,
 )
-from synapse.rd_meeting.room_runtime import history_to_chat_logs
 
 
-def test_pipeline_transition_not_in_chat_visible():
-    assert "pipeline_transition" not in CHAT_VISIBLE_EVENTS
+def test_format_host_first_call_by_flow_kind():
+    assert format_host_first_call_chat(kind="start_work") == STEP_HOST_FIRST_CALL_SUMMARY
+    assert format_host_first_call_chat(kind="delivery_confirmed") == STEP_HOST_FIRST_CALL_REUSED_SUMMARY
 
 
-def test_step_summaries_exclude_instance_data():
-    opened = format_room_opened_chat()
-    assert "开启会议室" in opened
-    assert "room_id" not in opened.lower()
-    assert "userwork" not in opened
-
-    host = format_host_prompt_step_chat()
-    assert "主控提示词组装" in host
-    assert "## 一、" not in host
-    assert "四段式" in host
-
-    waiting = format_phase_change_chat(to_phase="waiting")
-    assert waiting == PHASE_WAITING_SUMMARY
-    assert format_phase_change_chat(to_phase="running") is None
+def test_format_host_first_call_ignores_legacy_reused_prompt_flag():
+    assert format_host_first_call_chat(reused_prompt=True) == STEP_HOST_FIRST_CALL_SUMMARY
+    assert format_host_first_call_chat(reused_prompt=False) == STEP_HOST_FIRST_CALL_SUMMARY
 
 
-def test_chat_logs_skip_pipeline_transition():
-    ev = {
-        "event": "pipeline_transition",
-        "from_step": "node_init",
-        "to_step": "assemble_host_prompt",
-        "text": '{"from_step":"node_init","to_step":"assemble_host_prompt"}',
-        "agent_id": "system",
-        "ts": "2026-05-21T10:00:00",
-    }
-    assert history_to_chat_logs([ev]) == []
-
-
-def test_phase_change_not_in_chat_visible():
-    """phase_change 不再写入 history；旧数据仍可按 chat_text 解析展示。"""
-    assert "phase_change" not in CHAT_VISIBLE_EVENTS
-    ev = {
-        "event": "phase_change",
-        "to_phase": "waiting",
-        "chat_text": PHASE_WAITING_SUMMARY,
-        "agent_id": "default",
-        "ts": "2026-05-21T10:00:01",
-    }
-    assert history_to_chat_logs([ev]) == []
-
-
-def test_room_opened_prefers_process_chat_text():
-    ev = {
-        "event": "room_opened",
-        "room_id": "room-1",
-        "scope_id": "D1",
-        "agent_id": "default",
-        "ts": "2026-05-21T10:00:00",
-    }
-    assert format_event_chat_display(ev) == STEP_OPEN_SUMMARY
-    logs = history_to_chat_logs([{**ev, "chat_text": STEP_OPEN_SUMMARY}])
-    assert logs[0]["agentId"] == "system"
-    assert logs[0]["speakerRole"] == "system"
-    assert logs[0]["displayKind"] == "pipeline"
-    assert logs[0].get("rich") is not True
+def test_resolve_host_llm_begin_kind():
+    assert resolve_host_llm_begin_kind({"llm_begin_kind": "delivery_confirmed"}) == "delivery_confirmed"
+    assert resolve_host_llm_begin_kind({"reused_host_prompt_cache": True}) == "start_work"
+    assert resolve_host_llm_begin_kind({}) == "start_work"

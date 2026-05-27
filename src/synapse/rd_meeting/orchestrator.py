@@ -1124,6 +1124,24 @@ class MeetingRoomOrchestrator:
         set_phase(sid, "completed")
         save_room_state(sid, rs)
 
+        from synapse.rd_meeting.binding import resolve_node_binding
+        from synapse.rd_meeting.pipeline_chat import format_host_first_call_chat
+
+        binding = resolve_node_binding(node_id)
+        host_id = str(binding.get("host_profile_id") or "default").strip() or "default"
+        append_history_event(
+            sid,
+            {
+                "event": "host_llm_begin",
+                "room_id": room_id,
+                "node_id": node_id,
+                "host_profile_id": host_id,
+                "log_type": "info",
+                "agent_id": host_id,
+                "llm_begin_kind": "delivery_confirmed",
+                "chat_text": format_host_first_call_chat(kind="delivery_confirmed"),
+            },
+        )
         append_history_event(
             sid,
             {
@@ -1265,6 +1283,9 @@ class MeetingRoomOrchestrator:
         room_state["node_metrics"] = nm
         rework = str(room_state.pop("rework_instruction", "") or "").strip()
         room_state.pop("current_work_plan", None)
+        llm_begin_kind = str(room_state.pop("pending_host_llm_begin_kind", "") or "").strip() or "start_work"
+        if llm_begin_kind != "delivery_confirmed":
+            llm_begin_kind = "start_work"
         save_room_state(sid, room_state)
         set_phase(sid, "running")
 
@@ -1366,6 +1387,8 @@ class MeetingRoomOrchestrator:
                     body = str(pending_ctx.get("report_body") or "").strip()
                     if body:
                         prompt = f"{prompt}\n\n## 上一轮待续上下文\n{body}\n"
+                from synapse.rd_meeting.pipeline_chat import format_host_first_call_chat
+
                 append_history_event(
                     sid,
                     {
@@ -1375,8 +1398,9 @@ class MeetingRoomOrchestrator:
                         "host_profile_id": host_profile_id,
                         "log_type": "info",
                         "agent_id": host_profile_id,
+                        "llm_begin_kind": llm_begin_kind,
                         "reused_host_prompt_cache": reused_prompt,
-                        "chat_text": format_host_first_call_chat(reused_prompt=reused_prompt),
+                        "chat_text": format_host_first_call_chat(kind=llm_begin_kind),  # type: ignore[arg-type]
                     },
                 )
                 meeting_session = ensure_host_session(room_id, host_profile_id)
@@ -1742,8 +1766,15 @@ def schedule_run_node(
     ticket_title: str = "",
     agent_pool: Any | None = None,
     dry_run: bool | None = None,
+    host_llm_begin_kind: str = "start_work",
 ) -> str:
     """后台执行当前节点，返回 task key。"""
+    sid = scope_id.strip()
+    if sid:
+        rs = dict(load_room_state(sid) or {})
+        rs["pending_host_llm_begin_kind"] = (host_llm_begin_kind or "start_work").strip() or "start_work"
+        save_room_state(sid, rs)
+
     key = room_id.strip() or scope_id.strip()
     existing = _running_tasks.get(key)
     if existing and not existing.done():
