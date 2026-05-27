@@ -61,10 +61,6 @@ interface Props {
   scopeId?: string;
   nodeId: string;
   nodeName: string;
-  nodeDesc?: string;
-  nodeTypeLabel?: string;
-  nodeTypeColor?: string;
-  stageName?: string;
   nodeState: MeetingNodeVisualState;
   /** 轮询间隔（处理中节点），0 表示不轮询 */
   pollMs?: number;
@@ -301,10 +297,6 @@ export function MeetingNodeDetailPanel({
   scopeId = '',
   nodeId,
   nodeName,
-  nodeDesc,
-  nodeTypeLabel,
-  nodeTypeColor,
-  stageName,
   nodeState,
   pollMs = 0,
 }: Props) {
@@ -406,30 +398,6 @@ export function MeetingNodeDetailPanel({
   const delegationTotal = metrics?.delegation_total ?? 0;
 
   const isPending = nodeState === 'pending';
-  const showNodeContext = Boolean(nodeTypeLabel || stageName);
-
-  const nodeContextHeader = showNodeContext ? (
-    <div className="mb-4 shrink-0 rounded-xl border border-border/60 bg-muted/30 p-4 shadow-inner">
-      <h5 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        <FileText className="h-3 w-3" /> 节点说明 / 会议目标
-      </h5>
-      {nodeDesc ? <p className="text-sm leading-relaxed text-foreground/90">{nodeDesc}</p> : null}
-      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-border/50 pt-2.5 text-xs">
-        {nodeTypeLabel ? (
-          <div className="flex items-center gap-1.5">
-            <span className="text-muted-foreground/80">主要动作：</span>
-            <span className={nodeTypeColor}>{nodeTypeLabel}</span>
-          </div>
-        ) : null}
-        {stageName ? (
-          <div className="flex items-center gap-1.5">
-            <span className="text-muted-foreground/80">所属阶段：</span>
-            <span className="text-muted-foreground">{stageName}</span>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  ) : null;
 
   const header = (
     <div className="mb-4 flex items-center justify-between gap-3">
@@ -447,7 +415,6 @@ export function MeetingNodeDetailPanel({
             </span>
           ) : null}
         </div>
-        {nodeDesc ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{nodeDesc}</p> : null}
       </div>
       <Tooltip title="刷新指标与流程">
         <Button
@@ -657,7 +624,6 @@ export function MeetingNodeDetailPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {nodeContextHeader}
       {!isPending ? header : null}
       {!isPending && loading && !review ? (
         <div className="flex flex-1 items-center justify-center gap-2 py-16 text-muted-foreground">

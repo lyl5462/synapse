@@ -807,6 +807,7 @@ const InterventionDialog = ({
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const lastLogKeyRef = useRef('');
+  const interventionRoomIdRef = useRef<string | null>(null);
 
   const hitlLocked = Boolean(room?.hitlLocked);
   const hasReviewPayload = !!(room?.reviewPayload && room.status === 'human_intervention' && !hitlLocked);
@@ -918,10 +919,23 @@ const InterventionDialog = ({
   }, []);
 
   useEffect(() => {
-    if (open && room) {
+    if (!open) {
+      setSelectedNodeId(null);
+      interventionRoomIdRef.current = null;
+      return;
+    }
+    if (!room) return;
+    if (interventionRoomIdRef.current !== room.id) {
+      interventionRoomIdRef.current = room.id;
       setSelectedNodeId(room.currentNode);
     }
-  }, [open, room?.id, room?.currentNode, room?.stageIndex]);
+  }, [open, room?.id, room?.currentNode]);
+
+  useEffect(() => {
+    if (!open) return;
+    const pane = logsEndRef.current?.parentElement;
+    if (pane) pane.scrollTop = 0;
+  }, [open, chatNodeId]);
 
   useEffect(() => {
     if (!open || !room) return;
@@ -1271,10 +1285,6 @@ const InterventionDialog = ({
                           scopeId={room.scopeId}
                           nodeId={selectedNode.id}
                           nodeName={selectedNode.name}
-                          nodeDesc={selectedNode.desc}
-                          nodeTypeLabel={typeInfo.label}
-                          nodeTypeColor={typeInfo.color}
-                          stageName={currentStage?.name ?? ''}
                           nodeState={toMeetingNodeVisualState(selectedNodeState)}
                           pollMs={selectedNodeState === 'processing' ? 4000 : 0}
                         />
@@ -1297,9 +1307,17 @@ const InterventionDialog = ({
           {/* Main Header / Members Top Bar */}
           <div className="p-3 border-b border-border bg-[color:var(--panel2)] shrink-0 h-[72px] flex flex-col justify-center">
             <div className="flex items-center justify-between mb-1.5">
-               <span className="text-sm font-semibold text-foreground flex items-center gap-2">
-                 <MessageSquare className="w-4 h-4 text-violet-400" />
-                 协作会议流
+               <span className="text-sm font-semibold text-foreground flex items-center gap-2 min-w-0">
+                 <MessageSquare className="w-4 h-4 text-violet-400 shrink-0" />
+                 <span className="truncate">
+                   协作会议流
+                   {selectedNode ? (
+                     <span className="font-normal text-muted-foreground">
+                       {' '}
+                       · {selectedNode.name}
+                     </span>
+                   ) : null}
+                 </span>
                </span>
                <Tag color={room.status === 'human_intervention' ? 'error' : room.status === 'failed' ? 'error' : 'processing'} className="m-0 border-0 text-[10px]">
                  {room.status === 'human_intervention' ? '请求专家介入' : room.status === 'failed' ? '流程异常' : 'AI 处理中'}

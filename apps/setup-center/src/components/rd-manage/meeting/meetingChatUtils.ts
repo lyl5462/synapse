@@ -140,11 +140,19 @@ export function sopScopeKey(stageIndex: number, nodeId: string): string {
   return `${stageIndex}:${(nodeId || 'pending').trim()}`;
 }
 
-/** 按 SOP 节点精确过滤（仅保留 nodeId 匹配或未标注 nodeId 的全局消息） */
+/** 按 SOP 节点精确过滤：优先只展示 nodeId 匹配的条目；无标签订阅时用截断逻辑。 */
 export function filterLogsForNodeExact(logs: MeetingChatLog[], nodeId: string): MeetingChatLog[] {
   const nid = (nodeId || 'pending').trim();
   if (!nid || !logs.length) return logs;
-  return logs.filter((l) => !l.nodeId || l.nodeId === nid);
+
+  const hasTagged = logs.some((l) => (l.nodeId || '').trim());
+  if (hasTagged) {
+    const matched = logs.filter((l) => (l.nodeId || '').trim() === nid);
+    if (matched.length) return matched;
+    return filterLogsForSopNode(logs, nid);
+  }
+
+  return filterLogsForSopNode(logs, nid);
 }
 
 /** 合并协作流日志（按 id 去重，保留既有顺序并追加新条目） */

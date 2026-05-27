@@ -2298,7 +2298,6 @@ export const OrderManagement: React.FC<{
                   scopeId={sopMeetingScope?.scopeId}
                   nodeId={selectedNode.id}
                   nodeName={selectedNode.name}
-                  nodeDesc={selectedNode.desc}
                   nodeState={mapNodeStateForPanel(getNodeStateGlobal(displayTicket, selectedNode.id))}
                   pollMs={displayTicket.status === 'processing' ? 5000 : 0}
                 />
