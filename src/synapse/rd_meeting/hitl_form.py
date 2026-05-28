@@ -446,6 +446,7 @@ def coerce_questionnaire_schema(
             f"kind 必须是 {'/'.join(_VALID_HITL_KINDS)}，收到 {kind!r}"
         )
 
+    summary_expected = _infer_expected_question_count(summary.strip()) if summary.strip() else 0
     valid_questions: list[dict[str, Any]] = []
     for idx, q in enumerate(questions):
         if not isinstance(q, dict):
@@ -494,12 +495,22 @@ def coerce_questionnaire_schema(
                 )
             entry["options"] = normalized_opts
         _maybe_normalize_boolean_question(entry)
+        if kind_norm == "interactive":
+            from synapse.rd_meeting.questionnaire_repair import repair_embedded_options
+
+            entry = repair_embedded_options(entry, idx=idx)
+            qtype = str(entry.get("type") or qtype).strip().lower()
         # 选项题由前端/归一化自动附加人工输入框，不再要求 LLM 显式 inputEnabled
         if qtype in ("single", "multiple") and qid != HUMAN_SUPPLEMENT_QUESTION_ID:
             entry["inputEnabled"] = True
             if not entry.get("inputPlaceholder"):
                 entry["inputPlaceholder"] = "或者你的答案："
         valid_questions.append(entry)
+
+    if kind_norm == "interactive":
+        from synapse.rd_meeting.questionnaire_repair import validate_no_stacked_decisions
+
+        validate_no_stacked_decisions(valid_questions, summary_expected=summary_expected)
 
     schema: dict[str, Any] = {
         "type": QUESTIONNAIRE_TYPE,
@@ -914,7 +925,14 @@ def normalize_hitl_schema(schema: dict[str, Any] | None) -> dict[str, Any] | Non
         out["type"] = QUESTIONNAIRE_TYPE
     if not out.get("version"):
         out["version"] = QUESTIONNAIRE_VERSION
-    guarded = ensure_question_input_guardrails(list(questions))
+    kind_norm = str(out.get("intervention_kind") or "").strip().lower()
+    question_list = list(questions)
+    if kind_norm == "interactive":
+        from synapse.rd_meeting.questionnaire_repair import apply_interactive_question_repairs
+
+        summary_text = str(out.get("summary_markdown") or "")
+        question_list = apply_interactive_question_repairs(question_list, summary=summary_text)
+    guarded = ensure_question_input_guardrails(question_list)
     merged = append_human_supplement_question(guarded)
     out["questions"] = attach_question_progress(merged)
     return out

@@ -146,6 +146,17 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 - JSON 可被 `json.loads` 解析；
 - 至少包含非空 `questions` 数组；
 - 结果确认类必须含 `decision` 且 `approve`/`reject` value 与会议室解析一致。
+- **`kind=interactive` 时**：每题 `options[]` 只含该题互斥选项（禁止把 Q1～QN 塞进一题）；选项写在 `options` 而非 `title`/`context`（`A. … B. …` 须进 `options[]`）。
+
+**服务端自动修复（仅 `interactive`）**：
+
+| 违规形态 | 系统行为 |
+|----------|----------|
+| 选项写在 `context`/`title`，`options` 为空 | 尝试从题面提取 `A./1./可选：` 等到 `options[]`；提取失败 → **拒绝提交** |
+| 单题 `options ≥ 5` 且各 option 像独立决策点（Q1、✅ 推荐、维度：结论） | **拒绝提交**，要求拆成多题 |
+| 真正的开放题（题面无选项模式） | 仍降级为 `textarea` 供手写 |
+
+实现见 `src/synapse/rd_meeting/questionnaire_repair.py`。
 
 ---
 
@@ -160,7 +171,7 @@ Schema 定义与 Python 工具见：`src/synapse/rd_meeting/hitl_form.py`（`bui
 
 ## 参考
 
-- 实现：`src/synapse/rd_meeting/hitl_form.py`
+- 实现：`src/synapse/rd_meeting/hitl_form.py`、`src/synapse/rd_meeting/questionnaire_repair.py`
 - 前端：`apps/setup-center/src/components/rd-manage/meeting/MeetingHitlForm.tsx`
 - 示例 JSON：`scripts/hitl-form-demo-schema.json`
 - 会议室规范：`whalecloud-dev-tool-meeting-room`
