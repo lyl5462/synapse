@@ -961,23 +961,19 @@ const InterventionDialog = ({
 
   useEffect(() => {
     if (!open) return;
+    lastLogKeyRef.current = '';
     const pane = logsEndRef.current?.parentElement;
     if (pane) pane.scrollTop = 0;
-  }, [open, chatNodeId]);
+  }, [open, chatNodeId, room?.id]);
 
-  useEffect(() => {
-    if (!open || !room) return;
-    lastLogKeyRef.current = getLogsTailKey(displayChatLogs);
-    scrollLogsToBottom();
-  }, [open, room?.id, displayChatLogs, scrollLogsToBottom]);
-
+  /** 仅当尾部指纹变化（有新消息）时滚到底；live 轮询会重建 room 但不会改 logs 内容 */
   useEffect(() => {
     if (!open || !room) return;
     const key = getLogsTailKey(displayChatLogs);
     if (key === lastLogKeyRef.current) return;
     lastLogKeyRef.current = key;
     scrollLogsToBottom();
-  }, [open, displayChatLogs, scrollLogsToBottom]);
+  }, [open, room, displayChatLogs, scrollLogsToBottom]);
 
   if (!room) return null;
 
