@@ -23,6 +23,7 @@ label: 文档生成工具
 |----------|-------------|------|
 | `templates/需求澄清.md` | `需求澄清.md` | 需求澄清交付文档 |
 | `templates/模块功能.md` | `模块功能.md` | 模块功能清单 |
+| `templates/函数级方案.md` | `函数级方案.md` | 函数级改造方案（由 `whalecloud-dev-tool-function-solution` 汇总正文后调用本技能落盘） |
 
 新增模板：在 `templates/` 下放置 `{文件名}.md`，调用时设 `OUTPUT` 与文件名一致即可。
 
@@ -174,6 +175,20 @@ OUTPUT: clarify-final.md
 TEMPLATE: 需求澄清.md
 CONTEXT_JSON: ./requirements/.tmp/clarify_context.json
 ```
+
+### 示例 4：函数级方案（上游 function-solution 技能调用）
+
+```
+OUTPUT_DIR: work/21881451/archive/需求分析/function_solution/
+OUTPUT: 函数级方案.md
+CONTEXT_JSON: work/21881451/archive/需求分析/function_solution/.tmp/function_solution_context.json
+PROD: XXX系统
+STATUS: draft
+SCHEME_COUNT: 2
+OUTPUT_MODE: file
+```
+
+`function_solution_context.json` 中 `DOCUMENT_BODY` 为 §0–§5 完整正文；页眉元数据由模板与标量参数填充。
 
 ---
 
