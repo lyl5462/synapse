@@ -261,7 +261,7 @@ class MeetingRoomService:
             "phase": get_phase(scope_id) if scope_id else "idle",
             "pipeline": (
                 MeetingPipeline.load(scope_id).snapshot_for_api()
-                if scope_id and MeetingPipeline.load(scope_id)
+                if scope_id and MeetingPipeline.exists(scope_id)
                 else None
             ),
             "run_in_progress": is_room_run_in_progress(room_id),
@@ -422,6 +422,12 @@ class MeetingRoomService:
         if not prod_key:
             raise ValueError("请选择产品（prod）")
 
+        existing_dev = load_dev_status(sid)
+        if existing_dev is not None:
+            mr = existing_dev.get("meeting_room")
+            if isinstance(mr, dict) and mr.get("active") is True:
+                raise ValueError("meeting_room_already_active")
+
         from synapse.rd_meeting.pipeline import (
             STEP_NODE_INIT,
             STEP_OPEN_MEETING,
@@ -448,7 +454,7 @@ class MeetingRoomService:
             defer_external=async_mode,  # async 路径才异步外部调用
         )
         # 同步部分：跑到 WAITING（含 open_meeting / node_init / assemble_host_prompt）
-        run_pipeline_until_waiting(ctx, initial_flow_step=STEP_OPEN_MEETING)
+        run_pipeline_until_waiting(ctx, initial_flow_step=STEP_OPEN_MEETING, create=True)
         if ctx.node_run_scheduled:
             ctx.detail["node_run_scheduled"] = True
 
@@ -510,7 +516,7 @@ class MeetingRoomService:
             detail=dict(detail),
         )
 
-        pipe = MeetingPipeline.load_or_create(sid, scope_type=scope_type)
+        pipe = MeetingPipeline.load(sid)
         pipe.set_flow_step(STEP_REPROCESS_PREP, reason="用户触发重新处理")
         pipe.save()
 
@@ -1080,9 +1086,8 @@ class MeetingRoomService:
         item["chat_logs"] = history_to_chat_logs(history)
         item["current_node_binding"] = binding
         item["participants"] = participants
-        pipe = MeetingPipeline.load(scope_id)
-        if pipe is not None:
-            item["pipeline"] = pipe.snapshot_for_api()
+        if MeetingPipeline.exists(scope_id):
+            item["pipeline"] = MeetingPipeline.load(scope_id).snapshot_for_api()
         return item
 
     @staticmethod

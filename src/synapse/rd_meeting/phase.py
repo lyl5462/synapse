@@ -20,9 +20,8 @@ _VALID = {
 
 
 def get_phase(scope_id: str) -> str:
-    pipe = MeetingPipeline.load(scope_id)
-    if pipe is not None:
-        ph = pipe.phase
+    if MeetingPipeline.exists(scope_id):
+        ph = MeetingPipeline.load(scope_id).phase
         return ph if ph in _VALID else "idle"
     from synapse.rd_meeting.room_runtime import load_room_state
 
@@ -34,7 +33,7 @@ def get_phase(scope_id: str) -> str:
 def set_phase(scope_id: str, phase: str, *, extra: dict[str, Any] | None = None) -> None:
     if phase not in _VALID:
         phase = "running"
-    pipe = MeetingPipeline.load_or_create(scope_id)
+    pipe = MeetingPipeline.load(scope_id)
     if extra:
         ctx = pipe.data.get("context")
         if not isinstance(ctx, dict):

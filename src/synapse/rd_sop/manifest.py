@@ -52,7 +52,7 @@ NODE_INTENTS: dict[str, str] = {
     "func_assign": "按功能点分派给 Worker 并行处理。",
     "history_solution": "检索历史方案并与当前需求映射。",
     "module_confirm": "确认改造的代码模块范围。",
-    "func_solution": "功能方案定位到函数级，控制改造范围。",
+    "func_solution": "功能方案定位到函数级，控制改造范围，小鲸只负责检查对应方案的合理性，而产品设计专家负责方案文档的生成。",
     "entropy_gen": "生成 agent.md、rule.md 等控熵文件。",
     "solution_review": "方案评审与可行性验证。",
     "auto_split": "按需求与方案自动拆分研发子单。",

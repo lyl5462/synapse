@@ -112,7 +112,7 @@
         "whalecloud-test-expert",
         "whalecloud-qa-expert"
       ],
-      "node_intent": "功能方案定位到函数级，控制改造范围。"
+      "node_intent": "功能方案定位到函数级，控制改造范围，小鲸只负责检查对应方案的合理性，而产品设计专家负责方案文档的生成。"
     },
     "entropy_gen": {
       "host_profile_id": "default",

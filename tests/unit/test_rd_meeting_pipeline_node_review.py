@@ -31,8 +31,7 @@ async def test_run_node_review_step_writes_payload_and_marks_waiting(tmp_path):
     scope = "scope-R"
     node_id = "req_clarify"
     # 预创建 pipeline.json
-    pipe = MeetingPipeline.load_or_create(scope, scope_type="demand")
-    pipe.save()
+    MeetingPipeline.create(scope, scope_type="demand")
 
     payload = await run_node_review_step(
         scope_type="demand",

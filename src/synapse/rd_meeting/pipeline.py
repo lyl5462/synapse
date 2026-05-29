@@ -215,31 +215,42 @@ class MeetingPipeline:
         _ = from_step, to_step, reason
 
     @classmethod
-    def load(cls, scope_id: str) -> MeetingPipeline | None:
+    def exists(cls, scope_id: str) -> bool:
         sid = (scope_id or "").strip()
         if not sid:
-            return None
+            return False
+        return meeting_pipeline_path(sid).is_file()
+
+    @classmethod
+    def load(cls, scope_id: str) -> MeetingPipeline:
+        """加载已有 pipeline；文件不存在时抛 ``ValueError(meeting_pipeline_not_found)``。"""
+        sid = (scope_id or "").strip()
+        if not sid:
+            raise ValueError("scope_id required")
         raw = read_json_file(meeting_pipeline_path(sid))
         if not raw:
-            return None
+            raise ValueError("meeting_pipeline_not_found")
         return cls(sid, raw)
 
     @classmethod
-    def load_or_create(
+    def create(
         cls,
         scope_id: str,
         *,
         scope_type: ScopeType = "demand",
         flow_step: str = STEP_OPEN_MEETING,
     ) -> MeetingPipeline:
-        existing = cls.load(scope_id)
-        if existing is not None:
-            return existing
+        """创建 pipeline 文件；已存在时抛 ``ValueError(meeting_pipeline_already_exists)``。"""
+        sid = (scope_id or "").strip()
+        if not sid:
+            raise ValueError("scope_id required")
+        if cls.exists(sid):
+            raise ValueError("meeting_pipeline_already_exists")
         pipe = cls(
-            scope_id,
+            sid,
             default_pipeline_state(
                 scope_type=scope_type,
-                scope_id=scope_id,
+                scope_id=sid,
                 flow_step=flow_step,
             ),
         )
@@ -1022,13 +1033,21 @@ def run_pipeline_until_waiting(
     ctx: PipelineRunContext,
     *,
     initial_flow_step: str = STEP_OPEN_MEETING,
+    create: bool = False,
 ) -> MeetingPipeline:
-    """从 ``initial_flow_step`` 起连续执行，直到 ``flow_step`` 为 waiting/done 或无 handler。"""
-    pipe = MeetingPipeline.load_or_create(
-        ctx.scope_id,
-        scope_type=ctx.scope_type,
-        flow_step=initial_flow_step,
-    )
+    """从当前 ``flow_step`` 连续执行，直到 waiting/done/idle 或无 handler。
+
+    - ``create=True``：仅用于 ``open_meeting``，新建 ``meeting_pipeline.json``。
+    - ``create=False``：加载已有 pipeline 并推进（reprocess / node_finish 等）。
+    """
+    if create:
+        pipe = MeetingPipeline.create(
+            ctx.scope_id,
+            scope_type=ctx.scope_type,
+            flow_step=initial_flow_step,
+        )
+    else:
+        pipe = MeetingPipeline.load(ctx.scope_id)
     guard = 0
     while pipe.flow_step not in (STEP_WAITING, STEP_DONE, STEP_IDLE) and guard < 16:
         guard += 1
@@ -1072,7 +1091,7 @@ def schedule_node_finish(
 
     def _do_advance() -> None:
         try:
-            pipe = MeetingPipeline.load_or_create(sid, scope_type=scope_type)
+            pipe = MeetingPipeline.load(sid)
             dev = load_dev_status(sid) or {}
             if last_node_id:
                 pctx = pipe._data.get("context")
@@ -1120,12 +1139,13 @@ async def _run_node_finish_coro(fn: Callable[[], None]) -> None:
 
 
 def get_flow_step(scope_id: str) -> str:
-    pipe = MeetingPipeline.load(scope_id)
-    return pipe.flow_step if pipe else STEP_IDLE
+    if not MeetingPipeline.exists(scope_id):
+        return STEP_IDLE
+    return MeetingPipeline.load(scope_id).flow_step
 
 
 def set_flow_step(scope_id: str, step: str, *, reason: str = "") -> None:
-    pipe = MeetingPipeline.load_or_create(scope_id)
+    pipe = MeetingPipeline.load(scope_id)
     pipe.set_flow_step(step, reason=reason)
     pipe.save()
 
@@ -1155,7 +1175,7 @@ async def run_node_review_step(
         save_node_review,
     )
 
-    pipe = MeetingPipeline.load_or_create(scope_id, scope_type=scope_type)
+    pipe = MeetingPipeline.load(scope_id)
     pipe.set_flow_step(STEP_NODE_REVIEW, reason=f"节点 {node_id} 执行完成，开始装配确认总结")
     pipe.save()
 
@@ -1175,7 +1195,7 @@ async def run_node_review_step(
     )
     save_node_review(scope_id, node_id, payload)
 
-    pipe = MeetingPipeline.load_or_create(scope_id, scope_type=scope_type)
+    pipe = MeetingPipeline.load(scope_id)
     pipe.mark_step_completed(STEP_NODE_REVIEW)
     pipe.set_flow_step(STEP_WAITING, reason="确认总结已装配，等待人工确认")
     pipe.save()
