@@ -85,9 +85,9 @@ def test_advance_past_disabled_nodes_skips_without_init_history(meeting_scope: s
 
 def test_pipeline_node_init_skips_redirects_to_node_finish(meeting_scope: str) -> None:
     scope_id = meeting_scope
-    pipe = MeetingPipeline.load_or_create(scope_id, scope_type="demand")
+    pipe = MeetingPipeline.create(scope_id, scope_type="demand", flow_step=STEP_NODE_INIT)
     pipe._data["room_id"] = "mr_test_skip"
-    pipe.set_flow_step(STEP_NODE_INIT, reason="test")
+    pipe.save()
     ctx = PipelineRunContext(
         scope_type="demand",
         scope_id=scope_id,
@@ -116,7 +116,7 @@ def test_skip_disabled_single_pipeline_init_once(meeting_scope: str) -> None:
     scope_id = meeting_scope
     next_id = next_node_id("boundary")
 
-    pipe = MeetingPipeline.load_or_create(scope_id, scope_type="demand")
+    pipe = MeetingPipeline.create(scope_id, scope_type="demand", flow_step=STEP_NODE_FINISH)
     pipe._data["room_id"] = "mr_test_skip"
     pctx = pipe._data.get("context")
     if not isinstance(pctx, dict):

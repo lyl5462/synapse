@@ -91,7 +91,6 @@ def test_pipeline_file_created_on_open_flow(monkeypatch, tmp_path):
     ppath = meeting_pipeline_path(scope_id)
     assert ppath.is_file()
     pipe = MeetingPipeline.load(scope_id)
-    assert pipe is not None
     assert pipe.flow_step == STEP_WAITING
     assert STEP_OPEN_MEETING in (pipe.data.get("steps_completed") or [])
     assert STEP_NODE_INIT in (pipe.data.get("steps_completed") or [])
@@ -101,3 +100,45 @@ def test_pipeline_file_created_on_open_flow(monkeypatch, tmp_path):
     assert ctx_host.get("dynamic_chars", 0) > 0
     assert ctx_host.get("meeting_prompt_chars", 0) > 0
     assert detail.get("pipeline", {}).get("flow_step") == STEP_WAITING
+
+
+def test_pipeline_load_missing_raises(monkeypatch, tmp_path):
+    scope_id = "pipe-missing"
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", lambda: tmp_path / "work")
+    with pytest.raises(ValueError, match="meeting_pipeline_not_found"):
+        MeetingPipeline.load(scope_id)
+
+
+def test_pipeline_create_duplicate_raises(monkeypatch, tmp_path):
+    scope_id = "pipe-dup"
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", lambda: tmp_path / "work")
+    MeetingPipeline.create(scope_id, scope_type="demand")
+    with pytest.raises(ValueError, match="meeting_pipeline_already_exists"):
+        MeetingPipeline.create(scope_id, scope_type="demand")
+
+
+def test_open_meeting_twice_raises_when_active(monkeypatch, tmp_path):
+    from synapse.rd_meeting.service import MeetingRoomService
+
+    scope_id = "pipe-twice"
+    work = tmp_path / "work" / scope_id
+    work.mkdir(parents=True)
+    monkeypatch.setattr("synapse.rd_meeting.paths.work_root", lambda: tmp_path / "work")
+    monkeypatch.setattr(
+        "synapse.rd_meeting.product_context.ensure_prod_in_catalog",
+        lambda p: ([{"prod": p}], ""),
+    )
+    monkeypatch.setattr(
+        "synapse.rd_meeting.product_assets.bootstrap_product_assets",
+        lambda *_a, **_k: {"status": "ok", "repos": [], "docs": []},
+    )
+    monkeypatch.setattr(
+        "synapse.rd_meeting.init_context.resolve_product_for_meeting",
+        lambda *_a, **_k: ({"locator_code": "ok", "prod": "p"}, {}),
+    )
+    monkeypatch.setattr("synapse.rd_meeting.orchestrator.schedule_run_node", lambda **_k: "k")
+
+    svc = MeetingRoomService()
+    svc.open_meeting("demand", scope_id, prod="p", sync_userwork=False)
+    with pytest.raises(ValueError, match="meeting_room_already_active"):
+        svc.open_meeting("demand", scope_id, prod="p", sync_userwork=False)
