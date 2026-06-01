@@ -4,8 +4,10 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/pyinstaller_work
-build/*.txt
+build/
+!build/*.py
+!build/*.sh
+!build/*.ps1
 develop-eggs/
 dist/
 downloads/
@@ -251,4 +253,3 @@ botpy.log*
 web_tmp/
 .tmp_test_uw/
 .VSCodeCounter/
-tsx

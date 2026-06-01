@@ -1802,22 +1802,16 @@ const InterventionDialog = ({
 
         {/* 右栏：协作会议流 */}
         <div className="w-[440px] flex flex-col min-h-0 bg-[color:var(--panel)] shrink-0">
-          <div className="px-4 py-2.5 border-b border-border/60 bg-[color:var(--panel2)] shrink-0">
-            <div className="flex items-center justify-between gap-2 mb-2">
-              <span className="text-sm font-semibold text-foreground flex items-center gap-2 min-w-0">
-                <MessageSquare className="w-4 h-4 text-violet-400 shrink-0" />
-                <span className="truncate">协作会议流</span>
-              </span>
-              {selectedNode ? (
-                <span className="text-[10px] font-mono text-muted-foreground truncate max-w-[45%]" title={selectedNode.name}>
-                  {selectedNode.name}
+          <div className="h-14 shrink-0 flex items-center border-b border-border/60 px-4 bg-gradient-to-b from-muted/25 to-background/60">
+            <div className="flex items-center gap-3 min-w-0 w-full">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <MessageSquare className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+                <span className="text-[11px] font-semibold text-foreground/90 tracking-wide whitespace-nowrap">
+                  协作会议流
                 </span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground min-w-0">
-              <Users className="w-3.5 h-3.5 shrink-0" />
-              <span className="shrink-0">参会</span>
-              <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              </div>
+              <span className="h-4 w-px bg-border/50 shrink-0" aria-hidden />
+              <div className="flex flex-1 items-center gap-1.5 min-w-0 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 <Avatar size="small" className="bg-muted text-[9px] ring-2 ring-background shrink-0">我</Avatar>
                 {displayAgents.map((a) => (
                   <MeetingAgentAvatar
