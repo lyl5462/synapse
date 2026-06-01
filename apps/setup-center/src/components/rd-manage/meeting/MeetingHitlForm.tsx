@@ -41,7 +41,7 @@ function normalizeQuestionsForRender(raw: HitlQuestion[]): HitlQuestion[] {
     if ((item.type === 'single' || item.type === 'multiple') && opts.length === 0) {
       return {
         ...item,
-        type: 'textarea',
+        type: 'textarea' as HitlQuestionType,
         options: [],
         inputPlaceholder: item.inputPlaceholder || '请输入您的回答…',
       };
