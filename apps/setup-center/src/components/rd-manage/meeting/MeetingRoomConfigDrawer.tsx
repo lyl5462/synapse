@@ -244,6 +244,7 @@ function effectiveHumanConfirm(
   ov: MeetingRoomNodeOverride,
   binding?: MeetingRoomNodeBinding,
 ): boolean {
+  if (binding?.type === 'system') return false;
   if (ov.human_confirm !== undefined && ov.human_confirm !== null) return Boolean(ov.human_confirm);
   return Boolean(binding?.human_confirm ?? binding?.default_human_confirm);
 }
@@ -265,8 +266,8 @@ function normalizeOverridesForSave(
     if (Array.isArray(workers)) {
       entry.worker_profile_ids = workers.filter((id) => id !== HOST_PROFILE_ID);
     }
-    if (ov.human_confirm !== undefined) entry.human_confirm = ov.human_confirm;
-    if (ov.hitl_form_schema) entry.hitl_form_schema = ov.hitl_form_schema;
+    if (ov.human_confirm !== undefined && b?.type !== 'system') entry.human_confirm = ov.human_confirm;
+    if (ov.hitl_form_schema && b?.type !== 'system') entry.hitl_form_schema = ov.hitl_form_schema;
     out[nodeId] = entry;
   }
   return out;
@@ -386,6 +387,7 @@ export const MeetingRoomConfigDrawer: React.FC<{
   const defaultNodeIntent = binding?.default_node_intent ?? binding?.intent ?? '';
   const meetingGoal = effectiveNodeIntent(override, binding);
   const humanConfirm = effectiveHumanConfirm(override, binding);
+  const isSystemNode = binding?.type === 'system';
   const nodeOutputs = binding?.node_outputs ?? [];
 
   const patchRoomLevel = (
@@ -822,6 +824,10 @@ export const MeetingRoomConfigDrawer: React.FC<{
                     <p className="text-[11px] text-amber-500/95 dark:text-amber-400/95 leading-relaxed -mt-2">
                       关闭后进入该节点将立即跳过并推进，不调用智能体。
                     </p>
+                  ) : isSystemNode ? (
+                    <p className="text-[11px] text-slate-400 leading-relaxed -mt-2">
+                      系统节点由 Pipeline 代码 handler 执行（如 git 落盘至 work/&lt;工单&gt;/sandbox/），不调度大模型，且不可开启人工确认。
+                    </p>
                   ) : null}
 
                   <div className="h-px bg-gradient-to-r from-transparent via-border/80 to-transparent" />
@@ -853,6 +859,7 @@ export const MeetingRoomConfigDrawer: React.FC<{
                       </label>
                       <MeetingConfigSwitch
                         checked={humanConfirm}
+                        disabled={isSystemNode}
                         onChange={(checked) => patchOverride({ human_confirm: checked })}
                         tone="emerald"
                         ariaLabel="人工确认"
@@ -860,9 +867,11 @@ export const MeetingRoomConfigDrawer: React.FC<{
                     </div>
                     <ConfigFieldBox className={humanConfirm ? 'border-emerald-500/20' : ''}>
                       <p className="text-[11px] text-muted-foreground leading-relaxed mb-0">
-                        {humanConfirm
-                          ? '节点完成后需填写确认表单，小鲸收到结构化结果后再推进下一节点。'
-                          : '节点完成后自动推进下一 SOP 节点。'}
+                        {isSystemNode
+                          ? '系统节点固定为自动推进，不支持人工确认。'
+                          : humanConfirm
+                            ? '节点完成后需填写确认表单，小鲸收到结构化结果后再推进下一节点。'
+                            : '节点完成后自动推进下一 SOP 节点。'}
                       </p>
                     </ConfigFieldBox>
                   </div>
@@ -889,6 +898,8 @@ export const MeetingRoomConfigDrawer: React.FC<{
 
                   <div className="h-px bg-gradient-to-r from-transparent via-border/80 to-transparent" />
 
+                  {!isSystemNode ? (
+                  <>
                   <div>
                     <label className="mb-2.5 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-foreground/80">
                       <Bot className="w-3.5 h-3.5 text-indigo-400" />
@@ -981,6 +992,8 @@ export const MeetingRoomConfigDrawer: React.FC<{
                       </div>
                     </ConfigFieldBox>
                   </div>
+                  </>
+                  ) : null}
                 </div>
               </section>
 

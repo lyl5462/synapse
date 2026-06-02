@@ -26,6 +26,16 @@ STEP_NODE_INIT_SUMMARY = (
     "已解析本节点绑定关系，并加载工单 / 产品 / 系统上下文，供后续主控提示词注入。"
 )
 
+STEP_SYSTEM_NODE_INIT_SUMMARY = (
+    "系统节点初始化\n\n"
+    "本节点由系统脚本执行（无大模型、无人工确认）。已加载工单 / 产品上下文，准备执行代码任务。"
+)
+
+STEP_SYSTEM_NODE_EXEC_SUMMARY = (
+    "系统节点执行\n\n"
+    "系统脚本已完成本节点任务，产出物与目录信息已落盘。"
+)
+
 STEP_HOST_PROMPT_SUMMARY = (
     "主控提示词组装\n\n"
     "已将会诊室 SKILL 与四段式动态上下文写入小鲸系统提示；"
@@ -56,6 +66,16 @@ def format_room_opened_chat() -> str:
 def format_node_init_chat() -> str:
     """步骤 2：节点初始化（流程说明）。"""
     return STEP_NODE_INIT_SUMMARY
+
+
+def format_system_node_init_chat(node_id: str = "") -> str:
+    """系统节点初始化（流程说明）。"""
+    _ = node_id
+    return STEP_SYSTEM_NODE_INIT_SUMMARY
+
+
+def format_system_node_exec_chat() -> str:
+    return STEP_SYSTEM_NODE_EXEC_SUMMARY
 
 
 def format_host_prompt_step_chat() -> str:
@@ -105,7 +125,11 @@ def format_event_chat_display(event: dict[str, Any]) -> str:
     if et == "room_opened":
         return format_room_opened_chat()
     if et == "node_init":
+        if event.get("system_node"):
+            return format_system_node_init_chat(str(event.get("node_id") or ""))
         return format_node_init_chat()
+    if et == "system_node_executed":
+        return format_system_node_exec_chat()
     if et == "host_prompt_assembled":
         return format_host_prompt_step_chat()
     if et == "phase_change":

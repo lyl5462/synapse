@@ -66,8 +66,21 @@ def _profile_display_name(profile_id: str) -> str:
     return resolve_profile_display_name(profile_id)
 
 
+def build_system_participants() -> list[dict[str, str]]:
+    """系统节点参会方（无 LLM Agent）。"""
+    return [
+        {
+            "profile_id": "system",
+            "role": "system",
+            "display_name": "系统",
+        }
+    ]
+
+
 def build_meeting_participants(binding: dict[str, Any]) -> list[dict[str, str]]:
     """从节点 binding 解析参会阵容（主控 + 协作智能体，去重）。"""
+    if str(binding.get("type") or "").strip() == "system":
+        return build_system_participants()
     host_id = str(binding.get("host_profile_id") or DEFAULT_HOST_PROFILE_ID).strip()
     workers = [
         str(w).strip()

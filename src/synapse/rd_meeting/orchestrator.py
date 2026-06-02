@@ -1296,6 +1296,10 @@ class MeetingRoomOrchestrator:
         node_id = str(skip_prep.get("current_node_id") or "pending")
         if node_id == "pending" or skip_prep.get("status") == "pending":
             raise ValueError("invalid_current_node")
+        from synapse.rd_sop.manifest import is_system_node
+
+        if is_system_node(node_id):
+            raise ValueError("system_node_use_pipeline")
         dev = skip_prep.get("dev_status") or load_dev_status(sid)
         if dev is None:
             raise ValueError("dev_status_not_found")

@@ -26,9 +26,9 @@ NODE_TYPES: dict[str, str] = {
     "func_solution": "ai",
     "entropy_gen": "ai",
     "solution_review": "ai_human",
-    "auto_split": "ai",
-    "sandbox_build": "ai",
-    "env_pregen": "ai",
+    "auto_split": "system",
+    "sandbox_build": "system",
+    "env_pregen": "system",
     "task_exec": "human_start",
     "exception_check": "ai",
     "task_feedback": "system",
@@ -55,9 +55,9 @@ NODE_INTENTS: dict[str, str] = {
     "func_solution": "功能方案定位到函数级，控制改造范围，小鲸只负责检查对应方案的合理性，而产品设计专家负责方案文档的生成。",
     "entropy_gen": "生成 agent.md、rule.md 等控熵文件。",
     "solution_review": "方案评审与可行性验证。",
-    "auto_split": "按需求与方案自动拆分研发子单。",
-    "sandbox_build": "构造研发沙箱基础环境。",
-    "env_pregen": "拉取代码与控熵文件，预生成开发环境。",
+    "auto_split": "按需求与方案自动拆分研发子单（系统脚本）。",
+    "sandbox_build": "构造研发沙箱基础环境（系统 git 落盘）。",
+    "env_pregen": "拉取文档与控熵文件，预生成开发环境（系统脚本）。",
     "task_exec": "人工确认后启动研发任务执行。",
     "exception_check": "检测执行异常并决定是否升级人工。",
     "task_feedback": "反馈执行进度供人工观察。",
@@ -122,8 +122,14 @@ def is_human_gate_node(node_id: str) -> bool:
     return "human" in t or t in ("human_start", "ai_human", "ai_exception", "human_multi")
 
 
+def is_system_node(node_id: str) -> bool:
+    return NODE_TYPES.get((node_id or "").strip(), "") == "system"
+
+
 def default_human_confirm(node_id: str) -> bool:
     """节点是否默认开启「人工确认」配置（与 NODE_TYPES 对齐，运行时可覆盖）。"""
+    if is_system_node(node_id):
+        return False
     t = NODE_TYPES.get(node_id, "")
     if t in ("human", "human_start", "ai_human", "human_multi"):
         return True

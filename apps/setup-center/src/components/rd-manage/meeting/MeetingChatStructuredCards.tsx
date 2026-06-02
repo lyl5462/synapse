@@ -141,6 +141,9 @@ function resolveWorkerRoster(
 
 export function ParticipantsCard({ payload }: { payload: Record<string, unknown> }) {
   const { workers } = useMemo(() => resolveWorkerRoster(payload), [payload]);
+  if (payload.system_node) {
+    return <SystemRosterCard payload={payload} />;
+  }
 
   return (
     <div className="rd-chat-card rd-chat-card--roster">
@@ -170,6 +173,66 @@ export function ParticipantsCard({ payload }: { payload: Record<string, unknown>
       </ul>
       {workers.length === 0 ? (
         <p className="rd-chat-card__desc mt-2">暂无协作智能体，仅小鲸主持本节点。</p>
+      ) : null}
+    </div>
+  );
+}
+
+export function SystemRosterCard({ payload }: { payload: Record<string, unknown> }) {
+  return (
+    <div className="rd-chat-card rd-chat-card--roster">
+      <SectionTitle icon={<Server className="w-4 h-4" />}>系统执行方</SectionTitle>
+      <div className="rd-chat-card__meta-row rd-roster-meta">
+        <span className="font-mono text-[11px]">节点 {String(payload.node_id || '—')}</span>
+      </div>
+      <ul className="rd-roster-list">
+        <li className="rd-roster-item">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-500/40 bg-slate-500/15 text-slate-300">
+            <Server className="h-4 w-4" />
+          </span>
+          <div className="rd-roster-item__text">
+            <span className="rd-roster-item__name">系统</span>
+            <span className="rd-roster-item__role">脚本执行 · 无大模型</span>
+          </div>
+          <span className="rd-roster-item__badge">system</span>
+        </li>
+      </ul>
+      <p className="rd-chat-card__desc mt-2">本节点由 Pipeline 代码 handler 执行，不调度主持/协作智能体。</p>
+    </div>
+  );
+}
+
+export function SystemExecCard({ payload }: { payload: Record<string, unknown> }) {
+  const repos = (payload.repos as Record<string, unknown>[]) || [];
+  return (
+    <div className="rd-chat-card rd-chat-card--meta">
+      <SectionTitle icon={<Server className="w-4 h-4" />}>系统节点执行结果</SectionTitle>
+      <dl className="rd-chat-card__kv">
+        <dt>状态</dt>
+        <dd>{String(payload.status || '—')}</dd>
+        <dt>沙箱目录</dt>
+        <dd className="font-mono text-[11px] break-all">{String(payload.sandbox_root || '—')}</dd>
+        {payload.prod ? (
+          <>
+            <dt>产品</dt>
+            <dd>{String(payload.prod)}</dd>
+          </>
+        ) : null}
+        {payload.error ? (
+          <>
+            <dt>错误</dt>
+            <dd className="text-red-400">{String(payload.error)}</dd>
+          </>
+        ) : null}
+      </dl>
+      {repos.length > 0 ? (
+        <ul className="text-[11px] text-muted-foreground space-y-1.5 mt-3 mb-0">
+          {repos.map((row, idx) => (
+            <li key={`${row.repo_name}-${idx}`} className="font-mono break-all">
+              {String(row.repo_name || 'repo')} → {String(row.local_path || '—')} ({String(row.status || '—')})
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );
@@ -330,6 +393,10 @@ export function StructuredChatBody({ log }: { log: MeetingChatLog }) {
       return <NodeContextCard payload={payload} />;
     case 'participants':
       return <ParticipantsCard payload={payload} />;
+    case 'system_roster':
+      return <SystemRosterCard payload={payload} />;
+    case 'system_exec':
+      return <SystemExecCard payload={payload} />;
     case 'work_plan':
       return <WorkPlanCard text={log.text} />;
     case 'delegation_start':

@@ -173,12 +173,24 @@ async def intervene_meeting(room_id: str, body: InterveneBody, request: Request)
         return error_response(500, "intervene_meeting_failed", str(exc))
 
 
+class ReprocessBody(BaseModel):
+    node_id: str | None = Field(
+        None,
+        description="要重新处理的 SOP 节点；缺省为流水线当前节点。历史节点暂未实现",
+    )
+
+
 @router.post("/api/dev/meeting-rooms/{room_id}/reprocess")
-async def reprocess_meeting_room(room_id: str, request: Request) -> dict:
-    """重新处理当前 SOP 节点：清理过程数据并从 node_init 重跑。"""
+async def reprocess_meeting_room(
+    room_id: str,
+    request: Request,
+    body: ReprocessBody | None = None,
+) -> dict:
+    """重新处理 SOP 节点：当前节点清理过程数据并从 node_init 重跑。"""
     pool = getattr(request.app.state, "agent_pool", None)
+    node_id = (body.node_id if body else None) or None
     try:
-        item = _service.reprocess_current_node(room_id, agent_pool=pool)
+        item = _service.reprocess_node(room_id, node_id=node_id, agent_pool=pool)
         return success_response(item)
     except ValueError as exc:
         msg = str(exc)
@@ -187,6 +199,21 @@ async def reprocess_meeting_room(room_id: str, request: Request) -> dict:
     except Exception as exc:
         logger.exception("reprocess_meeting_room failed: %s", exc)
         return error_response(500, "reprocess_meeting_room_failed", str(exc))
+
+
+@router.post("/api/dev/meeting-rooms/{room_id}/stop")
+async def stop_meeting_room(room_id: str) -> dict:
+    """终止当前节点后台运行，会议室标为 stopped（TODO-1：杀尽 Agent 池任务）。"""
+    try:
+        item = _service.stop_room_run(room_id, reason="user_stop")
+        return success_response(item)
+    except ValueError as exc:
+        msg = str(exc)
+        code = 404 if "not_found" in msg else 400
+        return error_response(code, msg)
+    except Exception as exc:
+        logger.exception("stop_meeting_room failed: %s", exc)
+        return error_response(500, "stop_meeting_room_failed", str(exc))
 
 
 @router.post("/api/dev/meeting-rooms/open")

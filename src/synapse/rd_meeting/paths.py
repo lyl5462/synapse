@@ -123,6 +123,38 @@ def product_doc_dir(scope_id: str, doc_type: str) -> Path:
     return product_doc_root(scope_id) / seg
 
 
+def sandbox_root(scope_id: str) -> Path:
+    """沙箱代码根目录：``work/<scope>/sandbox/``（系统节点落盘，与 ``code/`` 开门拉取分离）。"""
+    return scope_dir(scope_id) / "sandbox"
+
+
+def sandbox_code_dir(scope_id: str, repo_name: str) -> Path:
+    """沙箱单仓库目录：``work/<scope>/sandbox/<repo_name>/``。"""
+    seg = sanitize_work_order_segment(repo_name or "default")
+    return sandbox_root(scope_id) / seg
+
+
+def env_root(scope_id: str) -> Path:
+    """环境预生成根目录：``work/<scope>/env/``。"""
+    return scope_dir(scope_id) / "env"
+
+
+def env_entropy_dir(scope_id: str) -> Path:
+    """控熵文件落盘：``work/<scope>/env/entropy/``。"""
+    return env_root(scope_id) / "entropy"
+
+
+def env_doc_root(scope_id: str) -> Path:
+    """环境预生成文档根目录：``work/<scope>/env/doc/``。"""
+    return env_root(scope_id) / "doc"
+
+
+def env_doc_dir(scope_id: str, doc_type: str) -> Path:
+    """单类文档目录：``work/<scope>/env/doc/<doc_type>/``。"""
+    seg = sanitize_fs_segment(doc_type or "default")
+    return env_doc_root(scope_id) / seg
+
+
 def agents_root(scope_id: str) -> Path:
     """工单维度的智能体沉淀根目录：``work/<scope>/agents/``。"""
     return scope_dir(scope_id) / "agents"

@@ -189,7 +189,22 @@ def _append_participants_chat_row(
     *,
     suffix: str = "-roster",
 ) -> None:
-    """参会阵容：仅在 node_init 后展示一次。"""
+    """参会阵容：node_init 后展示（系统节点展示系统执行方）。"""
+    if ev.get("system_node"):
+        part = _participants_payload(ev)
+        out.append(
+            _row(
+                ev,
+                index,
+                text="系统执行方",
+                agent_id=SPEAKER_SYSTEM,
+                speaker_role=SPEAKER_SYSTEM,
+                display_kind="system_roster",
+                payload={**part, "system_node": True},
+                suffix=suffix,
+            )
+        )
+        return
     part = _participants_payload(ev)
     if not (part.get("worker_profile_ids") or part.get("participants")):
         return
@@ -276,6 +291,37 @@ def expand_history_event_to_chat(ev: dict[str, Any], index: int) -> list[dict[st
 
     if et == "node_init":
         return _expand_node_init(ev, index, host_id)
+
+    if et == "system_node_executed":
+        payload = ev.get("result") if isinstance(ev.get("result"), dict) else {}
+        out: list[dict[str, Any]] = []
+        summary = format_event_chat_display(ev)
+        if summary:
+            out.append(
+                _row(
+                    ev,
+                    index,
+                    text=summary,
+                    agent_id=SPEAKER_SYSTEM,
+                    speaker_role=SPEAKER_SYSTEM,
+                    display_kind="pipeline",
+                    suffix="-pipe",
+                )
+            )
+        if payload:
+            out.append(
+                _row(
+                    ev,
+                    index,
+                    text="系统节点执行结果",
+                    agent_id=SPEAKER_SYSTEM,
+                    speaker_role=SPEAKER_SYSTEM,
+                    display_kind="system_exec",
+                    payload=payload,
+                    suffix="-exec",
+                )
+            )
+        return out
 
     if et == "node_started":
         return _expand_node_started(ev, index, host_id)
@@ -585,6 +631,7 @@ def _looks_like_pipeline_chat(text: str, event_type: str) -> bool:
     if event_type in (
         "room_opened",
         "node_init",
+        "system_node_executed",
         "host_prompt_assembled",
         "host_llm_begin",
         "phase_change",

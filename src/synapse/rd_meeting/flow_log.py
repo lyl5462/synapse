@@ -11,6 +11,8 @@ FLOW_LOG_PREFIX = "会议室流程日志"
 EVENT_FLOW_STAGE: dict[str, str] = {
     "room_opened": "开启会议室",
     "node_init": "节点初始化",
+    "system_node_executed": "系统节点执行",
+    "system_node_started": "系统节点开始",
     "host_prompt_assembled": "主控提示词组装",
     "node_started": "节点开始执行",
     "run_node_scheduled": "调度节点执行",
@@ -44,6 +46,8 @@ CHAT_VISIBLE_EVENTS = frozenset(
         "system",
         "node_started",
         "node_init",
+        "system_node_executed",
+        "system_node_started",
         "host_prompt_assembled",
         "run_node_scheduled",
         "prewarm_workers",

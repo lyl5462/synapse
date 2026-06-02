@@ -122,6 +122,10 @@ def record_delegation_started(
             "chat_text": body,
         },
     )
+    if parsed.get("role") == "host":
+        from synapse.rd_meeting.hitl_lifecycle import clear_ready_for_node_review
+
+        clear_ready_for_node_review(scope_id)
     _touch_agents_active(scope_id, parsed["room_id"], to_agent, "worker", "delegating")
 
 

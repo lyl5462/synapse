@@ -22,6 +22,7 @@ from typing import Any
 from filelock import FileLock
 
 from synapse.config import settings
+from synapse.rd_sop.manifest import is_system_node
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,8 @@ def _normalize_overrides(value: Any) -> dict[str, Any]:
                 entry[key] = ov[key]
         if entry:
             entry.pop("skill_ids", None)
+            if is_system_node(str(node_id)):
+                entry.pop("human_confirm", None)
             cleaned[str(node_id)] = entry
     return cleaned
 
@@ -151,6 +154,8 @@ def _strip_legacy_override_fields(overrides: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(ov, dict):
             continue
         entry = {k: v for k, v in ov.items() if k != "skill_ids"}
+        if is_system_node(str(node_id)):
+            entry.pop("human_confirm", None)
         if entry:
             out[str(node_id)] = entry
     return out

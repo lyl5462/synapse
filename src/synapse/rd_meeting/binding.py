@@ -14,6 +14,7 @@ from synapse.rd_sop.manifest import (
     DEFAULT_HOST_PROFILE_ID,
     default_human_confirm,
     get_node_manifest_entry,
+    is_system_node,
     node_output_artifacts,
 )
 from synapse.rd_sop.nodes import node_display_name
@@ -33,6 +34,8 @@ def _coerce_enabled(value: Any) -> bool:
 
 
 def _coerce_human_confirm(value: Any, *, node_id: str) -> bool:
+    if is_system_node(node_id):
+        return False
     if value is None:
         return default_human_confirm(node_id)
     if isinstance(value, bool):
@@ -44,11 +47,11 @@ def _coerce_human_confirm(value: Any, *, node_id: str) -> bool:
     return bool(value)
 
 
-def _merge_binding(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _merge_binding(base: dict[str, Any], override: dict[str, Any], *, node_id: str) -> dict[str, Any]:
     out = dict(base)
     if "enabled" in override:
         out["enabled"] = _coerce_enabled(override.get("enabled"))
-    if "human_confirm" in override:
+    if "human_confirm" in override and not is_system_node(node_id):
         out["human_confirm"] = override.get("human_confirm")
     if override.get("host_profile_id"):
         out["host_profile_id"] = str(override["host_profile_id"]).strip()
@@ -124,17 +127,20 @@ def resolve_node_binding(
     base = dict(entry.get("default_binding") or {})
     base["llm_endpoint_key"] = worker_llm_endpoint
     base["enabled"] = enabled
-    merged = _merge_binding(base, override)
+    merged = _merge_binding(base, override, node_id=node_id)
 
     node_worker_endpoint = str(
         merged.get("llm_endpoint_key") or worker_llm_endpoint
     ).strip() or worker_llm_endpoint
     merged["llm_endpoint_key"] = node_worker_endpoint
 
+    node_type = str(entry.get("type") or "ai")
     human_confirm = _coerce_human_confirm(
         merged.get("human_confirm") if "human_confirm" in merged else None,
         node_id=node_id,
     )
+    if is_system_node(node_id):
+        human_confirm = False
     hitl_schema = resolve_hitl_form_schema(node_id, node_override=override) if human_confirm else None
     node_intent, default_node_intent = resolve_node_intent(node_id, node_override=override)
 
@@ -143,7 +149,7 @@ def resolve_node_binding(
         "node_name": str(entry.get("name") or node_id),
         "stage_id": int(entry.get("stage_id") or 0),
         "stage_name": str(entry.get("stage_name") or ""),
-        "type": entry.get("type"),
+        "type": node_type,
         "enabled": _coerce_enabled(merged.get("enabled")),
         "human_confirm": human_confirm,
         "default_human_confirm": default_human_confirm(node_id),

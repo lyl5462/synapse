@@ -46,6 +46,35 @@ def set_ready_for_node_review(scope_id: str, ready: bool) -> None:
     save_room_state(sid, rs)
 
 
+def clear_ready_for_node_review(scope_id: str) -> None:
+    """节点仍在进行中（如再次委派 Worker）时撤销 NodeReview 就绪标记。"""
+    set_ready_for_node_review(scope_id, False)
+
+
+def node_archive_ready_for_review(scope_id: str, node_id: str) -> bool:
+    """约定归档 Markdown 已落盘时才允许进入 NodeReview。"""
+    from synapse.rd_meeting.validation import validate_node_archive_files
+    from synapse.rd_sop.nodes import stage_id_for_node_id, stage_name_for_id
+
+    sid = (scope_id or "").strip()
+    nid = (node_id or "").strip()
+    if not sid or not nid or nid == "pending":
+        return False
+    stage_name = stage_name_for_id(stage_id_for_node_id(nid))
+    return validate_node_archive_files(sid, stage_name, nid).ok
+
+
+def resolve_ready_for_node_review_after_hitl(
+    scope_id: str,
+    node_id: str,
+    feedback_mode: HitlFeedbackMode,
+) -> bool:
+    """会中问卷提交后：仅「仅选项」且归档文件已存在时才标记 NodeReview 就绪。"""
+    if feedback_mode != "options_only":
+        return False
+    return node_archive_ready_for_review(scope_id, node_id)
+
+
 def set_hitl_feedback_mode(scope_id: str, mode: HitlFeedbackMode | None) -> None:
     sid = (scope_id or "").strip()
     if not sid:

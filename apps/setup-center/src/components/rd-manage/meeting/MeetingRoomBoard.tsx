@@ -9,6 +9,7 @@ import {
   fetchMeetingRoomConfig,
   interveneMeetingRoom,
   reprocessMeetingRoom,
+  stopMeetingRoom,
   type MeetingRoomChatLogWire,
   type MeetingRoomDetail,
   type MeetingRoomListItem,
@@ -67,7 +68,7 @@ import {
   Globe, Clock, Coins, MoreHorizontal, CircleDashed, 
   Terminal, Code2, GitBranch, FileCode2, Play, User, Info, Network, Code, 
   TestTube, CheckSquare, Flame, TrendingUp, Loader2, AlertCircle, MessageSquareText, ClipboardCheck,
-  SkipForward, RotateCw, ArrowLeft, Layers,
+  SkipForward, RotateCw, ArrowLeft, Layers, Square,
   Search, PenLine, ShieldCheck, Check, Container,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -120,7 +121,7 @@ interface MeetingRoom {
   stageIndex: number;
   currentNode: string;
   totalStages: number;
-  status: 'processing' | 'human_intervention' | 'completed' | 'failed';
+  status: 'processing' | 'human_intervention' | 'completed' | 'failed' | 'stopped';
   stageDuration: string;
   meetingStartedAt?: string;
   tokenConsumed: number;
@@ -340,7 +341,8 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
     currentNode: nextNodeId,
     stageIndex: nextStageIndex,
     stageName: nextStageName,
-    status: uiStatus && ['processing', 'human_intervention', 'completed', 'failed'].includes(uiStatus)
+    status: uiStatus &&
+      ['processing', 'human_intervention', 'completed', 'failed', 'stopped'].includes(uiStatus)
       ? uiStatus
       : room.status,
     phase: live.phase || room.phase,
@@ -480,7 +482,14 @@ const getNodeStateGlobal = (
   room: MeetingRoom,
   nodeId: string,
   disabledNodeIds?: ReadonlySet<string>,
-): 'completed' | 'processing' | 'error' | 'human_intervention' | 'pending' | 'skipped' => {
+):
+  | 'completed'
+  | 'processing'
+  | 'error'
+  | 'human_intervention'
+  | 'pending'
+  | 'skipped'
+  | 'stopped' => {
   const skipped = room.skippedNodeIds ?? [];
   if (skipped.includes(nodeId)) return 'skipped';
   if (disabledNodeIds?.has(nodeId)) return 'skipped';
@@ -492,6 +501,7 @@ const getNodeStateGlobal = (
   if (targetIndex > currentIndex) return 'pending';
 
   if (room.status === 'failed') return 'error';
+  if (room.status === 'stopped') return 'stopped';
   if (room.status === 'processing') return 'processing';
   if (room.status === 'human_intervention') {
     const node = ALL_NODES[targetIndex];
@@ -521,9 +531,9 @@ function resolveNodeDetailViewMode(
 function toMeetingNodeVisualState(
   state: ReturnType<typeof getNodeStateGlobal>,
 ): MeetingNodeVisualState {
-  if (state === 'skipped') return 'pending';
+  if (state === 'skipped' || state === 'stopped') return 'pending';
   return state;
-};
+}
 
 function pickDefaultNodeForStage(
   room: MeetingRoom,
@@ -553,6 +563,9 @@ const SkippedNodeDetailPanel = ({ nodeName }: { nodeName: string }) => (
 
 /** 看板卡片用：不含「待处理」的流水线阶段 */
 const MEETING_PIPELINE_STAGES = SOP_STAGES.filter((s) => s.id > 0);
+
+/** 主页面会议室列表自动刷新间隔（会中弹窗打开时不启用，由 live 轮询负责） */
+const LIST_AUTO_REFRESH_MS = 60_000;
 
 /** 会议室弹窗 SOP 阶段导航主题（与配置抽屉色系对齐，增强对比与光效） */
 type StageNavTheme = {
@@ -829,12 +842,18 @@ function formatTokenConsumed(consumed: number, budget: number): string {
   return `${k} / ${bk}`;
 }
 
+/** 与中栏 Tab（人工确认等）同高 */
+const MEETING_TAB_BAR_HEIGHT = 'inline-flex h-9 items-center gap-2 rounded-lg px-4 text-sm';
+const MEETING_TAB_BAR_ANT_BTN = '!inline-flex !h-9 !items-center !gap-2 !rounded-lg !px-4 !text-sm';
+
 function meetingStatusTagColor(status: MeetingRoom['status']): string {
   switch (status) {
     case 'human_intervention':
       return 'error';
     case 'failed':
       return 'error';
+    case 'stopped':
+      return 'default';
     case 'completed':
       return 'success';
     default:
@@ -933,7 +952,7 @@ const MeetingRoomTitleBar = ({
 
         <Tag
           color={meetingStatusTagColor(room.status)}
-          className="m-0 shrink-0 border-0 text-[11px] px-2.5 py-0.5"
+          className={`m-0 shrink-0 border-0 ${MEETING_TAB_BAR_HEIGHT}`}
         >
           {roomCardStatusLabel(room.status)}
         </Tag>
@@ -952,6 +971,8 @@ function roomCardStatusLabel(status: MeetingRoom['status']): string {
       return '已完成';
     case 'failed':
       return '异常';
+    case 'stopped':
+      return '已停止';
     default:
       return '';
   }
@@ -1199,6 +1220,7 @@ const InterventionDialog = ({
   onClose,
   onHitlSubmit,
   onReprocess,
+  onStopRun,
   onMergeNodeChat,
   synapseApiBase,
 }: { 
@@ -1207,7 +1229,8 @@ const InterventionDialog = ({
   onClose: () => void;
   /** 仅中栏人工确认表单提交时使用，协作流只读 */
   onHitlSubmit?: (text: string) => void;
-  onReprocess?: () => void;
+  onReprocess?: (nodeId: string) => void;
+  onStopRun?: () => void;
   /** 按 SOP 节点合并协作流（来自 agents/<node_id>/room_history.jsonl） */
   onMergeNodeChat?: (nodeId: string, logs: LogEntry[]) => void;
   synapseApiBase?: string;
@@ -1280,14 +1303,17 @@ const InterventionDialog = ({
 
   const canReprocess = Boolean(
     room &&
+    selectedNode &&
+    (room.status === 'failed' ||
+      room.status === 'human_intervention' ||
+      room.status === 'stopped'),
+  );
+
+  const canStopNodeRun = Boolean(
+    room &&
     selectedNode?.id === room.currentNode &&
-    room.status !== 'completed' &&
-    !room.reprocessing &&
-    (
-      room.status === 'failed' ||
-      (room.status === 'processing' && !room.runInProgress) ||
-      (room.status === 'human_intervention' && !hitlAvailable)
-    ),
+    room.status === 'processing' &&
+    room.runInProgress,
   );
 
   const displayAgents = useMemo((): RoomAgent[] => {
@@ -1553,7 +1579,7 @@ const InterventionDialog = ({
                     setSelectedNodeId(node.id);
                     if (node.id !== hitlTargetNodeId) setCenterTab('detail');
                   }}
-                  className={`cursor-pointer rounded-xl p-3 border transition-all duration-200 ${
+                  className={`relative cursor-pointer rounded-xl p-3 border transition-all duration-200 ${
                     isSelected
                       ? 'bg-blue-950/30 border-blue-700/60 shadow-[0_0_12px_rgba(59,130,246,0.1)]'
                       : state === 'error' ? 'bg-red-950/20 border-red-900/40 hover:border-red-700/50'
@@ -1561,9 +1587,24 @@ const InterventionDialog = ({
                       : state === 'completed' ? 'bg-emerald-950/10 border-emerald-900/30 hover:border-emerald-700/40'
                       : state === 'skipped' ? 'bg-slate-900/20 border-slate-700/40 hover:border-slate-600/50'
                       : state === 'processing' ? 'bg-blue-950/15 border-blue-900/30 hover:border-blue-700/50'
+                      : state === 'stopped' ? 'bg-slate-900/25 border-slate-600/45 hover:border-slate-500/55'
                       : 'bg-muted/40 border-border/50 hover:border-border'
                   }`}
                 >
+                  {canStopNodeRun && isCurrentNode ? (
+                    <Tooltip title="终止本节点运行">
+                      <button
+                        type="button"
+                        className="absolute bottom-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-red-500/40 bg-red-950/60 text-red-300 hover:bg-red-900/80"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onStopRun?.();
+                        }}
+                      >
+                        <Square className="h-3.5 w-3.5 fill-current" />
+                      </button>
+                    </Tooltip>
+                  ) : null}
                   {/* Node Header Row */}
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
@@ -1579,11 +1620,13 @@ const InterventionDialog = ({
                         {state === 'error' && <AlertCircle className="w-3.5 h-3.5 text-red-500 animate-pulse" />}
                         {state === 'human_intervention' && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 animate-pulse" />}
                         {state === 'pending' && <CircleDashed className="w-3.5 h-3.5 text-muted-foreground/80" />}
+                        {state === 'stopped' && <Square className="w-3.5 h-3.5 text-slate-400" />}
                         <span className={`text-xs font-medium ${
                           isSelected ? 'text-blue-300' :
                           state === 'error' ? 'text-red-400' :
                           state === 'human_intervention' ? 'text-amber-400' :
                           state === 'processing' ? 'text-blue-300' :
+                          state === 'stopped' ? 'text-slate-400' :
                           state === 'skipped' ? 'text-slate-400' :
                           state === 'completed' ? 'text-foreground/90' : 'text-muted-foreground'
                         }`}>
@@ -1619,7 +1662,7 @@ const InterventionDialog = ({
               <button
                 type="button"
                 onClick={() => setCenterTab('detail')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all border ${
+                className={`${MEETING_TAB_BAR_HEIGHT} transition-all border ${
                   centerTab === 'detail'
                     ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 shadow-[0_0_12px_rgba(59,130,246,0.18)]'
                     : 'bg-transparent border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40'
@@ -1635,7 +1678,7 @@ const InterventionDialog = ({
                 type="button"
                 onClick={() => hitlAvailable && setCenterTab('hitl')}
                 disabled={!hitlAvailable}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all border relative ${
+                className={`${MEETING_TAB_BAR_HEIGHT} transition-all border relative ${
                   centerTab === 'hitl'
                     ? 'bg-amber-500/15 border-amber-500/45 text-amber-300 shadow-[0_0_14px_rgba(245,158,11,0.22)]'
                     : hitlAvailable
@@ -1658,19 +1701,19 @@ const InterventionDialog = ({
             <div className="flex items-center gap-2">
               {canReprocess ? (
                 <Button
-                  size="small"
                   type="primary"
                   danger={room.status === 'failed'}
-                  icon={<RotateCw className={`w-3.5 h-3.5 ${room.reprocessing ? 'animate-spin' : ''}`} />}
+                  icon={<RotateCw className={`w-4 h-4 ${room.reprocessing ? 'animate-spin' : ''}`} />}
                   loading={room.reprocessing}
-                  onClick={() => onReprocess?.()}
+                  onClick={() => selectedNode && onReprocess?.(selectedNode.id)}
+                  className={MEETING_TAB_BAR_ANT_BTN}
                 >
                   重新处理
                 </Button>
               ) : null}
               {selectedNode && centerTab === 'detail' ? (
-                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs ${getNodeTypeInfo(selectedNode.type).bg} ${getNodeTypeInfo(selectedNode.type).color}`}>
-                  <Zap className="w-3 h-3" />
+                <div className={`${MEETING_TAB_BAR_HEIGHT} border ${getNodeTypeInfo(selectedNode.type).bg} ${getNodeTypeInfo(selectedNode.type).color}`}>
+                  <Zap className="w-4 h-4" />
                   {getNodeTypeInfo(selectedNode.type).label}
                 </div>
               ) : null}
@@ -1935,29 +1978,47 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
     },
     [roomConfig, agentProfiles],
   );
-  const reloadRooms = useCallback(async () => {
+  const reloadRooms = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false;
     const base = (synapseApiBase || '').trim();
     if (!base) {
-      setLoadError('未配置 Synapse API 地址');
-      setRooms([]);
+      if (!silent) {
+        setLoadError('未配置 Synapse API 地址');
+        setRooms([]);
+      }
       return;
     }
-    setLoading(true);
-    setLoadError(null);
+    if (!silent) {
+      setLoading(true);
+      setLoadError(null);
+    }
     try {
       const list = await fetchMeetingRooms(base);
       setRooms(list.map(mapListItemToRoom));
+      if (silent) setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e));
-      setRooms([]);
+      if (!silent) {
+        setLoadError(e instanceof Error ? e.message : String(e));
+        setRooms([]);
+      }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [synapseApiBase]);
 
   useEffect(() => {
     void reloadRooms();
   }, [reloadRooms]);
+
+  useEffect(() => {
+    if (dialogOpen) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    const timer = window.setInterval(() => {
+      void reloadRooms({ silent: true });
+    }, LIST_AUTO_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [dialogOpen, synapseApiBase, reloadRooms]);
 
   useEffect(() => {
     if (!dialogOpen || !activeRoom?.id) return;
@@ -2061,22 +2122,44 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
     });
   }, []);
 
-  const handleReprocess = () => {
+  const handleReprocess = (nodeId: string) => {
     if (!activeRoom) return;
     const base = (synapseApiBase || '').trim();
     if (!base) return;
 
     setActiveRoom((prev) => (prev ? { ...prev, reprocessing: true } : prev));
-    void reprocessMeetingRoom(base, activeRoom.id)
+    void reprocessMeetingRoom(base, activeRoom.id, nodeId)
       .then((detail) => {
         const updatedRoom = mapDetailToRoom(detail);
-        updatedRoom.brief = '正在重新处理当前节点…';
+        updatedRoom.brief = '正在重新处理节点…';
         setActiveRoom(updatedRoom);
         setRooms((prev) => prev.map((r) => (r.id === updatedRoom.id ? updatedRoom : r)));
         toast.success('已清理过程数据，正在从节点初始化重跑');
       })
       .catch((e) => {
         setActiveRoom((prev) => (prev ? { ...prev, reprocessing: false } : prev));
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('historical_reprocess_not_implemented')) {
+          toast.error('历史节点重处理方案待定（TODO-2）');
+        } else {
+          toast.error(msg);
+        }
+      });
+  };
+
+  const handleStopRun = () => {
+    if (!activeRoom) return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    void stopMeetingRoom(base, activeRoom.id)
+      .then((detail) => {
+        const updatedRoom = mapDetailToRoom(detail);
+        updatedRoom.brief = '已终止当前节点运行';
+        setActiveRoom(updatedRoom);
+        setRooms((prev) => prev.map((r) => (r.id === updatedRoom.id ? updatedRoom : r)));
+        toast.success('已终止当前节点运行');
+      })
+      .catch((e) => {
         toast.error(e instanceof Error ? e.message : String(e));
       });
   };
@@ -2140,12 +2223,13 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
         </div>
 
         {/* Intervention Dialog */}
-        <InterventionDialog 
+        <InterventionDialog
           room={activeRoom}
           open={dialogOpen}
           onClose={() => setDialogOpen(false)}
           onHitlSubmit={handleHitlSubmit}
           onReprocess={handleReprocess}
+          onStopRun={handleStopRun}
           onMergeNodeChat={handleMergeNodeChat}
           synapseApiBase={synapseApiBase}
         />

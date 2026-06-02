@@ -46,6 +46,7 @@ from synapse.rd_meeting.room_runtime import (
     history_to_chat_logs,
     list_archive_index,
     load_room_state,
+    mark_room_stopped,
     read_history,
     save_room_state,
     sync_room_state_from_dev,
@@ -527,6 +528,62 @@ class MeetingRoomService:
         titles = build_title_index()
         return self._room_detail_payload(dev, sid, titles)
 
+    def reprocess_node(
+        self,
+        room_id: str,
+        *,
+        node_id: str | None = None,
+        agent_pool: Any | None = None,
+    ) -> dict[str, Any]:
+        """重新处理指定节点：当前节点走 prep→node_init；历史节点 TODO-2。"""
+        rid = (room_id or "").strip()
+        detail = self.get_room_detail(rid)
+        if detail is None:
+            raise ValueError("meeting_room_not_found")
+        sid = str(detail.get("scope_id") or "").strip()
+        rs = load_room_state(sid) or {}
+        current = str(
+            rs.get("current_node_id") or detail.get("current_node_id") or "pending"
+        ).strip()
+        target = (node_id or current).strip() or current
+        if target != current:
+            raise ValueError("historical_reprocess_not_implemented")
+        return self.reprocess_current_node(rid, agent_pool=agent_pool)
+
+    def stop_room_run(self, room_id: str, *, reason: str = "user_stop") -> dict[str, Any]:
+        """终止当前节点后台运行，会议室标为 stopped。"""
+        rid = (room_id or "").strip()
+        if not rid:
+            raise ValueError("room_id required")
+        detail = self.get_room_detail(rid)
+        if detail is None:
+            raise ValueError("meeting_room_not_found")
+        sid = str(detail.get("scope_id") or "").strip()
+        if not sid:
+            raise ValueError("scope_id missing")
+
+        st = str((load_room_state(sid) or {}).get("status") or detail.get("status") or "")
+        if st != "processing":
+            raise ValueError("room_not_running")
+
+        cancel_room_run(rid)
+        mark_room_stopped(sid, reason=reason or "user_stop")
+        append_history_event(
+            sid,
+            {
+                "event": "room_stopped",
+                "room_id": rid,
+                "node_id": str(detail.get("current_node_id") or "pending"),
+                "text": "用户终止当前节点运行",
+                "stopped_reason": reason or "user_stop",
+                "log_type": "warning",
+                "agent_id": "user",
+            },
+        )
+        dev = load_dev_status(sid) or {}
+        titles = build_title_index()
+        return self._room_detail_payload(dev, sid, titles)
+
     async def _open_meeting_async_tail(
         self,
         *,
@@ -762,6 +819,7 @@ class MeetingRoomService:
             prompt_after_hitl_feedback,
         )
         from synapse.rd_meeting.hitl_lifecycle import (
+            resolve_ready_for_node_review_after_hitl,
             set_hitl_feedback_mode,
             set_ready_for_node_review,
         )
@@ -943,7 +1001,10 @@ class MeetingRoomService:
 
         # interactive / 会中澄清：结构化反馈 + 分模式续跑本节点
 
-        set_ready_for_node_review(sid, feedback_mode == "options_only")
+        set_ready_for_node_review(
+            sid,
+            resolve_ready_for_node_review_after_hitl(sid, node_id, feedback_mode),
+        )
         set_hitl_feedback_mode(sid, feedback_mode)
         rs2 = dict(load_room_state(sid) or {})
         rs2["status"] = "processing"
@@ -1063,7 +1124,7 @@ class MeetingRoomService:
             item["tokenBudget"] = int(m.get("token_budget") or 150_000)
             item["meetingStartedAt"] = str(m.get("stage_started_at") or "").strip()
             rs = str(room_state.get("status") or "")
-            if rs in ("processing", "human_intervention", "completed", "failed"):
+            if rs in ("processing", "human_intervention", "completed", "failed", "stopped"):
                 item["status"] = rs
 
         item["skipped_node_ids"] = extract_skipped_node_ids(history)
@@ -1153,6 +1214,7 @@ class MeetingRoomService:
             "human_intervention",
             "completed",
             "failed",
+            "stopped",
         ):
             ui_status = str(room_state["status"])
         elif local not in ("处理中",):

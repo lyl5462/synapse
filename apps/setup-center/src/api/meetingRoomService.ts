@@ -16,7 +16,7 @@ export interface MeetingRoomListItem {
   current_node_id: string;
   current_node_name: string;
   local_process_state: string;
-  status: 'processing' | 'human_intervention' | 'completed' | 'failed';
+  status: 'processing' | 'human_intervention' | 'completed' | 'failed' | 'stopped';
   pipeline_enabled: boolean;
   meeting_room_active: boolean;
   updated_at?: string;
@@ -532,11 +532,24 @@ export async function interveneMeetingRoom(
 export async function reprocessMeetingRoom(
   synapseApiBase: string,
   roomId: string,
+  nodeId?: string,
 ): Promise<MeetingRoomDetail> {
   const base = synapseApiBase.replace(/\/$/, '');
   return apiPost<MeetingRoomDetail>(
     base,
     `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/reprocess`,
+    nodeId ? { node_id: nodeId } : {},
+  );
+}
+
+export async function stopMeetingRoom(
+  synapseApiBase: string,
+  roomId: string,
+): Promise<MeetingRoomDetail> {
+  const base = synapseApiBase.replace(/\/$/, '');
+  return apiPost<MeetingRoomDetail>(
+    base,
+    `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/stop`,
     {},
   );
 }

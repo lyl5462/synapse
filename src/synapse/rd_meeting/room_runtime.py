@@ -22,7 +22,7 @@ from synapse.rd_sop.nodes import ALL_NODES, node_display_name, stage_id_for_name
 logger = logging.getLogger(__name__)
 
 ScopeType = Literal["demand", "task"]
-RoomStatus = Literal["processing", "human_intervention", "completed", "failed"]
+RoomStatus = Literal["processing", "human_intervention", "completed", "failed", "stopped"]
 ROOM_STATE_SCHEMA_VERSION = 1
 DEFAULT_TOKEN_BUDGET = 150_000
 
@@ -91,6 +91,16 @@ def save_room_state(scope_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     with lock:
         write_json_file(path, payload)
     return payload
+
+
+def mark_room_stopped(scope_id: str, *, reason: str = "user_stop") -> dict[str, Any]:
+    """将会议室标为 stopped，并记录原因（不清理节点过程数据）。"""
+    sid = (scope_id or "").strip()
+    rs = dict(load_room_state(sid) or {})
+    rs["status"] = "stopped"
+    rs["stopped_at"] = _now_iso()
+    rs["stopped_reason"] = (reason or "user_stop").strip() or "user_stop"
+    return save_room_state(sid, rs)
 
 
 def sync_room_state_from_dev(

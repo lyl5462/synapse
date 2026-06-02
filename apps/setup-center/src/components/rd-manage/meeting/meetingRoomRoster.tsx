@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Cpu } from 'lucide-react';
+import { Bot, Cpu, Server } from 'lucide-react';
 import type {
   MeetingRoomConfigPayload,
   MeetingRoomNodeBinding,
@@ -34,18 +34,36 @@ export function workerProfileIdsForNode(
   return raw.map((id) => String(id).trim()).filter((id) => id && id !== HOST_PROFILE_ID);
 }
 
-/** 按 SOP 节点配置渲染参会阵容：主持 + 该节点 worker_profile_ids */
+/** 按 SOP 节点配置渲染参会阵容：主持 + 协作智能体；system 节点仅展示系统执行方 */
 export function buildConfiguredRoomRoster(
   nodeId: string,
   config: MeetingRoomConfigPayload | null | undefined,
   profilesById: Map<string, MeetingAgentProfileWire>,
   options?: {
-    roomStatus?: 'processing' | 'human_intervention' | 'completed' | 'failed';
+    roomStatus?: 'processing' | 'human_intervention' | 'completed' | 'failed' | 'stopped';
     liveById?: Map<string, RoomAgent>;
+    nodeType?: string;
   },
 ): RoomAgent[] {
   const liveById = options?.liveById;
   const runBusy = options?.roomStatus === 'processing';
+  const binding = bindingFor(config?.bindings, nodeId);
+  const nodeType = options?.nodeType ?? binding?.type ?? '';
+
+  if (nodeType === 'system') {
+    const live = liveById?.get('system');
+    return [
+      {
+        id: 'system',
+        name: '系统',
+        role: '系统执行',
+        avatarColor: 'bg-slate-500',
+        icon: live?.icon ?? <Server className="w-3 h-3" />,
+        status: live?.status ?? (runBusy ? 'processing' : 'idle'),
+        currentAction: live?.currentAction || (runBusy ? '脚本执行中' : '待命'),
+      },
+    ];
+  }
 
   const hostProfile = profilesById.get(HOST_PROFILE_ID);
   const hostLive = liveById?.get(HOST_PROFILE_ID);

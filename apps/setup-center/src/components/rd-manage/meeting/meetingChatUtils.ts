@@ -5,6 +5,8 @@ export type ChatSpeakerRole = 'system' | 'host' | 'worker' | 'user';
 export type ChatDisplayKind =
   | 'node_context'
   | 'participants'
+  | 'system_roster'
+  | 'system_exec'
   | 'work_plan'
   | 'delegation_start'
   | 'delegation_done'
@@ -43,11 +45,13 @@ export type MeetingChatKind =
   | 'structured';
 
 const PIPELINE_TITLE_RE =
-  /^(开启会议室|节点初始化|主控提示词组装|流程待机|主控触发执行|主控触发总结|\*\*流程迁移|【步骤)/;
+  /^(开启会议室|节点初始化|系统节点初始化|系统节点执行|主控提示词组装|流程待机|主控触发执行|主控触发总结|\*\*流程迁移|【步骤)/;
 
 const STRUCTURED_KINDS: ChatDisplayKind[] = [
   'node_context',
   'participants',
+  'system_roster',
+  'system_exec',
   'work_plan',
   'delegation_start',
   'delegation_done',
