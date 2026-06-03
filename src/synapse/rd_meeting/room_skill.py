@@ -779,6 +779,7 @@ def build_meeting_runtime_header(
         lines.append("- 若你（Host）自身 Profile 也配置了技能且必须自行执行（Worker 不具备时），同样须先 `get_skill_info(skill_id)` 读取 SKILL.md，再按 SKILL 指引用 shell / 读写工具执行，需要调用技能的脚本时再执行`run_skill_script`, **禁止**跳过 SKILL 硬猜流程。")
     else:
         lines.append("## 协作专家职责")
+        lines.append("- 必须调用并优先调用 `create_todo` 工具创建任务计划，然后再执行具体操作")
         lines.append("- 必须熟悉本工单对应的产品信息（产品文档 / 仓库代码 / 历史工单），所有决策都要基于产品事实；缺少产品事实时可以拒绝或报错，**不得臆造**。")
         lines.append("- 你是子 Agent，**禁止再发起委派**（不要调用 delegate_to_agent / delegate_parallel），也无法直接联系其他 Worker；任何「需要别人配合」的诉求都改为在产出里向小鲸说明。")
         lines.append("- 仅在「你的能力档案」描述的能力边界内执行任务；超出边界时**坦诚向小鲸说明**并建议改派，不要勉强执行、不要伪造结果。")
@@ -794,7 +795,7 @@ def build_meeting_runtime_header(
     lines.append("## 工具与技能使用")
     lines.append(
         "- **可用工具**（本会话已裁剪，仅暴露任务所需项；禁止伪造工具输出）："
-        "run_shell / read_file / write_file / list_directory / web_search / "
+        "run_shell / read_file / write_file / list_directory / web_search / create_todo "
         "get_skill_info / run_skill_script / get_skill_reference 等。"
     )
     if role == "host":
