@@ -44,6 +44,46 @@ def _format_section_order(order: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "（无工单字段）"
 
 
+def _pipe_id_part(value: Any) -> str:
+    """``id|name`` 取左侧 id（与前台 prod_branch / repo_module 存盘格式一致）。"""
+    v = str(value or "").strip()
+    if not v:
+        return "—"
+    if "|" in v:
+        head = v.split("|", 1)[0].strip()
+        return head or v
+    return v
+
+
+def _pipe_name_part(value: Any) -> str:
+    """``id|name`` 取右侧展示名（与 product_context._version_display_code 一致）。"""
+    v = str(value or "").strip()
+    if not v:
+        return "—"
+    if "|" in v:
+        tail = v.split("|", 1)[-1].strip()
+        return tail or v
+    return v
+
+
+def _format_repo_line(repo: dict[str, Any]) -> str:
+    """单条关联仓库：应用模块 / 产品分支ID / 产品分支 / 仓库地址。"""
+    module = _pipe_name_part(repo.get("repo_module"))
+    branch_id = _pipe_id_part(repo.get("prod_branch"))
+    branch_name = _pipe_name_part(repo.get("prod_branch"))
+    repo_url = str(repo.get("repo_url") or "").strip() or "—"
+    line = (
+        f"应用模块：{module} - 产品分支ID: {branch_id} - 产品分支: {branch_name} - 仓库地址:{repo_url}"
+    )
+    local = str(repo.get("local_path") or "").strip()
+    st = str(repo.get("materialize_status") or "").strip()
+    if local:
+        line += f" → `{local}`"
+    if st and st != "ok":
+        line += f"（{st}）"
+    return line
+
+
 def _format_section_product(product: dict[str, Any]) -> str:
     if not product:
         return "（无产品数据）"
@@ -59,14 +99,8 @@ def _format_section_product(product: dict[str, Any]) -> str:
         lines.append(f"- 关联仓库（{len(repos)}）：")
         for r in repos:
             if isinstance(r, dict):
-                name = r.get("repo_name") or r.get("repo_url") or "?"
-                local = str(r.get("local_path") or "").strip()
-                st = str(r.get("materialize_status") or "").strip()
-                suffix = f" → `{local}`" if local else ""
-                if st and st != "ok":
-                    suffix += f"（{st}）"
-                lines.append(f"  - `{name}`{suffix}")
-  
+                lines.append(f"  - {_format_repo_line(r)}")
+
     return "\n".join(lines) if lines else "（无产品字段）"
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from synapse.rd_meeting.dynamic_prompt import (
+    _format_section_product,
     _format_section_system,
     build_dynamic_meeting_context,
 )
@@ -109,6 +110,28 @@ def test_format_section_system_includes_current_os(monkeypatch):
 def test_format_section_system_current_os_override():
     md = _format_section_system({"current_os": "linux"})
     assert "- CURRENT_OS：`LINUX`" in md
+
+
+def test_format_section_product_repos_with_prod_branch():
+    md = _format_section_product(
+        {
+            "prod": "p1",
+            "repos": [
+                {
+                    "repo_module": "1001|客户管理",
+                    "prod_branch": "4531|release-1.0",
+                    "repo_url": "https://git.example.com/foo.git",
+                    "local_path": "/work/code/foo",
+                    "materialize_status": "ok",
+                },
+            ],
+        }
+    )
+    assert "应用模块：客户管理" in md
+    assert "产品分支ID: 4531" in md
+    assert "产品分支: release-1.0" in md
+    assert "仓库地址:https://git.example.com/foo.git" in md
+    assert "→ `/work/code/foo`" in md
 
 
 def test_product_section_includes_prod_feature(host_binding):
