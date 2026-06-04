@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Drawer, Select, Button, Tag, Spin } from 'antd';
+import { Drawer, Button, Tag, Spin } from 'antd';
 import {
   Settings2,
   Users,
@@ -17,8 +17,6 @@ import {
   User,
   Cog,
   AlertCircle,
-  Plus,
-  X,
   type LucideIcon,
 } from 'lucide-react';
 import type { MeetingRoomNodeBinding } from '../../../api/meetingRoomService';
@@ -35,6 +33,7 @@ import {
   type MeetingAgentProfile,
   type MeetingSkillCatalogItem,
 } from './meetingRoomSkillConfig';
+import { MeetingWorkerAgentPicker } from './MeetingWorkerAgentPicker';
 import {
   effectiveHumanConfirmByType,
   humanConfirmSwitchVisible,
@@ -304,8 +303,6 @@ export const MeetingRoomConfigDrawer: React.FC<{
   const [llmEndpoints, setLlmEndpoints] = useState<LlmEndpointCatalogItem[]>([]);
   const [llmEndpointsErr, setLlmEndpointsErr] = useState<string | null>(null);
   const [skillCatalog, setSkillCatalog] = useState<MeetingSkillCatalogItem[]>([]);
-  /** 单选添加协作智能体后重置，避免选择器内堆叠已选 tag */
-  const [workerPickerKey, setWorkerPickerKey] = useState(0);
   const [expandedStages, setExpandedStages] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(PIPELINE_STAGES.map((s) => [String(s.id), true])),
   );
@@ -524,7 +521,7 @@ export const MeetingRoomConfigDrawer: React.FC<{
   ) => (
     <select
       id={id}
-      className="h-9 w-full rounded-lg border-0 bg-transparent px-0 text-sm text-foreground focus:outline-none focus:ring-0"
+      className="rd-meeting-field-select h-9 w-full rounded-lg border-0 bg-transparent px-0 text-sm text-foreground focus:outline-none focus:ring-0"
       value={value}
       onChange={(e) => onChange(e.target.value)}
     >
@@ -554,12 +551,6 @@ export const MeetingRoomConfigDrawer: React.FC<{
     </div>
   );
 
-  const workerSelectOptions = workerAgents.map((a) => ({
-    value: a.id,
-    name: a.name,
-    label: a.name,
-  }));
-
   const toggleWorkerProfile = (profileId: string) => {
     const id = profileId.trim();
     if (!id || id === HOST_PROFILE_ID) return;
@@ -570,7 +561,6 @@ export const MeetingRoomConfigDrawer: React.FC<{
     } else {
       patchOverride({ worker_profile_ids: [...workerProfileIds, id] });
     }
-    setWorkerPickerKey((k) => k + 1);
   };
 
   const llmEndpointValue = override.llm_endpoint_key ?? binding?.llm_endpoint_key ?? 'default';
@@ -581,11 +571,6 @@ export const MeetingRoomConfigDrawer: React.FC<{
       !llmEndpoints.some((ep) => ep.name === llmEndpointValue),
     [llmEndpointValue, llmEndpoints],
   );
-
-  const meetingSelectStyles = {
-    content: { color: 'var(--text)' },
-    placeholder: { color: 'var(--muted)' },
-  } as const;
 
   const bindingByNodeId = useMemo(() => {
     const map = new Map<string, MeetingRoomNodeBinding>();
@@ -1029,49 +1014,17 @@ export const MeetingRoomConfigDrawer: React.FC<{
                       协作智能体
                     </label>
                     <ConfigFieldBox>
-                      <Select
-                        key={workerPickerKey}
-                        className="w-full rd-meeting-agent-select rd-meeting-agent-select--add"
-                        styles={meetingSelectStyles}
-                        popupClassName="rd-meeting-agent-select-dropdown"
-                        placeholder={
-                          workerProfileIds.length > 0
-                            ? `管理协作智能体（已选 ${workerProfileIds.length} 位，点击已选项可取消）`
-                            : '选择协作智能体'
-                        }
-                        onChange={(id) => toggleWorkerProfile(String(id ?? ''))}
-                        showSearch
-                        optionFilterProp="name"
-                        optionLabelProp="label"
-                        options={workerSelectOptions}
-                        optionRender={(opt) => {
-                          const id = String(opt.value ?? '');
-                          const agent = agentById.get(id);
-                          const selected = workerProfileIds.includes(id);
-                          return (
-                            <div
-                              className={`rd-meeting-agent-option flex items-center justify-between gap-2 w-full min-w-0 ${
-                                selected ? 'rd-meeting-agent-option--selected' : ''
-                              }`}
-                            >
-                              <span className="min-w-0 flex-1">
-                                {agent ? renderAgentChip(agent) : opt.label}
-                              </span>
-                              {selected ? (
-                                <span className="rd-meeting-agent-option__cancel shrink-0">
-                                  <X className="h-3 w-3" />
-                                  取消
-                                </span>
-                              ) : (
-                                <span className="rd-meeting-agent-option__add shrink-0 text-muted-foreground">
-                                  <Plus className="h-3 w-3 inline-block mr-0.5 -mt-px" />
-                                  添加
-                                </span>
-                              )}
-                            </div>
-                          );
-                        }}
+                      <MeetingWorkerAgentPicker
+                        agents={workerAgents}
+                        selectedIds={workerProfileIds}
+                        onToggle={toggleWorkerProfile}
+                        renderAgentChip={renderAgentChip}
                       />
+                      <p className="text-[10px] text-muted-foreground mt-1.5 mb-0 leading-relaxed">
+                        {workerProfileIds.length > 0
+                          ? `已选 ${workerProfileIds.length} 位协作智能体；在下拉列表中再次点击带「取消」的项可移出本节点`
+                          : '打开列表选择协作智能体，选中后自动生成下方技能卡片'}
+                      </p>
 
                       {workerProfileIds.length > 0 ? (
                         <div className="mt-4 space-y-3">
@@ -1096,11 +1049,7 @@ export const MeetingRoomConfigDrawer: React.FC<{
                             );
                           })}
                         </div>
-                      ) : (
-                        <p className="text-[11px] text-muted-foreground mt-3 mb-0">
-                          打开上方选择器添加协作智能体；已选项再次点击可取消。浩鲸三专家将自动校验必备技能。
-                        </p>
-                      )}
+                      ) : null}
 
                       <div className="mt-4 pl-3 border-l-2 border-purple-500/35 space-y-2">
                         <label
@@ -1112,7 +1061,7 @@ export const MeetingRoomConfigDrawer: React.FC<{
                         </label>
                         <select
                           id="rd-meeting-llm-ep-select"
-                          className="h-9 w-full rounded-lg border border-border/60 bg-muted/25 px-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-purple-500/25"
+                          className="rd-meeting-field-select h-9 w-full rounded-lg border border-border/60 bg-muted/25 px-2.5 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-purple-500/25"
                           value={llmEndpointValue}
                           onChange={(e) => patchOverride({ llm_endpoint_key: e.target.value })}
                         >

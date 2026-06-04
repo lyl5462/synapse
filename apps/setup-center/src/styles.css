@@ -896,7 +896,7 @@ a:hover {
   line-height: 1.35;
 }
 
-input:not([data-slot]):not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+input:not([data-slot]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(.rd-meeting-worker-picker__input),
 select:not([data-slot]),
 textarea:not([data-slot]) {
   width: 100%;
@@ -922,7 +922,7 @@ textarea:not([data-slot]) {
   resize: vertical;
 }
 
-input:not([data-slot]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):focus,
+input:not([data-slot]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(.rd-meeting-worker-picker__input):focus,
 select:not([data-slot]):focus,
 textarea:not([data-slot]):focus {
   border-color: var(--brand);
@@ -945,7 +945,7 @@ textarea:not([data-slot]):focus {
 
 /* (legacy btnSmall override removed; see status section) */
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch) {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option) {
   border: 0;
   cursor: pointer;
   border-radius: 14px;
@@ -958,12 +958,12 @@ button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch
   transition: background 0.15s, border-color 0.15s;
 }
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.btnPrimary):not(.btnDanger):not(.btnApplyRestart):hover {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option):not(.btnPrimary):not(.btnDanger):not(.btnApplyRestart):hover {
   background: var(--bg-app);
   border-color: var(--muted2);
 }
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):disabled {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option):disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
