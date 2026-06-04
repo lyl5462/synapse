@@ -36,7 +36,7 @@ label: 文档生成工具
 | `OUTPUT_DIR` | 是 | 输出目录，如 `./requirements/` |
 | `OUTPUT` | 是 | 输出文件名，须与 `templates/` 下某模板文件名一致，如 `需求澄清.md` |
 | `TEMPLATE` | 否 | 显式指定模板文件名（相对 `templates/`），默认等于 `OUTPUT` |
-| `CONTEXT_JSON` | 是 | 模板变量 JSON（字符串） |
+| `CONTEXT_JSON` | 是 | 模板变量：内联 **JSON 字符串**（如 `"{\"key\":\"value\"}"`），或已存在的 UTF-8 **`.json` 文件路径**（大对象推荐） |
 | `CONTEXT_FILES` | 否 | 逗号分隔的上下文文件路径（Markdown / JSON），用于抽取或补充变量 |
 | `STRICT` | 否 | 默认 `false`。为 `true` 时，模板必填占位符未提供则中止 |
 | `OUTPUT_MODE` | 否 | `file`（默认，仅写盘）、`content`（仅输出 Markdown 正文）、`both`（写盘并输出正文） |
@@ -128,13 +128,22 @@ Step 2 — 收集变量
   2a. 设置 TIMESTAMP（ISO 8601）。
   2b. 合并 Parameters 中与模板同名的标量字段。
   2c. 按序以 UTF-8 读取 CONTEXT_FILES（JSON 解析为对象；Markdown 可由调用方预先结构化到 CONTEXT_JSON）；解码失败 → **中止**。
-  2d. 解析 CONTEXT_JSON（内联 UTF-8 字符串或 UTF-8 编码的 `.json` 文件），覆盖/补充变量表。
+  2d. 解析 `CONTEXT_JSON`：若为已存在的 `.json` 文件路径则 `read_file` 后解析；否则视为 UTF-8 JSON 字符串并 `json.loads`。非法 JSON → **中止**。
   2e. 扫描模板占位符；STRICT=true 且必填项缺失 → 中止并列出缺失项。
+  2f. 若 `OUTPUT` 为 `函数级方案.md`：
+      - `CONTEXT_JSON` 不得含 `DOCUMENT_BODY`；契约与骨架见 `whalecloud-dev-tool-function-solution/references/function_solution_context.skeleton.json`
+      - 合并 Step 2 变量后，可先校验：`python skills/whalecloud-dev-tool-doc-generate/fill_function_solution.py --validate-only {OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json`（非零 → **中止**）
+      - Step 3a 执行 `fill_function_solution.py` 填充前会再次调用 `validate_context`，契约错误非零退出
 
 Step 3 — 填充模板
-  3a. 按 references/template-filling.md 规则替换 {{VAR}}、展开 {{#each}}、处理 {{#if}}。
-  3b. 空列表按规范写「（无）」或保留调用方提供的占位说明。
-  3c. 自检：无未解析占位符、无空标题下完全空白的关键表格（除非上下文明确为空）。
+  3a. 若 `OUTPUT`（或 `TEMPLATE`）为 `函数级方案.md`（**强制，禁止手填**）：
+      - 将 Step 2 合并后的变量对象用 `write_file` 写入 `{OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json`（内联 `CONTEXT_JSON` 时亦须先落盘供脚本读取）
+      - 执行：`python skills/whalecloud-dev-tool-doc-generate/fill_function_solution.py skills/whalecloud-dev-tool-doc-generate/templates/函数级方案.md {OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json {OUTPUT_DIR}/.tmp/_function_solution_fill_out.md`
+      - 脚本非零退出或校验失败 → **中止**；**禁止**手填 `{{VAR}}` / `{{#each}}` 或跳过脚本
+      - `read_file` 读取 `_function_solution_fill_out.md`，**必须**以 `write_file` 写入 `{OUTPUT_DIR}/{OUTPUT}`（交付物不得仅依赖脚本 `open` 写盘）；可删除 `.tmp` 下临时文件
+  3b. 其他模板：读取 `templates/{TEMPLATE}`，按 [references/template-filling.md](references/template-filling.md) 手填（替换 `{{VAR}}`、展开 `{{#each}}`、处理 `{{#if}}`）；`需求澄清.md` 可选用 `fill_clarify.py`
+  3c. 空列表按规范写「（无）」或保留调用方提供的占位说明（`函数级方案.md` 由脚本处理）。
+  3d. 自检：无未解析 `{{` 占位符、无 `{{#each` 残留；`函数级方案.md` 须含模板固定章节与表头（见 template-filling.md）。
 
 Step 4 — 落盘与输出
   4a. 确认 OUTPUT_DIR 可写（write_file 会自动创建父目录）
@@ -169,12 +178,18 @@ OUTPUT_MODE: content
 
 ### 示例 3：函数级方案（上游 function-solution 技能调用）
 
+推荐 JSON 文件路径（须含 skeleton 中全部顶层键，见 `function-solution/references/function_solution_context.skeleton.json`）：
+
 ```
-OUTPUT_DIR: ./solution/
+OUTPUT_DIR: work/21881451/archive/需求设计/func_solution/
 OUTPUT: 函数级方案.md
-CONTEXT_JSON: {}
+CONTEXT_JSON: work/21881451/archive/需求设计/func_solution/.tmp/function_solution_context.json
+PROD: XXX系统
+STATUS: draft
 OUTPUT_MODE: file
 ```
+
+**不得**使用 `DOCUMENT_BODY`；内联 JSON 亦须满足完整契约。doc-generate **必须**执行 `fill_function_solution.py`（含 `validate_context`）后 `read_file` + `write_file` 落盘（见 Step 3a）。
 
 ---
 
@@ -190,6 +205,8 @@ OUTPUT_MODE: file
 | 模板 / 上下文 / 输出文件 UTF-8 解码失败 | **中止**，指明路径与环节 |
 | 写后自检发现中文乱码 | **中止**，确认是否使用了 `write_file` 后重试 |
 | 未使用 `write_file` 写盘 | **中止**，改用 `write_file` 重写 |
+| `OUTPUT=函数级方案.md` 未执行 `fill_function_solution.py` 或手填模板 | **中止**，按 Step 3a 重试 |
+| `fill_function_solution.py` 执行失败或 `CONTEXT_JSON 契约校验失败` | **中止**，对照 skeleton.json 修正键名后重试 |
 
 ---
 

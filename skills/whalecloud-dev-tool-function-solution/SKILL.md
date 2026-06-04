@@ -20,7 +20,7 @@ label: 函数级方案技能
 | `PRODUCT_CODE_ROOT` | 是 | 产品代码根目录，如 `work/21881451/code`。用于代码检索和确认，支撑 Step 5 代码确认环节。 |
 | `PRODUCT_DOC_ROOT` | 是 | 产品文档根目录。功能架构和技术架构文档的固定路径如下：<br>`FUNC_ARCH_DOC` = `{PRODUCT_DOC_ROOT}/产品架构/FUNCTIONAL_ARCH.md`<br>`TECH_ARCH_DOC` = `{PRODUCT_DOC_ROOT}/产品架构/TECH_ARCH.md` |
 | `REPO_INFO` | 是 | 产品涉及的所有仓库信息列表，格式为：`应用模块`、`产品分支ID`、`产品分支`、`仓库地址`。示例：`- 应用模块：ZMDB - 产品分支ID: 4531 - 产品分支: CBOSS_BSS_ZMDB_V9.0_主分支 - 仓库地址: https://git-nj.iwhalecloud.com/xmjfbss/ZMDB.git`。从中抽取本次改造涉及的所有仓库，提取**产品分支ID**和**仓库地址**（可能有多组）。 |
-| `ARCHIVE_DIR` | 否 | 方案输出目录。默认由 `WORK_ORDER_DIR` 推导：`{WORK_ORDER_DIR}/archive/需求分析/function_solution/`。若显式传入则使用传入值。输出为单一文件：`{ARCHIVE_DIR}/函数级方案.md` |
+| `ARCHIVE_DIR` | 否 | 方案输出目录。默认由 `WORK_ORDER_DIR` 推导：`{WORK_ORDER_DIR}/archive/需求设计/func_solution/`。若显式传入则使用传入值。输出为单一文件：`{ARCHIVE_DIR}/函数级方案.md` |
 
 > **知识来源**：分析仅以实际存在的内容为依据，包括：代码（项目文件）、文档（CLARIFY_DOC、MODULE_DOC、BOUNDARY_DOC、ACCEPTANCE_DOC、RISK_DOC 由 `WORK_ORDER_DIR` 推导；FUNC_ARCH_DOC、TECH_ARCH_DOC 由 `PRODUCT_DOC_ROOT` 推导）。任何无法通过上述来源验证的结论必须标注 `[待确认]`，严禁臆断想象。
 
@@ -32,7 +32,7 @@ label: 函数级方案技能
 
 **整个技能执行过程中，大模型的输出应遵循以下原则：**
 
-1. **输出阶段**：按照下方「输出内容格式」汇总正文，**必须**通过 `whalecloud-dev-tool-doc-generate` 落盘为 `{ARCHIVE_DIR}/函数级方案.md`（见 Step 10 与「文档落地」章节）；本技能不得直接使用 `write_file` 写交付物
+1. **输出阶段**：按下方「CONTEXT_JSON 字段契约」组装结构化 JSON，**必须**通过 `whalecloud-dev-tool-doc-generate` 落盘为 `{ARCHIVE_DIR}/函数级方案.md`（见 Step 10）；本技能不得直接使用 `write_file` 写交付物
 2. **异常中止时**：可直接输出中止原因和缺失信息
 
 ### B. 产品知识体系事实依赖（强制约束）
@@ -47,13 +47,14 @@ label: 函数级方案技能
 - 删除类函数**必须**确认代码中确实存在该函数
 - 函数设计中凡涉及**类名、函数签名、文件路径**等结论，必须在代码或文档中有对应支撑依据，并标注来源
 - 无法通过上述事实来源验证的条目必须标注 **`[待确认]`**，不得虚构
-- 每个函数的代码确认结果必须记录到附录 5.1 代码确认记录
+- 每个函数的代码确认结果必须记录到附录 2.1 代码确认记录（`code_confirmations` 列表）
 - 若某文档源未获取成功，涉及该文档的分析标注 `[待补充-文档未获取]`
 
 ### C. 单文件输出与文档落地约束
 
 - **落盘方式（强制）**：交付物**仅**通过 `whalecloud-dev-tool-doc-generate` 写入；执行前**必须先 Read** 该技能 `SKILL.md` 并严格遵循其 UTF-8 / `write_file` / 写后自检要求
 - **输出文件**：固定为 `{ARCHIVE_DIR}/函数级方案.md`，`OUTPUT` 须与模板 `templates/函数级方案.md` 文件名一致，不得按模块拆分为多个文件
+- **模板格式一致（强制）**：doc-generate 须以 `templates/函数级方案.md` 为版式源，**必须**经 `fill_function_solution.py` 填充后落盘；**禁止**手填占位符、手写 `## 1.` / `## 2.` 正文、增删章节标题、改表格列名或使用 `DOCUMENT_BODY`
 - **模块组织方式**：以 FUNC_ARCH_DOC 中定义的**核心功能模块**（修改模块+新增模块）为逻辑单元，在 **§1.7 模块改造方案** 一章内按模块分小节输出（如 `#### 1.7.1 {模块名称}`、`#### 1.7.2 {模块名称}`），各模块的函数设计清单、伪代码、模块内部调用关系均归入对应小节
 - §1.6 数据设计、§1.8 跨模块交互设计 为**全量**内容，不按模块拆文件，可在各条目下标注所属模块
 
@@ -94,9 +95,10 @@ Step 0 — 参数校验与环境准备
         TECH_ARCH_DOC = `{PRODUCT_DOC_ROOT}/产品架构/TECH_ARCH.md`
       - 解析 REPO_INFO：解析产品涉及的所有仓库信息，提取**产品分支ID**和**仓库地址**（可能有多组），记为 REPO_DATA
       - 推导输出路径：
-        若未显式传入 ARCHIVE_DIR，则默认值为 `{WORK_ORDER_DIR}/archive/需求分析/function_solution/`
+        若未显式传入 ARCHIVE_DIR，则默认值为 `{WORK_ORDER_DIR}/archive/需求设计/func_solution/`
         输出文件固定为：`{ARCHIVE_DIR}/函数级方案.md`（由 Step 10 经 doc-generate 落盘）
-      - 可选：创建 `{ARCHIVE_DIR}/.tmp/` 用于存放 CONTEXT_JSON 临时文件
+      - 可选：创建 `{ARCHIVE_DIR}/.tmp/` 存放 `function_solution_context.json`
+      - Step 10 组装 `ctx` 时**以** `skills/whalecloud-dev-tool-function-solution/references/function_solution_context.skeleton.json` **为骨架**（复制全部键后再填入分析结果）
 
 Step 1 — 验证上游输入物可读性
   1a. 验证 CLARIFY_DOC、MODULE_DOC（由 WORK_ORDER_DIR 推导）文件存在且可读，若任一不存在则**中止**
@@ -227,7 +229,7 @@ Step 5 — 代码确认
 
   5d. **代码确认记录**：
       - 对每个函数记录：确认类型、确认依据（文件路径+检索结果）、确认状态
-      - 无法确认的条目汇总到附录 5.2 待确认项清单
+      - 无法确认的条目汇总到附录 2.2 待确认项清单（`pending_items` 列表）
 
 Step 6 — 跨模块交互设计
   6a. **模块间函数调用关系**：
@@ -312,21 +314,26 @@ Step 9 — 影响评估
       - 输出格式：| 界面元素 | 变更类型 | 变更说明 | 设计注意事项 | 验收要点 |
 
 Step 10 — 文档落地（调用 whalecloud-dev-tool-doc-generate）
-  10a. 汇总所有章节内容，按照「输出内容格式」生成完整正文
-      - 各模块改造内容在 §1.7 中按模块分小节合并输出
-      - 正文从 §1 方案内容 起至 §2 附录止，记为 DOCUMENT_BODY（不含模板页眉中的元数据行）
-  10b. 组装 CONTEXT_JSON（UTF-8），建议字段：
-      - DOCUMENT_BODY：Step 10a 的完整 Markdown 正文（必填）
-      - REQUIREMENT_NAME：来自 CLARIFY_DATA 的需求名称或标题
-      - PROD、STATUS：若调用方已传入则填入；未传 STATUS 默认 `draft`
-      - 可将 CONTEXT_JSON 写入临时文件 `{ARCHIVE_DIR}/.tmp/function_solution_context.json` 后以路径传入
-  10c. **Read** `skills/whalecloud-dev-tool-doc-generate/SKILL.md`，按该技能流程执行文档落地：
+  10a. 复制 `references/function_solution_context.skeleton.json` 为 `ctx` 骨架，按「CONTEXT_JSON 字段契约」将 Step 1–9 映射填入（键名须与模板占位符**逐字**一致）
+      - **必须包含**骨架中全部标量键与全部列表键（无数据则 `[]`，标量无数据则 `"[待补充]"` 或分析结论）
+      - §1.7 仅用 `modules[]`（含嵌套 `functions[]`），`#### 1.7.N` 由 `fill_function_solution.py` 按模板生成，不得在 JSON 里自写 Markdown 标题
+      - **禁止** `DOCUMENT_BODY`、禁止在 JSON 中携带预渲染的 `## 1.` / `## 2.` 正文
+      - **禁止**下列错误键名（`fill_function_solution.py` 会报错中止，勿与 `solution_review.json` 等其它技能混用）：
+        - 顶层：`requirement_name`→`REQUIREMENT_NAME`；`status`→`STATUS`；`demand_id`/`config_xml`/`verification` 等无契约字段
+        - `repos[]`：`repo_name`/`repo_path`/`files`→`branch_id`/`repo_url`/`change_desc`
+        - `modules[].functions[]`：`func_signature`/`func_name`/`pseudo_code`→`signature`/`pseudocode` 等契约字段
+        - `data_structures[]`：`file`/`definition`→`name`/`change_type`/`module`/`description`
+  10b. 将 `ctx` 写入 `{ARCHIVE_DIR}/.tmp/function_solution_context.json`（UTF-8，无 BOM），记为 CONTEXT_PATH；或序列化为内联字符串 `CONTEXT_JSON_STR = json.dumps(ctx, ensure_ascii=False)`（二选一，**推荐文件路径**）
+  10c. **使用 `Skill` 工具调用** `whalecloud-dev-tool-doc-generate`（`OUTPUT` 必须为 `函数级方案.md`）：
       - OUTPUT_DIR: `{ARCHIVE_DIR}`
       - OUTPUT: `函数级方案.md`
-      - CONTEXT_JSON: Step 10b 的内联 JSON 或 `.json` 文件路径
-      - OUTPUT_MODE: `file`（默认）
-      - STRICT: `false`（除非已补齐模板必填标量）
-  10d. 确认 `{ARCHIVE_DIR}/函数级方案.md` 已生成且中文可读（依赖 doc-generate 写后自检）；落盘失败则**中止**
+      - CONTEXT_JSON: CONTEXT_PATH **或** CONTEXT_JSON_STR（与需求澄清等模板相同）
+      - PROD、STATUS、REQUIREMENT_NAME: 与技能 Parameters 一致（也可写入 `ctx`）
+      - OUTPUT_MODE: `file`
+  10d. 确认 doc-generate 已执行 `fill_function_solution.py` 并以 `write_file` 写入 `{ARCHIVE_DIR}/函数级方案.md`；验收：
+      - 无 `{{` / `{{#each` 残留；含模板固定章节与表头
+      - 与模板对照：章节层级、表格列名、页眉字段名一致
+      - 中文可读，无乱码；落盘失败则**中止**
 ```
 
 ---
@@ -339,31 +346,155 @@ Step 10 — 文档落地（调用 whalecloud-dev-tool-doc-generate）
 |----|-----|
 | 下游技能 | `whalecloud-dev-tool-doc-generate` |
 | 模板 | `templates/函数级方案.md`（与 `OUTPUT` 同名） |
-| OUTPUT_DIR | `{ARCHIVE_DIR}`（默认 `{WORK_ORDER_DIR}/archive/需求分析/function_solution/`） |
+| OUTPUT_DIR | `{ARCHIVE_DIR}`（默认 `{WORK_ORDER_DIR}/archive/需求设计/func_solution/`） |
 | OUTPUT | `函数级方案.md` |
-| 正文字段 | `CONTEXT_JSON.DOCUMENT_BODY` — 含 §1–§2 全部章节 |
+| 数据契约 | 结构化 `CONTEXT_JSON`（见下节）；doc-generate **必须**经 `fill_function_solution.py` 填充模板 |
 
 ### 调用示例
 
 ```
-OUTPUT_DIR: work/21881451/archive/需求分析/function_solution/
+OUTPUT_DIR: work/21881451/archive/需求设计/func_solution/
 OUTPUT: 函数级方案.md
-CONTEXT_JSON: work/21881451/archive/需求分析/function_solution/.tmp/function_solution_context.json
+CONTEXT_JSON: work/21881451/archive/需求设计/func_solution/.tmp/function_solution_context.json
 PROD: XXX系统
 STATUS: draft
 OUTPUT_MODE: file
 ```
 
-`function_solution_context.json` 结构示例（字段名须与模板占位符一致）：
+或内联 JSON 字符串：`CONTEXT_JSON: "{\"REQUIREMENT_NAME\":\"……\",\"modules\":[...],\"repos\":[...]}"`
+
+> **注意**：`CONTEXT_JSON` 与需求澄清等文档相同，支持**文件路径或内联字符串**；**禁止** `DOCUMENT_BODY`。伪代码换行在 JSON 内用 `\n`。
+
+---
+
+## CONTEXT_JSON 字段契约
+
+与 `templates/函数级方案.md` 占位符一一对应。列表无数据时填 `[]`（`fill_function_solution.py` 表体写「（无）」，**保留**表头与章节标题）。
+
+**骨架文件（强制）**：`references/function_solution_context.skeleton.json`（含全部顶层键默认值）；机器可读约束见同目录 `function_solution_context.schema.json`。落盘前由 `fill_function_solution.py` 的 `validate_context` 校验。
+
+**`ctx` 顶层键清单（须全部出现）**
+
+标量：`REQUIREMENT_NAME`, `DEMAND_DESC`, `scope_overview`, `tech_stack_constraints`, `data_flow_diagram`, `function_stats`, `code_confirm_rate`, `PROD`, `STATUS`（后两者也可仅经 doc-generate Parameters 传入）
+
+列表：`repos`, `terms`, `data_structures`, `db_changes`, `message_contracts`, `enums`, `modules`, `cross_module_calls`, `interface_summary`, `tech_constraints`, `risk_mitigations`, `boundary_constraints`, `performance_impacts`, `functional_impacts`, `config_changes`, `upgrade_risks`, `security_impacts`, `compatibility_impacts`, `ui_ue`, `acceptance_mapping`, `code_confirmations`, `pending_items`
+
+### 标量字段
+
+| 字段 | 模板位置 | 说明 |
+|------|----------|------|
+| `REQUIREMENT_NAME` | 页眉 | CLARIFY_DATA 需求名称 |
+| `DEMAND_DESC` | §1.1 | 需求背景 |
+| `scope_overview` | §1.2 | 涉及模块 / 新增模块概述 |
+| `tech_stack_constraints` | §1.4 | 技术栈与编译约束；缺 TECH_ARCH 时含 `[待补充-缺少技术架构文档]` |
+| `data_flow_diagram` | §1.8.2 | 数据流向（文本/ASCII） |
+| `function_stats` | §2.3 | 如 `共计 5 个函数（新增 2 个，修改 2 个，删除 1 个）` |
+| `code_confirm_rate` | §2.3 | 如 `85%` |
+| `PROD` / `STATUS` | 页眉 | 可由 Parameters 传入，须写入 JSON 或 Parameters |
+
+`TIMESTAMP` 由 doc-generate 自动生成，无需上游传入。
+
+### 列表字段（对象数组）
+
+| 字段 | § | 对象键（每行） |
+|------|---|----------------|
+| `repos` | 1.3 | `branch_id`, `repo_url`, `change_desc` |
+| `terms` | 1.5 | `term`, `meaning` |
+| `data_structures` | 1.6.1 | `name`, `change_type`, `module`, `description` |
+| `db_changes` | 1.6.2 | `table_name`, `change_type`, `field_changes`, `description` |
+| `message_contracts` | 1.6.3 | `interface_name`, `caller`, `callee`, `request_fields`, `response_fields` |
+| `enums` | 1.6.4 | `name`, `change_type`, `values`, `description` |
+| `modules` | 1.7 | 见下表 |
+| `cross_module_calls` | 1.8.1 | `caller_module`, `callee_module`, `function_name`, `call_mode` |
+| `interface_summary` | 1.8.3 | `interface_name`, `request_format`, `response_format`, `provider`, `consumer` |
+| `tech_constraints` | 1.9.1 | `constraint`, `implementation` |
+| `risk_mitigations` | 1.9.2 | `risk`, `measure`, `implementation` |
+| `boundary_constraints` | 1.9.3 | `constraint`, `implementation` |
+| `performance_impacts` | 1.10.1 | `change_point`, `impact_type`, `severity`, `unavoidable_reason`, `mitigation` |
+| `functional_impacts` | 1.10.2 | `impact_type`, `module`, `description`, `scope`, `remark` |
+| `config_changes` | 1.10.3 | `config_item`, `change_type`, `location`, `scope`, `description` |
+| `upgrade_risks` | 1.10.4 | `risk_type`, `description`, `level`, `mitigation`, `rollback` |
+| `security_impacts` | 1.10.5 | `dimension`, `description`, `severity`, `measures`, `remark` |
+| `compatibility_impacts` | 1.10.6 | `compat_type`, `item`, `current_version`, `target_version`, `assessment`, `description` |
+| `ui_ue` | 1.10.7 | `element`, `change_type`, `description`, `design_notes`, `acceptance_points` |
+| `acceptance_mapping` | 1.11 | `criterion`, `mapped_function`, `verification` |
+| `code_confirmations` | 2.1 | `function`, `confirm_type`, `evidence`, `status` |
+| `pending_items` | 2.2 | `item`, `description`, `priority` |
+
+### `modules[]` 与嵌套 `functions[]`
+
+| 键 | 说明 |
+|----|------|
+| `module_name` | 模块名称（生成 `#### 1.7.N` 标题） |
+| `layer` | 所属层 |
+| `responsibility` | 职责 |
+| `change_type` | 改造类型（修改/新增） |
+| `feature_points` | 涉及功能点 |
+| `key_files` | 关键文件 |
+| `internal_call_graph` | 模块内调用链（文本） |
+| `functions` | 函数数组，每项见下 |
+
+`functions[]` 每项：`signature`, `inputs`, `outputs`, `class_file`, `responsibility`, `change_type`, `pseudocode`（结构化伪代码正文）, `call_relations`（上游/下游/数据依赖）
+
+### JSON 片段示例
+
+完整键集合以 `references/function_solution_context.skeleton.json` 为准；以下为填充后的片段：
 
 ```json
 {
   "REQUIREMENT_NAME": "索引优先级在线变更",
-  "DOCUMENT_BODY": "## 1. 方案内容\n\n...\n\n## 2. 附录\n\n..."
+  "DEMAND_DESC": "……",
+  "scope_overview": "修改模块：索引服务；新增模块：无",
+  "tech_stack_constraints": "C++17；ZMDB 9.0 分支",
+  "data_flow_diagram": "……",
+  "function_stats": "共计 3 个函数（新增 1 个，修改 2 个，删除 0 个）",
+  "code_confirm_rate": "100%",
+  "PROD": "XXX系统",
+  "STATUS": "draft",
+  "repos": [{"branch_id": "4531", "repo_url": "https://git.example/ZMDB.git", "change_desc": "索引优先级改造"}],
+  "terms": [],
+  "data_structures": [],
+  "db_changes": [],
+  "message_contracts": [],
+  "enums": [],
+  "modules": [{
+    "module_name": "索引模块",
+    "layer": "服务层",
+    "responsibility": "索引维护",
+    "change_type": "修改",
+    "feature_points": "在线调优先级",
+    "key_files": "IndexMgr.cpp",
+    "internal_call_graph": "setPriority → validate → persist",
+    "functions": [{
+      "signature": "setIndexPriority(idx, pri)",
+      "inputs": "idx: int, pri: int",
+      "outputs": "bool",
+      "class_file": "IndexMgr.cpp",
+      "responsibility": "设置索引优先级",
+      "change_type": "修改",
+      "pseudocode": "IF idx invalid THEN RETURN false\n  persist(pri)\n  RETURN true",
+      "call_relations": "上游: API.setPriority；下游: persist"
+    }]
+  }],
+  "code_confirmations": [{"function": "setIndexPriority", "confirm_type": "修改", "evidence": "IndexMgr.cpp:L42", "status": "已确认"}],
+  "pending_items": [],
+  "cross_module_calls": [],
+  "interface_summary": [],
+  "tech_constraints": [],
+  "risk_mitigations": [],
+  "boundary_constraints": [],
+  "performance_impacts": [],
+  "functional_impacts": [],
+  "config_changes": [],
+  "upgrade_risks": [],
+  "security_impacts": [],
+  "compatibility_impacts": [],
+  "ui_ue": [],
+  "acceptance_mapping": []
 }
 ```
 
-```
+无 RISK_DATA / BOUNDARY_DATA / ACCEPTANCE_DATA 时，`risk_mitigations`、`boundary_constraints`、`acceptance_mapping` 可各放一条说明性记录（如 `risk`: `无需求风险输入`）或留空数组。
 
 ---
 
@@ -427,86 +558,5 @@ OUTPUT_MODE: file
 | 代码检索无结果 | 标注 `[待确认]`，不得虚构内容 |
 | 上游文档中某模块无代码影响范围 | 标注 `[缺少代码影响范围]`，尝试通过代码检索补充 |
 | 输出目录创建失败或 doc-generate 落盘失败 | **中止**，提示路径权限或下游技能错误信息 |
+| `fill_function_solution.py` 报 `CONTEXT_JSON 契约校验失败` | **中止**，从 skeleton.json 复制骨架并修正键名（见 Step 10a 禁止项列表）后重试 |
 | 未调用 doc-generate 而直接 write_file 写交付物 | **视为未完成**，须改用 doc-generate 重写 |
-
----
-
-## 输出内容格式
-
-函数级方案文档通过 `whalecloud-dev-tool-doc-generate` **统一落盘**为 `{ARCHIVE_DIR}/函数级方案.md`。`DOCUMENT_BODY` 按以下结构组织；涉及的所有模块（FUNC_ARCH_DOC 中的修改模块+新增模块）的改造内容**合并在 §1.7 一章**内，按模块分小节输出。
-
-### 1. 方案内容
-
-- **1.1 需求背景**：{DEMAND_DESC}
-- **1.2 改造范围概述**：涉及模块 / 新增模块
-- **1.3 涉及仓库**：从 REPO_INFO 中抽取本次改造涉及的所有仓库，输出**产品分支ID**、**仓库地址**、**改造内容**（可能有多组）
-- **1.4 技术栈约束**：语言运行时 / 框架 / 构建约束 / 条件编译（来源 TECH_ARCH；若 TECH_ARCH_DOC 标记为 `[待补充]`，则此节标注 `[待补充-缺少技术架构文档]`）
-- **1.5 术语约定**：术语→含义映射表
-- **1.6 数据设计**（全量，覆盖所有涉及模块）：
-  - 数据结构定义（结构体/DTO/VO，标注变更类型：新增/修改/删除/无变更；标注所属模块）
-  - 数据库表变更（表变更类型+字段变更明细）
-  - 消息/接口契约（请求/响应字段、调用方/被调用方）
-  - 枚举与常量定义（枚举值+变更类型）
-- **1.7 模块改造方案**（**本章合并所有模块**，每个模块一个小节，如 `#### 1.7.1 {模块名称}`）：
-  - 对每个模块依次输出：
-    - 模块概要（所属层/职责/改造类型/涉及功能点/关键文件）
-    - 函数设计清单（函数签名/入参/出参/所属类文件/职责/改造类型）
-    - 函数伪代码（结构化伪代码+调用关系：上游调用/下游调用/数据依赖）
-    - 模块内部调用关系（调用链图）
-- **1.8 跨模块交互设计**（全量）：
-  - 模块间函数调用关系表
-  - 数据流向图
-  - 接口契约汇总表
-- **1.9 约束与风险应对**：
-  - 技术约束在函数中的体现
-  - 风险应对措施落实（若 RISK_DATA 存在）
-  - 边界约束落实（若 BOUNDARY_DATA 存在）
-- **1.10 影响评估**：
-  - **1.10.1 性能影响分析**：变更点→性能影响类型→影响程度→无法规避原因→规避措施
-  - **1.10.2 功能影响分析**：影响类型→影响模块→影响说明→影响范围→备注
-  - **1.10.3 配置变更说明**：配置项→变更类型→配置位置→影响范围→变更说明
-  - **1.10.4 升级风险**：风险类型→风险描述→风险等级→规避措施→回滚预案
-  - **1.10.5 安全影响**：安全维度→影响说明→影响程度→安全措施→备注
-  - **1.10.6 兼容性影响**：兼容类型→兼容项→当前版本→目标版本→兼容性评估→说明
-  - **1.10.7 UI/UE设计**：界面元素→变更类型→变更说明→设计注意事项→验收要点
-- **1.11 验收映射**（若 ACCEPTANCE_DATA 存在）：验收标准→函数映射表
-
-### 2. 附录
-
-- **2.1 代码确认记录**（函数/确认类型/确认依据/确认状态）
-- **2.2 待确认项清单**
-- **2.3 元数据**（生成时间/技能名/输入文档/函数统计/代码确认率）
-
----
-
-## 完整示例
-
-### 示例调用
-
-```
-WORK_ORDER_DIR: work/21881451,
-PRODUCT_DOC_ROOT: work/21881451/doc,
-PROD: XXX系统,
-ARCHIVE_DIR: work/21881451/archive/需求分析/function_solution/
-```
-
-### 输出示例
-
-若 MODULE_DOC 中包含 3 个模块：`用户模块`、`订单模块`、`支付模块`，则经 `whalecloud-dev-tool-doc-generate` 在 `ARCHIVE_DIR` 下生成：
-```
-work/21881451/archive/需求分析/function_solution/
-├── .tmp/function_solution_context.json   （可选，CONTEXT_JSON 临时文件）
-└── 函数级方案.md                         （模板页眉 + DOCUMENT_BODY）
-```
-
-其中 §1.7 结构示例：
-```
-#### 1.7.1 用户模块
-（模块概要、函数设计清单、伪代码、内部调用关系）
-
-#### 1.7.2 订单模块
-...
-
-#### 1.7.3 支付模块
-...
-```

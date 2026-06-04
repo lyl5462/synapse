@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "函数级方案 CONTEXT_JSON",
+  "description": "与 templates/函数级方案.md 占位符一致；由 fill_function_solution.validate_context 运行时校验",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "REQUIREMENT_NAME",
+    "DEMAND_DESC",
+    "scope_overview",
+    "tech_stack_constraints",
+    "data_flow_diagram",
+    "function_stats",
+    "code_confirm_rate",
+    "PROD",
+    "STATUS",
+    "repos",
+    "terms",
+    "data_structures",
+    "db_changes",
+    "message_contracts",
+    "enums",
+    "modules",
+    "cross_module_calls",
+    "interface_summary",
+    "tech_constraints",
+    "risk_mitigations",
+    "boundary_constraints",
+    "performance_impacts",
+    "functional_impacts",
+    "config_changes",
+    "upgrade_risks",
+    "security_impacts",
+    "compatibility_impacts",
+    "ui_ue",
+    "acceptance_mapping",
+    "code_confirmations",
+    "pending_items"
+  ],
+  "properties": {
+    "REQUIREMENT_NAME": { "type": "string" },
+    "DEMAND_DESC": { "type": "string" },
+    "scope_overview": { "type": "string" },
+    "tech_stack_constraints": { "type": "string" },
+    "data_flow_diagram": { "type": "string" },
+    "function_stats": { "type": "string" },
+    "code_confirm_rate": { "type": "string" },
+    "PROD": { "type": "string" },
+    "STATUS": { "type": "string" },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["branch_id", "repo_url", "change_desc"],
+        "properties": {
+          "branch_id": { "type": "string" },
+          "repo_url": { "type": "string" },
+          "change_desc": { "type": "string" }
+        }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["module_name", "functions"],
+        "properties": {
+          "module_name": { "type": "string" },
+          "layer": { "type": "string" },
+          "responsibility": { "type": "string" },
+          "change_type": { "type": "string" },
+          "feature_points": { "type": "string" },
+          "key_files": { "type": "string" },
+          "internal_call_graph": { "type": "string" },
+          "functions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["signature"],
+              "properties": {
+                "signature": { "type": "string" },
+                "inputs": { "type": "string" },
+                "outputs": { "type": "string" },
+                "class_file": { "type": "string" },
+                "responsibility": { "type": "string" },
+                "change_type": { "type": "string" },
+                "pseudocode": { "type": "string" },
+                "call_relations": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
