@@ -8,8 +8,6 @@ import {
   Collapse,
   Input,
   Progress,
-  Select,
-  Space,
   Table,
   Tag,
   Tooltip,
@@ -40,6 +38,10 @@ import {
   type SplitTaskDraft,
   type SolutionReviewRepoRow,
 } from '../../../api/meetingRoomService';
+import {
+  SearchableVirtualSelect,
+  type SearchableOption,
+} from '@/components/product/SearchableVirtualSelect';
 import { ReviewMarkdown } from './ReviewMarkdown';
 
 const { TextArea } = Input;
@@ -114,6 +116,32 @@ function repoDisplayLabel(row: SolutionReviewRepoRow): string {
   const branch = (row.branch_version_name || '').trim();
   if (mod && branch) return `${mod} · ${branch}`;
   return mod || branch || '未命名分支';
+}
+
+function patchItemToSearchableOption(p: PatchVersionItem): SearchableOption | null {
+  const name = (p.patchName || '').trim();
+  if (!name) return null;
+  const meta: string[] = [];
+  const state = (p.state || '').trim();
+  if (state) meta.push(state);
+  const close = (p.closingDate || '').trim();
+  if (close) meta.push(close);
+  return {
+    value: name,
+    label: meta.length ? `${name} · ${meta.join(' · ')}` : name,
+  };
+}
+
+function patchOptionsToSearchable(
+  patches: PatchVersionItem[],
+  selected?: string,
+): SearchableOption[] {
+  const opts = patches
+    .map(patchItemToSearchableOption)
+    .filter((o): o is SearchableOption => o != null);
+  const cur = (selected || '').trim();
+  if (!cur || opts.some((o) => o.value === cur)) return opts;
+  return [{ value: cur, label: cur }, ...opts];
 }
 
 /** 按仓库行与 split_tasks_draft 合并，供拆单预览 1:1 展示 */
@@ -206,21 +234,13 @@ const RepoPatchCard: React.FC<{
   onPatchChange,
 }) => {
   const bid = repoBranchId(row);
-  const opts = patchOptions
-    .map((p) => ({
-      value: p.patchName || '',
-      label: p.patchName ? `${p.patchName}${p.state ? ` (${p.state})` : ''}` : '',
-    }))
-    .filter((o) => o.value);
-  const placeholder = patchLoading
-    ? '加载补丁计划…'
-    : patchFetched && opts.length === 0
-      ? '暂无可用补丁'
-      : '选择补丁计划';
+  const opts = patchOptionsToSearchable(patchOptions, selectedPatch);
+  const empty = patchFetched && !patchLoading && opts.length === 0;
+  const selectDisabled = readOnly || empty || !bid;
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-border/50 bg-gradient-to-br from-[#0c1018] via-[color:var(--panel,#0f0f12)] to-[#0a0e14] shadow-lg shadow-black/25 transition-all duration-300 hover:border-cyan-500/35 hover:shadow-[0_8px_32px_rgba(34,211,238,0.08)]"
+      className="group relative overflow-visible rounded-2xl border border-border/50 bg-gradient-to-br from-[#0c1018] via-[color:var(--panel,#0f0f12)] to-[#0a0e14] shadow-lg shadow-black/25 transition-all duration-300 hover:border-cyan-500/35 hover:shadow-[0_8px_32px_rgba(34,211,238,0.08)]"
     >
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-400/50 to-transparent opacity-60" />
       <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border/40 bg-gradient-to-r from-cyan-500/[0.06] to-transparent">
@@ -260,17 +280,21 @@ const RepoPatchCard: React.FC<{
             <p className="text-[13px] leading-relaxed text-foreground/90 line-clamp-4">{row.change_summary}</p>
           </div>
         ) : null}
-        <div>
+        <div className="relative z-10">
           <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">补丁计划</div>
           {bid ? (
-            <Select
-              className="w-full"
-              placeholder={placeholder}
-              loading={patchLoading}
-              disabled={readOnly || (patchFetched && opts.length === 0)}
+            <SearchableVirtualSelect
+              value={selectedPatch || ''}
+              onValueChange={(v) => onPatchChange(bid, v)}
               options={opts}
-              value={selectedPatch || undefined}
-              onChange={(v) => onPatchChange(bid, v)}
+              placeholder="选择补丁计划"
+              searchPlaceholder="搜索补丁名称或状态…"
+              emptyText={empty ? '暂无可用补丁计划' : patchLoading ? '' : '无匹配补丁'}
+              disabled={selectDisabled}
+              isLoading={patchLoading}
+              itemHeight={40}
+              className="patch-plan-select-trigger"
+              popoverClassName="min-w-[min(100%,320px)]"
             />
           ) : (
             <Text type="secondary" className="text-xs">

@@ -697,6 +697,7 @@ async def list_patch_versions_for_room(
     resolved = _resolve_scope_for_room(room_id)
     if resolved is None:
         return error_response(404, "meeting_room_not_found")
+    sid, _ = resolved
     branch_ids = body.get("branch_version_id_list") or body.get("branchVersionIdList") or []
     if not isinstance(branch_ids, list) or not branch_ids:
         return error_response(400, "branch_version_id_list_required")

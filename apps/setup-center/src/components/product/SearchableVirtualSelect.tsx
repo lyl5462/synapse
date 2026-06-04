@@ -16,6 +16,10 @@ type SearchableVirtualSelectProps = {
   disabled?: boolean;
   isLoading?: boolean;
   className?: string;
+  /** 下拉层额外 class（如提高 z-index，避免被父级 overflow 裁剪） */
+  popoverClassName?: string;
+  /** 虚拟列表行高（默认 36） */
+  itemHeight?: number;
 };
 
 /**
@@ -31,6 +35,8 @@ export function SearchableVirtualSelect({
   disabled = false,
   isLoading = false,
   className,
+  popoverClassName,
+  itemHeight = 36,
 }: SearchableVirtualSelectProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -90,7 +96,10 @@ export function SearchableVirtualSelect({
 
       {open && (
         <div
-          className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md"
+          className={cn(
+            "absolute left-0 right-0 top-full z-[200] mt-1 overflow-hidden rounded-md border border-border/80 bg-popover text-popover-foreground shadow-lg shadow-black/25",
+            popoverClassName,
+          )}
           role="listbox"
         >
           <Input
@@ -111,9 +120,9 @@ export function SearchableVirtualSelect({
               </div>
             ) : (
               <Virtuoso
-                style={{ height: 240 }}
+                style={{ height: Math.min(280, Math.max(120, filtered.length * itemHeight)) }}
                 totalCount={filtered.length}
-                fixedItemHeight={36}
+                fixedItemHeight={itemHeight}
                 itemContent={(index) => {
                   const opt = filtered[index];
                   const active = opt.value === value;
@@ -126,16 +135,17 @@ export function SearchableVirtualSelect({
                       aria-selected={active}
                       title={tip}
                       className={cn(
-                        "flex w-full min-w-0 items-center px-3 py-2 text-left text-sm outline-none",
+                        "flex w-full min-w-0 items-center px-3 text-left text-sm outline-none text-foreground",
                         "hover:bg-accent hover:text-accent-foreground",
-                        active && "bg-accent/60",
+                        active && "bg-primary/15 text-foreground font-medium",
                       )}
+                      style={{ height: itemHeight }}
                       onClick={() => {
                         onValueChange(opt.value);
                         setOpen(false);
                       }}
                     >
-                      <span className="min-w-0 truncate">{opt.label}</span>
+                      <span className="min-w-0 truncate leading-snug">{opt.label}</span>
                     </button>
                   );
                 }}
