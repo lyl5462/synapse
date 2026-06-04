@@ -781,7 +781,7 @@ def _append_host_duties_solo(lines: list[str]) -> None:
     lines.append(
         "- **本场无协作智能体（小鲸独立处理）**：本节点由你一人完成；"
         "**无需** `submit_meeting_work_plan`，**禁止** `delegate_to_agent` / `delegate_parallel`。"
-        "完整流程见下方「本场无协作智能体 · 小鲸独立处理」与规范 §3.2。"
+        "完整流程见规范 §3.2。"
     )
     lines.append(
         "- **事实先于分析（强约束）**：跑分析型 SKILL 前，须先用 `read_file` / `run_shell` / "
@@ -809,42 +809,6 @@ def _append_host_capability_cards_with_collaborators(lines: list[str], cards: st
     lines.append("以下是本场会议可用的协作智能体（不含你自己），分派任务时必须先比对其能力边界：")
     lines.append("")
     lines.append(cards)
-
-
-def _append_host_capability_cards_solo(lines: list[str], cards: str) -> None:
-    """参会能力卡片 + 独立处理专节：无协作智能体。"""
-    lines.append("## 参会能力卡片")
-    lines.append("")
-    lines.append(
-        "本场**未配置**除小鲸外的协作智能体。下方卡片为空属正常；"
-        "请按「本场无协作智能体 · 小鲸独立处理」与规范 §3.2 由你一人完成节点，"
-        "**不要**尝试 `delegate_to_agent` / `delegate_parallel`。"
-    )
-    lines.append("")
-    lines.append(cards)
-    lines.append("")
-    lines.append("## 本场无协作智能体 · 小鲸独立处理")
-    lines.append("")
-    lines.append("当「参会能力卡片」仅显示「暂无其他参会智能体」时，表示本会议室节点**没有**可委派的 Worker。")
-    lines.append("此时你仍是小鲸主持人，但须**在本会话内独立完成**本节点目标，流程与多智能体场景区别如下：")
-    lines.append("")
-    lines.append("| 环节 | 有协作智能体 | 无协作智能体（本场） |")
-    lines.append("|------|-------------|---------------------|")
-    lines.append("| 工作安排 | `submit_meeting_work_plan` 后委派 | **无需**工作安排计划 |")
-    lines.append("| 执行 | `delegate_*` 派单后等 Worker 返回 | **禁止** `delegate_*`；你按 SKILL / 工具自行执行 |")
-    lines.append("| 事实收集 | 优先委派 Worker | 你自行 `read_file` / `run_shell` / 技能脚本取证 |")
-    lines.append("| 质量校验 | 校验 Worker 产出，不通过则重派 | 对**自己的**产出做三项自检，不通过则补做 / 重跑 |")
-    lines.append("| 收敛归档 | 综合 Worker 产出后归档 | 自检通过后直接按 §6 归档（规则同左） |")
-    lines.append("")
-    lines.append("**推荐步骤**：")
-    lines.append("1. `get_skill_info` → 按会议目标与「会议产出」清单执行对应 SKILL / doc-generate。")
-    lines.append("2. 三项自检（契合度 / 真实性 / 准确性）；`human_confirm` 与门控面板语义不变。")
-    lines.append("3. 通过后写入「本节点归档目录」，文件名与「会议产出」逐字一致。")
-    lines.append("")
-    lines.append(
-        "若后续在「系统智能体管理」为本节点补充了 Worker，下一会话将恢复 §3 的委派流程；"
-        "本场已开始的独立执行不受影响。"
-    )
 
 
 def build_meeting_runtime_header(
@@ -987,7 +951,7 @@ def build_meeting_runtime_header(
     lines.append("- 任何结论必须可由源码、文档或工单证据回溯；严禁虚构。")
     lines.append("")
 
-    if role == "host":
+    if role == "host" and not solo_host:
         cards = build_capability_cards(
             host_profile_id=context.host_profile_id,
             worker_profile_ids=context.worker_profile_ids,
@@ -996,10 +960,7 @@ def build_meeting_runtime_header(
             exclude_self_id=self_pid or None,
             include_host=False,
         )
-        if solo_host:
-            _append_host_capability_cards_solo(lines, cards)
-        else:
-            _append_host_capability_cards_with_collaborators(lines, cards)
+        _append_host_capability_cards_with_collaborators(lines, cards)
 
     
     self_profile = _resolve_profile(self_pid) if self_pid else None
