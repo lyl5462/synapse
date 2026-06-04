@@ -2166,6 +2166,50 @@ class MeetingRoomOrchestrator:
         return out
 
 
+def _mark_room_after_run_node_exception(
+    orch: MeetingRoomOrchestrator,
+    *,
+    scope_type: str,
+    scope_id: str,
+    room_id: str,
+    fail_node: str,
+    ticket_title: str,
+    error: str,
+) -> None:
+    """后台 run_node 未捕获异常：与主控执行失败一致，落盘 human_intervention。"""
+    sid = scope_id.strip()
+    err = (error or "unknown").strip()
+    try:
+        binding = resolve_node_binding(
+            fail_node,
+            scope_type=scope_type,  # type: ignore[arg-type]
+            scope_id=sid,
+            ticket_title=ticket_title,
+        )
+        orch.mark_human_gate(
+            scope_type=scope_type,
+            scope_id=sid,
+            room_id=room_id,
+            node_id=fail_node,
+            reason=f"{node_display_name(fail_node)} 执行异常，需人工介入：{err[:500]}",
+            ticket_title=ticket_title,
+            hitl_form_schema=resolve_hitl_schema_for_gate(
+                binding,
+                dynamic_schema=None,
+                reason=err,
+                intervention_kind="exception",
+            ),
+            intervention_kind="exception",
+        )
+        set_phase(sid, "exception_gate")
+    except Exception as gate_exc:
+        logger.warning("mark_human_gate after run_node exception failed scope=%s: %s", sid, gate_exc)
+        rs_fail = dict(load_room_state(sid) or {})
+        rs_fail["status"] = "failed"
+        rs_fail["current_node_id"] = fail_node
+        save_room_state(sid, rs_fail)
+
+
 def schedule_run_node(
     *,
     scope_type: str,
@@ -2202,20 +2246,33 @@ def schedule_run_node(
             )
         except Exception as exc:
             logger.exception("meeting room run_node failed room=%s: %s", room_id, exc)
-            rs_fail = load_room_state(scope_id.strip()) or {}
-            fail_node = str(rs_fail.get("current_node_id") or "pending") if isinstance(rs_fail, dict) else "pending"
+            sid = scope_id.strip()
+            rs_fail = load_room_state(sid) or {}
+            fail_node = (
+                str(rs_fail.get("current_node_id") or "pending") if isinstance(rs_fail, dict) else "pending"
+            )
+            err = str(exc)
             append_history_event(
-                scope_id.strip(),
+                sid,
                 {
                     "event": "node_failed",
                     "room_id": room_id,
                     "node_id": fail_node,
-                    "error": str(exc),
-                    "text": str(exc),
+                    "error": err,
+                    "text": err,
                     "id": uuid.uuid4().hex[:12],
                     "log_type": "error",
                     "agent_id": "system",
                 },
+            )
+            _mark_room_after_run_node_exception(
+                orch,
+                scope_type=scope_type,
+                scope_id=sid,
+                room_id=room_id,
+                fail_node=fail_node,
+                ticket_title=ticket_title,
+                error=err,
             )
         finally:
             _running_tasks.pop(key, None)
