@@ -1150,56 +1150,6 @@ button.rd-meeting-chat-avatar:hover {
   }
 }
 
-/* 跨节点重新处理图标：悬停光晕 + 重跑中弧线流动 */
-.rd-cross-node-reprocess-btn:hover .rd-cross-node-reprocess-icon {
-  filter: drop-shadow(0 0 5px rgba(34, 211, 238, 0.45)) drop-shadow(0 0 10px rgba(129, 140, 248, 0.25));
-}
-
-.rd-cross-node-reprocess-btn:hover .rd-cross-node-reprocess-node--target {
-  fill-opacity: 0.32;
-}
-
-.rd-cross-node-reprocess-icon--spinning {
-  animation: rd-cross-node-reprocess-pulse 1.1s ease-in-out infinite;
-}
-
-.rd-cross-node-reprocess-icon--spinning .rd-cross-node-reprocess-arc {
-  stroke-dasharray: 18 82;
-  animation: rd-cross-node-reprocess-dash 0.85s linear infinite;
-}
-
-.rd-cross-node-reprocess-icon--spinning .rd-cross-node-reprocess-target-dot {
-  animation: rd-cross-node-reprocess-dot 0.85s ease-in-out infinite;
-}
-
-@keyframes rd-cross-node-reprocess-pulse {
-  0%,
-  100% {
-    filter: drop-shadow(0 0 2px rgba(34, 211, 238, 0.35));
-  }
-  50% {
-    filter: drop-shadow(0 0 8px rgba(96, 165, 250, 0.65)) drop-shadow(0 0 14px rgba(167, 139, 250, 0.35));
-  }
-}
-
-@keyframes rd-cross-node-reprocess-dash {
-  to {
-    stroke-dashoffset: -100;
-  }
-}
-
-@keyframes rd-cross-node-reprocess-dot {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.5;
-    transform: scale(1.35);
-  }
-}
-
 .rd-meeting-chat-empty {
   display: flex;
   flex-direction: column;

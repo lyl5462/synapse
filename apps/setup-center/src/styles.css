@@ -945,7 +945,7 @@ textarea:not([data-slot]):focus {
 
 /* (legacy btnSmall override removed; see status section) */
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option):not(.rd-meeting-node-stop-btn) {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option):not(.rd-meeting-node-stop-btn):not(.rd-meeting-node-reprocess-btn) {
   border: 0;
   cursor: pointer;
   border-radius: 14px;
@@ -958,7 +958,7 @@ button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch
   transition: background 0.15s, border-color 0.15s;
 }
 
-button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option):not(.rd-meeting-node-stop-btn):not(.btnPrimary):not(.btnDanger):not(.btnApplyRestart):hover {
+button:not([data-slot]):not(.winNativeTitlebarBtn):not(.rd-meeting-config-switch):not(.rd-meeting-worker-picker__trigger):not(.rd-meeting-worker-picker__option):not(.rd-meeting-node-stop-btn):not(.rd-meeting-node-reprocess-btn):not(.btnPrimary):not(.btnDanger):not(.btnApplyRestart):hover {
   background: var(--bg-app);
   border-color: var(--muted2);
 }
@@ -5486,8 +5486,9 @@ button.rd-meeting-config-switch--off:hover {
   background: #64748b !important;
 }
 
-/* 研发会议室：节点卡片「终止运行」— 勿套用全局 button 灰框/灰底 */
-button.rd-meeting-node-stop-btn {
+/* 研发会议室：节点卡片角标操作（终止 / 跨节点重处理）— 勿套用全局 button 灰框/灰底 */
+button.rd-meeting-node-stop-btn,
+button.rd-meeting-node-reprocess-btn {
   padding: 0 !important;
   border: none !important;
   background: transparent !important;
@@ -5497,8 +5498,12 @@ button.rd-meeting-node-stop-btn {
   color: inherit !important;
   box-shadow: none !important;
 }
-button.rd-meeting-node-stop-btn:hover {
+button.rd-meeting-node-stop-btn:hover:not(:disabled) {
   background: rgba(127, 29, 29, 0.35) !important;
+  border: none !important;
+}
+button.rd-meeting-node-reprocess-btn:hover:not(:disabled) {
+  background: rgba(120, 53, 15, 0.35) !important;
   border: none !important;
 }
 

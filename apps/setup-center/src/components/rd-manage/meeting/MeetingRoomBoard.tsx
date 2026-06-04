@@ -1680,6 +1680,21 @@ const InterventionDialog = ({
                       </button>
                     </Tooltip>
                   ) : null}
+                  {canReprocessHistoricalNode(node.id, node.type) ? (
+                    <Tooltip title="跨节点重新处理（清理本节点至当前节点之间的过程数据后，从本节点重跑）">
+                      <button
+                        type="button"
+                        disabled={room.reprocessing}
+                        className="rd-meeting-node-reprocess-btn absolute bottom-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded-full text-amber-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onReprocess?.(node.id);
+                        }}
+                      >
+                        <CrossNodeReprocessIcon className="h-5 w-5" spinning={room.reprocessing} />
+                      </button>
+                    </Tooltip>
+                  ) : null}
                   {/* Node Header Row */}
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
@@ -1710,23 +1725,6 @@ const InterventionDialog = ({
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
-                      {canReprocessHistoricalNode(node.id, node.type) ? (
-                        <Tooltip title="跨节点重新处理（清理本节点至当前节点之间的过程数据后，从本节点重跑）">
-                          <Button
-                            type="text"
-                            size="small"
-                            className="rd-cross-node-reprocess-btn !h-6 !min-w-6 !px-1 !rounded-md text-muted-foreground/75 hover:!text-cyan-300 hover:!bg-cyan-500/10 !border !border-transparent hover:!border-cyan-500/25 transition-all duration-200"
-                            icon={
-                              <CrossNodeReprocessIcon spinning={room.reprocessing} />
-                            }
-                            loading={room.reprocessing}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onReprocess?.(node.id);
-                            }}
-                          />
-                        </Tooltip>
-                      ) : null}
                       {isCurrentNode ? (
                         <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-900/40 border border-blue-700/50 text-blue-400 whitespace-nowrap">
                           当前
