@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "函数级方案 CONTEXT_JSON",
-  "description": "与 templates/函数级方案.md 占位符一致；由 fill_function_solution.validate_context 运行时校验",
+  "description": "与 templates/函数级方案.md 占位符一致；由 whalecloud-dev-tool-doc-generate/scripts/fill_function_solution.py 的 validate_context 运行时校验",
   "type": "object",
   "additionalProperties": false,
   "required": [

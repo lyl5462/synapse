@@ -41,8 +41,8 @@
 
 - `CONTEXT_JSON` 为**内联 JSON 字符串**或 **`.json` 文件路径**（与其它模板相同）。
 - 使用结构化字段（列表 + 标量），**禁止** `DOCUMENT_BODY`；骨架见 `whalecloud-dev-tool-function-solution/references/function_solution_context.skeleton.json`。
-- **必须**运行 `fill_function_solution.py` 填充模板（填充前 `validate_context` 校验契约），**禁止**手填 `{{VAR}}` / `{{#each}}`；脚本仅写 `.tmp` 草稿，交付物须 `read_file` + `write_file`（见 doc-generate Step 3a）。
-- 可选预检：`python .../fill_function_solution.py --validate-only <context.json>`
+- **必须**经 `run_skill_script` 运行 `scripts/fill_function_solution.py`（填充前 `validate_context` 校验契约），**禁止**手填 `{{VAR}}` / `{{#each}}`；脚本仅写 `.tmp` 草稿，交付物须 `read_file` + `write_file`（见 doc-generate Step 3a）。
+- 可选预检：`run_skill_script(..., script_name="fill_function_solution.py", args=["--validate-only", "<context.json>"])`
 - 验收：无 `{{` 残留；保留模板全部固定标题（`## 1. 方案内容` … `## 2. 附录`、`### 1.7 模块改造方案` 等）及表格列名。
 
 ## 输出

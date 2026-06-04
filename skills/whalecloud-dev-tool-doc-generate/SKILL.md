@@ -48,6 +48,53 @@ label: 文档生成工具
 
 ---
 
+## 共享脚本（`scripts/`，`run_skill_script`）
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/fill_function_solution.py` | `OUTPUT=函数级方案.md` 时**必须**调用；含 `--validate-only` 契约预检 |
+| `scripts/fill_clarify.py` | `OUTPUT=需求澄清.md` 时可选，替代手填 `{{#each}}` |
+
+**推荐**通过 `run_skill_script` 调用（`script_name` 用下表文件名即可，loader 会在 `scripts/` 下解析）：
+
+```
+run_skill_script(
+  skill_name="whalecloud-dev-tool-doc-generate",
+  script_name="fill_function_solution.py",
+  args=[
+    "skills/whalecloud-dev-tool-doc-generate/templates/函数级方案.md",
+    "{OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json",
+    "{OUTPUT_DIR}/.tmp/_function_solution_fill_out.md"
+  ]
+)
+```
+
+契约预检：
+
+```
+run_skill_script(
+  skill_name="whalecloud-dev-tool-doc-generate",
+  script_name="fill_function_solution.py",
+  args=["--validate-only", "{OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json"]
+)
+```
+
+需求澄清填充示例：
+
+```
+run_skill_script(
+  skill_name="whalecloud-dev-tool-doc-generate",
+  script_name="fill_clarify.py",
+  args=[
+    "skills/whalecloud-dev-tool-doc-generate/templates/需求澄清.md",
+    "{OUTPUT_DIR}/.tmp/_clarify_fill_ctx.json",
+    "{OUTPUT_DIR}/.tmp/_clarify_fill_out.md"
+  ]
+)
+```
+
+---
+
 ## 核心约束
 
 ### A. 职责边界
@@ -132,16 +179,16 @@ Step 2 — 收集变量
   2e. 扫描模板占位符；STRICT=true 且必填项缺失 → 中止并列出缺失项。
   2f. 若 `OUTPUT` 为 `函数级方案.md`：
       - `CONTEXT_JSON` 不得含 `DOCUMENT_BODY`；契约与骨架见 `whalecloud-dev-tool-function-solution/references/function_solution_context.skeleton.json`
-      - 合并 Step 2 变量后，可先校验：`python skills/whalecloud-dev-tool-doc-generate/fill_function_solution.py --validate-only {OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json`（非零 → **中止**）
-      - Step 3a 执行 `fill_function_solution.py` 填充前会再次调用 `validate_context`，契约错误非零退出
+      - 合并 Step 2 变量后，可先 `run_skill_script` 预检：`script_name=fill_function_solution.py`，`args=["--validate-only", "{OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json"]`（非零 → **中止**）
+      - Step 3a 执行 `scripts/fill_function_solution.py` 填充前会再次调用 `validate_context`，契约错误非零退出
 
 Step 3 — 填充模板
   3a. 若 `OUTPUT`（或 `TEMPLATE`）为 `函数级方案.md`（**强制，禁止手填**）：
       - 将 Step 2 合并后的变量对象用 `write_file` 写入 `{OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json`（内联 `CONTEXT_JSON` 时亦须先落盘供脚本读取）
-      - 执行：`python skills/whalecloud-dev-tool-doc-generate/fill_function_solution.py skills/whalecloud-dev-tool-doc-generate/templates/函数级方案.md {OUTPUT_DIR}/.tmp/_function_solution_fill_ctx.json {OUTPUT_DIR}/.tmp/_function_solution_fill_out.md`
+      - **必须** `run_skill_script`（见上文「共享脚本」）：`fill_function_solution.py` + 模板路径 + ctx.json + `_function_solution_fill_out.md` 三个参数
       - 脚本非零退出或校验失败 → **中止**；**禁止**手填 `{{VAR}}` / `{{#each}}` 或跳过脚本
       - `read_file` 读取 `_function_solution_fill_out.md`，**必须**以 `write_file` 写入 `{OUTPUT_DIR}/{OUTPUT}`（交付物不得仅依赖脚本 `open` 写盘）；可删除 `.tmp` 下临时文件
-  3b. 其他模板：读取 `templates/{TEMPLATE}`，按 [references/template-filling.md](references/template-filling.md) 手填（替换 `{{VAR}}`、展开 `{{#each}}`、处理 `{{#if}}`）；`需求澄清.md` 可选用 `fill_clarify.py`
+  3b. 其他模板：读取 `templates/{TEMPLATE}`，按 [references/template-filling.md](references/template-filling.md) 手填（替换 `{{VAR}}`、展开 `{{#each}}`、处理 `{{#if}}`）；`需求澄清.md` 可选用 `scripts/fill_clarify.py`（`run_skill_script`，ctx/out 先写入 `.tmp/`）
   3c. 空列表按规范写「（无）」或保留调用方提供的占位说明（`函数级方案.md` 由脚本处理）。
   3d. 自检：无未解析 `{{` 占位符、无 `{{#each` 残留；`函数级方案.md` 须含模板固定章节与表头（见 template-filling.md）。
 
@@ -189,7 +236,7 @@ STATUS: draft
 OUTPUT_MODE: file
 ```
 
-**不得**使用 `DOCUMENT_BODY`；内联 JSON 亦须满足完整契约。doc-generate **必须**执行 `fill_function_solution.py`（含 `validate_context`）后 `read_file` + `write_file` 落盘（见 Step 3a）。
+**不得**使用 `DOCUMENT_BODY`；内联 JSON 亦须满足完整契约。doc-generate **必须**经 `scripts/fill_function_solution.py`（含 `validate_context`）后 `read_file` + `write_file` 落盘（见 Step 3a）。
 
 ---
 
@@ -205,8 +252,8 @@ OUTPUT_MODE: file
 | 模板 / 上下文 / 输出文件 UTF-8 解码失败 | **中止**，指明路径与环节 |
 | 写后自检发现中文乱码 | **中止**，确认是否使用了 `write_file` 后重试 |
 | 未使用 `write_file` 写盘 | **中止**，改用 `write_file` 重写 |
-| `OUTPUT=函数级方案.md` 未执行 `fill_function_solution.py` 或手填模板 | **中止**，按 Step 3a 重试 |
-| `fill_function_solution.py` 执行失败或 `CONTEXT_JSON 契约校验失败` | **中止**，对照 skeleton.json 修正键名后重试 |
+| `OUTPUT=函数级方案.md` 未执行 `scripts/fill_function_solution.py` 或手填模板 | **中止**，按 Step 3a 重试 |
+| `scripts/fill_function_solution.py` 执行失败或 `CONTEXT_JSON 契约校验失败` | **中止**，对照 skeleton.json 修正键名后重试 |
 
 ---
 

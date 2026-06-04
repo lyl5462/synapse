@@ -54,7 +54,7 @@ label: 函数级方案技能
 
 - **落盘方式（强制）**：交付物**仅**通过 `whalecloud-dev-tool-doc-generate` 写入；执行前**必须先 Read** 该技能 `SKILL.md` 并严格遵循其 UTF-8 / `write_file` / 写后自检要求
 - **输出文件**：固定为 `{ARCHIVE_DIR}/函数级方案.md`，`OUTPUT` 须与模板 `templates/函数级方案.md` 文件名一致，不得按模块拆分为多个文件
-- **模板格式一致（强制）**：doc-generate 须以 `templates/函数级方案.md` 为版式源，**必须**经 `fill_function_solution.py` 填充后落盘；**禁止**手填占位符、手写 `## 1.` / `## 2.` 正文、增删章节标题、改表格列名或使用 `DOCUMENT_BODY`
+- **模板格式一致（强制）**：doc-generate 须以 `templates/函数级方案.md` 为版式源，**必须**经 `scripts/fill_function_solution.py`（`run_skill_script`）填充后落盘；**禁止**手填占位符、手写 `## 1.` / `## 2.` 正文、增删章节标题、改表格列名或使用 `DOCUMENT_BODY`
 - **模块组织方式**：以 FUNC_ARCH_DOC 中定义的**核心功能模块**（修改模块+新增模块）为逻辑单元，在 **§1.7 模块改造方案** 一章内按模块分小节输出（如 `#### 1.7.1 {模块名称}`、`#### 1.7.2 {模块名称}`），各模块的函数设计清单、伪代码、模块内部调用关系均归入对应小节
 - §1.6 数据设计、§1.8 跨模块交互设计 为**全量**内容，不按模块拆文件，可在各条目下标注所属模块
 
@@ -316,9 +316,9 @@ Step 9 — 影响评估
 Step 10 — 文档落地（调用 whalecloud-dev-tool-doc-generate）
   10a. 复制 `references/function_solution_context.skeleton.json` 为 `ctx` 骨架，按「CONTEXT_JSON 字段契约」将 Step 1–9 映射填入（键名须与模板占位符**逐字**一致）
       - **必须包含**骨架中全部标量键与全部列表键（无数据则 `[]`，标量无数据则 `"[待补充]"` 或分析结论）
-      - §1.7 仅用 `modules[]`（含嵌套 `functions[]`），`#### 1.7.N` 由 `fill_function_solution.py` 按模板生成，不得在 JSON 里自写 Markdown 标题
+      - §1.7 仅用 `modules[]`（含嵌套 `functions[]`），`#### 1.7.N` 由 doc-generate 的 `scripts/fill_function_solution.py` 按模板生成，不得在 JSON 里自写 Markdown 标题
       - **禁止** `DOCUMENT_BODY`、禁止在 JSON 中携带预渲染的 `## 1.` / `## 2.` 正文
-      - **禁止**下列错误键名（`fill_function_solution.py` 会报错中止，勿与 `solution_review.json` 等其它技能混用）：
+      - **禁止**下列错误键名（`scripts/fill_function_solution.py` 会报错中止，勿与 `solution_review.json` 等其它技能混用）：
         - 顶层：`requirement_name`→`REQUIREMENT_NAME`；`status`→`STATUS`；`demand_id`/`config_xml`/`verification` 等无契约字段
         - `repos[]`：`repo_name`/`repo_path`/`files`→`branch_id`/`repo_url`/`change_desc`
         - `modules[].functions[]`：`func_signature`/`func_name`/`pseudo_code`→`signature`/`pseudocode` 等契约字段
@@ -330,7 +330,7 @@ Step 10 — 文档落地（调用 whalecloud-dev-tool-doc-generate）
       - CONTEXT_JSON: CONTEXT_PATH **或** CONTEXT_JSON_STR（与需求澄清等模板相同）
       - PROD、STATUS、REQUIREMENT_NAME: 与技能 Parameters 一致（也可写入 `ctx`）
       - OUTPUT_MODE: `file`
-  10d. 确认 doc-generate 已执行 `fill_function_solution.py` 并以 `write_file` 写入 `{ARCHIVE_DIR}/函数级方案.md`；验收：
+  10d. 确认 doc-generate 已执行 `scripts/fill_function_solution.py` 并以 `write_file` 写入 `{ARCHIVE_DIR}/函数级方案.md`；验收：
       - 无 `{{` / `{{#each` 残留；含模板固定章节与表头
       - 与模板对照：章节层级、表格列名、页眉字段名一致
       - 中文可读，无乱码；落盘失败则**中止**
@@ -348,7 +348,7 @@ Step 10 — 文档落地（调用 whalecloud-dev-tool-doc-generate）
 | 模板 | `templates/函数级方案.md`（与 `OUTPUT` 同名） |
 | OUTPUT_DIR | `{ARCHIVE_DIR}`（默认 `{WORK_ORDER_DIR}/archive/需求设计/func_solution/`） |
 | OUTPUT | `函数级方案.md` |
-| 数据契约 | 结构化 `CONTEXT_JSON`（见下节）；doc-generate **必须**经 `fill_function_solution.py` 填充模板 |
+| 数据契约 | 结构化 `CONTEXT_JSON`（见下节）；doc-generate **必须**经 `scripts/fill_function_solution.py` 填充模板 |
 
 ### 调用示例
 
@@ -369,9 +369,9 @@ OUTPUT_MODE: file
 
 ## CONTEXT_JSON 字段契约
 
-与 `templates/函数级方案.md` 占位符一一对应。列表无数据时填 `[]`（`fill_function_solution.py` 表体写「（无）」，**保留**表头与章节标题）。
+与 `templates/函数级方案.md` 占位符一一对应。列表无数据时填 `[]`（doc-generate `scripts/fill_function_solution.py` 表体写「（无）」，**保留**表头与章节标题）。
 
-**骨架文件（强制）**：`references/function_solution_context.skeleton.json`（含全部顶层键默认值）；机器可读约束见同目录 `function_solution_context.schema.json`。落盘前由 `fill_function_solution.py` 的 `validate_context` 校验。
+**骨架文件（强制）**：`references/function_solution_context.skeleton.json`（含全部顶层键默认值）；机器可读约束见同目录 `function_solution_context.schema.json`。落盘前由 `whalecloud-dev-tool-doc-generate/scripts/fill_function_solution.py` 的 `validate_context` 校验。
 
 **`ctx` 顶层键清单（须全部出现）**
 
@@ -558,5 +558,5 @@ OUTPUT_MODE: file
 | 代码检索无结果 | 标注 `[待确认]`，不得虚构内容 |
 | 上游文档中某模块无代码影响范围 | 标注 `[缺少代码影响范围]`，尝试通过代码检索补充 |
 | 输出目录创建失败或 doc-generate 落盘失败 | **中止**，提示路径权限或下游技能错误信息 |
-| `fill_function_solution.py` 报 `CONTEXT_JSON 契约校验失败` | **中止**，从 skeleton.json 复制骨架并修正键名（见 Step 10a 禁止项列表）后重试 |
+| `scripts/fill_function_solution.py` 报 `CONTEXT_JSON 契约校验失败` | **中止**，从 skeleton.json 复制骨架并修正键名（见 Step 10a 禁止项列表）后重试 |
 | 未调用 doc-generate 而直接 write_file 写交付物 | **视为未完成**，须改用 doc-generate 重写 |

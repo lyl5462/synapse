@@ -451,9 +451,9 @@ if __name__ == "__main__":
     if len(sys.argv) != 4:
         print(
             "Usage:\n"
-            "  python fill_function_solution.py <template.md> "
+            "  python scripts/fill_function_solution.py <template.md> "
             "<context.json|inline-json> <output.md>\n"
-            "  python fill_function_solution.py --validate-only <context.json|inline-json>"
+            "  python scripts/fill_function_solution.py --validate-only <context.json|inline-json>"
         )
         sys.exit(1)
     try:
