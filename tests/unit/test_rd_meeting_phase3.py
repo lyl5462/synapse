@@ -88,7 +88,7 @@ def test_list_pending_human_intervention(synapse_work_home):
     assert any(p["scope_id"] == scope_id for p in pending)
 
 
-def test_validate_node_archive_artifacts_checks_file_content(tmp_path, monkeypatch):
+def test_validate_node_archive_artifacts_checks_file_existence_only(tmp_path, monkeypatch):
     from synapse.rd_meeting.paths import scope_dir
 
     scope_id = "21883304"
@@ -98,18 +98,14 @@ def test_validate_node_archive_artifacts_checks_file_content(tmp_path, monkeypat
     dest = scope_dir(scope_id) / "archive" / stage_name / node_id
     dest.mkdir(parents=True)
 
-    (dest / "边界确认说明.md").write_text("too short", encoding="utf-8")
-    bad = validate_node_archive_artifacts(scope_id, stage_name, node_id)
-    assert not bad.ok
-    assert any("边界确认说明.md" in e for e in bad.errors)
+    missing = validate_node_archive_artifacts(scope_id, stage_name, node_id)
+    assert not missing.ok
+    assert any("边界确认说明.md" in e for e in missing.errors)
 
-    good_body = (
-        "# 边界确认结论\n\n"
-        "本节点已完成交付，结论如下：模块边界清晰，无跨产品影响。\n" * 3
-    )
-    (dest / "边界确认说明.md").write_text(good_body, encoding="utf-8")
-    good = validate_node_archive_artifacts(scope_id, stage_name, node_id)
-    assert good.ok
+    (dest / "边界确认说明.md").write_text("too short", encoding="utf-8")
+    present = validate_node_archive_artifacts(scope_id, stage_name, node_id)
+    assert present.ok
+    assert len(present.artifacts) == 1
 
 
 def test_validate_node_output_rejects_short_body():

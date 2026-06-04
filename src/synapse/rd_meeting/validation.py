@@ -87,7 +87,11 @@ def validate_node_archive_artifacts(
     stage_name: str,
     node_id: str,
 ) -> NodeOutputValidation:
-    """校验归档目录下 NODE_OUTPUTS 约定的 Markdown 产出物（存在性 + 内容）。"""
+    """校验归档目录下 NODE_OUTPUTS 约定的 Markdown 产出物（仅存在性）。
+
+    会议室节点验收以约定文件是否落盘为准；正文格式/关键词由人工或后续流程处理。
+    内容级校验保留在 ``validate_node_output`` / ``_validate_markdown_body``（可选、非门禁）。
+    """
     from synapse.rd_meeting.paths import archive_node_dir, archive_stage_segment
 
     names = _artifact_md_names(node_id)
@@ -114,15 +118,6 @@ def validate_node_archive_artifacts(
             errors.append(f"缺少约定产出物：{name}（{rel}）")
             continue
         try:
-            body = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            errors.append(f"{name}: 读取失败（{exc}）")
-            continue
-        file_errors = _validate_markdown_body(node_id, body, filename=name)
-        if file_errors:
-            errors.extend(file_errors)
-            continue
-        try:
             relative_path = path.resolve().relative_to(scope_root.resolve()).as_posix()
         except ValueError:
             relative_path = rel
@@ -136,14 +131,5 @@ def validate_node_archive_files(
     stage_name: str,
     node_id: str,
 ) -> NodeOutputValidation:
-    """P3：仅校验约定 Markdown 文件是否存在于归档目录（不含内容）。"""
-    from synapse.rd_meeting.paths import archive_node_dir
-
-    errors: list[str] = []
-    dest = archive_node_dir(scope_id, stage_name, node_id)
-    if not dest.is_dir():
-        return NodeOutputValidation(ok=False, errors=["归档目录不存在"])
-    for name in _artifact_md_names(node_id):
-        if not (dest / name).is_file():
-            errors.append(f"缺少约定产物：{name}")
-    return NodeOutputValidation(ok=len(errors) == 0, errors=errors)
+    """仅校验约定 Markdown 文件是否存在于归档目录（与 ``validate_node_archive_artifacts`` 同逻辑）。"""
+    return validate_node_archive_artifacts(scope_id, stage_name, node_id)

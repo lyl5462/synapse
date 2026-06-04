@@ -1691,17 +1691,19 @@ class ToolExecutor:
         """
         return None
 
-    def _rd_meeting_host_permission_bypass(
+    @staticmethod
+    def _meeting_room_allowed_tool_names() -> frozenset[str]:
+        from synapse.rd_meeting.agent_runtime import meeting_tool_names_for_role
+
+        return (
+            meeting_tool_names_for_role("host") | meeting_tool_names_for_role("worker")
+        )
+
+    def _rd_meeting_permission_bypass(
         self, tool_name: str
     ) -> "PermissionDecision | None":
-        """研发会议室 Host：委派/问卷类工具须自动放行，避免 policy_v2 CONFIRM 卡死派单。"""
-        if tool_name not in (
-            "delegate_to_agent",
-            "delegate_parallel",
-            "submit_meeting_work_plan",
-            "submit_hitl_questionnaire",
-            "send_agent_message",
-        ):
+        """研发会议室（Host / Worker）：白名单内工具自动放行，避免 policy_v2 CONFIRM 卡死派单与执行。"""
+        if tool_name not in self._meeting_room_allowed_tool_names():
             return None
         agent = self._agent_ref
         if agent is None or not getattr(agent, "_org_context", False):
@@ -1715,9 +1717,9 @@ class ToolExecutor:
         if not session_id:
             session_id = getattr(agent, "_current_session_id", None) or ""
         try:
-            from synapse.rd_meeting.work_plan import is_rd_meeting_host_session
+            from synapse.rd_meeting.live import parse_rd_meeting_session
 
-            if not is_rd_meeting_host_session(str(session_id)):
+            if parse_rd_meeting_session(str(session_id)) is None:
                 return None
         except Exception:
             return None
@@ -1725,8 +1727,8 @@ class ToolExecutor:
 
         return PermissionDecision(
             behavior="allow",
-            reason="研发会议室 Host 委派/协作工具自动放行",
-            policy_name="rd_meeting_host",
+            reason="研发会议室白名单工具自动放行",
+            policy_name="rd_meeting",
         )
 
     def check_permission(self, tool_name: str, tool_input: dict) -> "PermissionDecision":
@@ -1739,7 +1741,7 @@ class ToolExecutor:
 
         self._prune_stale_confirms()
 
-        bypass = self._rd_meeting_host_permission_bypass(tool_name)
+        bypass = self._rd_meeting_permission_bypass(tool_name)
         if bypass is not None:
             return bypass
 
