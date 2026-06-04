@@ -1910,42 +1910,45 @@ class MeetingRoomOrchestrator:
 
         need_human_confirm = bool(binding.get("human_confirm"))
         room_rs = load_room_state(sid) or {}
+
+        # 本轮回主控 submit_hitl_questionnaire 优先于历史 hitl_locked / ready 标记，
+        # 避免「用户已填过一轮 + 归档已就绪」时跳过新一轮 interactive 问卷直达 NodeReview。
+        if need_human_confirm and tool_questionnaire and tool_questionnaire.get("schema"):
+            t_kind = (tool_questionnaire.get("kind") or "interactive").strip().lower()
+            if t_kind == "interactive":
+                return self._gate_from_tool_questionnaire(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    questionnaire={**tool_questionnaire, "kind": "interactive"},
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=duration,
+                    stage_id=stage_id,
+                    ticket_title=ticket_title,
+                    skipped_nodes=skipped_nodes or None,
+                )
+            if t_kind == "exception":
+                return self._gate_from_tool_questionnaire(
+                    scope_type=scope_type,
+                    scope_id=sid,
+                    room_id=room_id,
+                    node_id=node_id,
+                    binding=binding,
+                    questionnaire=tool_questionnaire,
+                    report_body=report_body,
+                    tokens_used=tokens_used,
+                    duration_seconds=duration,
+                    stage_id=stage_id,
+                    ticket_title=ticket_title,
+                    skipped_nodes=skipped_nodes or None,
+                )
+
         ready_for_review = should_enter_node_review_gate(sid, node_id, room_rs)
 
         if need_human_confirm and not ready_for_review:
-            if tool_questionnaire and tool_questionnaire.get("schema"):
-                t_kind = (tool_questionnaire.get("kind") or "interactive").strip().lower()
-                if t_kind == "interactive":
-                    return self._gate_from_tool_questionnaire(
-                        scope_type=scope_type,
-                        scope_id=sid,
-                        room_id=room_id,
-                        node_id=node_id,
-                        binding=binding,
-                        questionnaire={**tool_questionnaire, "kind": "interactive"},
-                        report_body=report_body,
-                        tokens_used=tokens_used,
-                        duration_seconds=duration,
-                        stage_id=stage_id,
-                        ticket_title=ticket_title,
-                        skipped_nodes=skipped_nodes or None,
-                    )
-                if t_kind == "exception":
-                    return self._gate_from_tool_questionnaire(
-                        scope_type=scope_type,
-                        scope_id=sid,
-                        room_id=room_id,
-                        node_id=node_id,
-                        binding=binding,
-                        questionnaire=tool_questionnaire,
-                        report_body=report_body,
-                        tokens_used=tokens_used,
-                        duration_seconds=duration,
-                        stage_id=stage_id,
-                        ticket_title=ticket_title,
-                        skipped_nodes=skipped_nodes or None,
-                    )
-
             hitl_gate = extract_hitl_from_agent_output(report_body)
             report_body = hitl_gate.clean_body
             if hitl_gate.explicit and hitl_gate.intervention_kind in ("interactive", "exception"):

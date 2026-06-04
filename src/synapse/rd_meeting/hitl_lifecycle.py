@@ -47,6 +47,9 @@ def should_enter_node_review_after_hitl_locked(
         return False
     if not room_state.get("hitl_locked"):
         return False
+    # 仍有待填问卷 schema 时不应跳过会中门控（防御性；主路径在 orchestrator 优先消费 tool_questionnaire）
+    if isinstance(room_state.get("hitl_form_schema"), dict):
+        return False
     submission = room_state.get("hitl_submission")
     kind = ""
     if isinstance(submission, dict):

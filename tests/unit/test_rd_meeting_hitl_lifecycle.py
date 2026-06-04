@@ -125,6 +125,9 @@ def test_should_enter_node_review_after_hitl_locked(monkeypatch, tmp_path):
     assert should_enter_node_review_after_hitl_locked(scope, node_id, rs)
     assert should_enter_node_review_gate(scope, node_id, rs)
 
+    rs_pending_form = {**rs, "hitl_form_schema": {"questions": [{"id": "q1"}]}}
+    assert not should_enter_node_review_after_hitl_locked(scope, node_id, rs_pending_form)
+
     rs_exception = {**rs, "hitl_submission": {"kind": "exception"}}
     assert not should_enter_node_review_after_hitl_locked(scope, node_id, rs_exception)
 
