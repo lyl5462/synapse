@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from synapse.plugins.api import PluginAPI, PluginPermissionError
+from synapse.plugins.api import PluginAPI
 from synapse.plugins.hooks import HookRegistry
 from synapse.plugins.manifest import BASIC_PERMISSIONS, PluginManifest
 from synapse.plugins.sandbox import PluginErrorTracker
@@ -221,6 +222,30 @@ class TestGetBrain:
         assert api.get_brain() is fake_brain
 
 
+# ---------- UI events ----------
+
+
+class TestBroadcastUiEvent:
+    @pytest.mark.asyncio
+    async def test_uses_websocket_broadcast_not_im_gateway(self, tmp_path):
+        mock_gateway = MagicMock()
+        mock_gateway.broadcast = AsyncMock()
+        api = _make_api(tmp_path, host_refs={"gateway": mock_gateway})
+
+        with patch(
+            "synapse.api.routes.websocket.broadcast_event",
+            new_callable=AsyncMock,
+        ) as mock_broadcast_event:
+            api.broadcast_ui_event("task_update", {"task_id": "t1", "status": "succeeded"})
+            await asyncio.sleep(0)
+
+        mock_broadcast_event.assert_awaited_once_with(
+            "plugin:test-plugin:task_update",
+            {"task_id": "t1", "status": "succeeded"},
+        )
+        mock_gateway.broadcast.assert_not_called()
+
+
 # ---------- Permission check ----------
 
 
@@ -317,6 +342,15 @@ class TestEdgeCases:
         api.register_hook("on_init", "not_a_function")  # type: ignore[arg-type]
         assert len(hr.get_hooks("on_init")) == 0
 
+    def test_register_agent_lifecycle_alias_hooks_with_message_permission(self, tmp_path):
+        """OpenClaw-style aliases use the same permission tier as message hooks."""
+        hr = HookRegistry()
+        api = _make_api(tmp_path, granted=["hooks.message"], hook_registry=hr)
+        api.register_hook("before_agent_start", lambda **kw: None)
+        api.register_hook("agent_end", lambda **kw: None)
+        assert len(hr.get_hooks("before_agent_start")) == 1
+        assert len(hr.get_hooks("agent_end")) == 1
+
     def test_register_llm_provider_rejects_non_class(self, tmp_path):
         """Passing an instance instead of a class must not crash."""
         api = _make_api(tmp_path, granted=["llm.register"])
@@ -345,3 +379,4 @@ class TestEdgeCases:
         )
         api.register_tools([{"name": "t1"}], lambda: None)
         assert "t1" in api._registered_tools
+

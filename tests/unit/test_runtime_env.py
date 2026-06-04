@@ -13,10 +13,20 @@ import pytest
 from synapse.runtime_env import (
     IS_FROZEN,
     _find_python_in_dir,
+    apply_managed_node_environment,
+    apply_runtime_pip_environment,
+    apply_subprocess_secret_scrub,
+    build_user_subprocess_environment,
+    get_bootstrap_manifest_path,
     get_configured_venv_path,
+    get_managed_node_seed,
+    get_managed_python_seed,
     get_python_executable,
+    get_readonly_seed_roots,
+    resolve_toolchain_command,
     verify_python_executable,
 )
+from synapse.runtime_manager import get_runtime_environment_report as manager_runtime_report
 
 
 class TestFindPythonInDir:
@@ -122,3 +132,208 @@ class TestVerifyPythonExecutable:
         if sys.platform != "win32":
             fake.chmod(0o755)
         assert verify_python_executable(str(fake)) is False
+
+
+def test_runtime_pip_environment_scrubs_python_conda_and_secret_env(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "C:/conda/site-packages")
+    monkeypatch.setenv("PYTHONHOME", "C:/conda")
+    monkeypatch.setenv("CONDA_PREFIX", "C:/conda")
+    monkeypatch.setenv("PIP_TARGET", "C:/leaky-target")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+
+    env = apply_runtime_pip_environment()
+
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+    assert "CONDA_PREFIX" not in env
+    assert "PIP_TARGET" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["PYTHONNOUSERSITE"] == "1"
+    assert env["SYNAPSE_SUBPROCESS_SECRET_SCRUB"] == "1"
+
+
+def test_subprocess_secret_scrub_allows_force_prefix():
+    env = apply_subprocess_secret_scrub(
+        {
+            "ANTHROPIC_API_KEY": "blocked",
+            "SYNAPSE_FORCE_ANTHROPIC_API_KEY": "allowed",
+            "PATH": "base",
+        }
+    )
+
+    assert env["ANTHROPIC_API_KEY"] == "allowed"
+    assert env["PATH"] == "base"
+
+
+def test_user_subprocess_environment_empty_overrides_inherit_host(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "host-path")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setattr("synapse.runtime_env.get_agent_python_executable", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_app_python_executable", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_workspace_dependency_cache_root", lambda: tmp_path / "cache")
+
+    env = build_user_subprocess_environment({})
+
+    assert env["PATH"] == "host-path"
+    assert env["HOME"] == str(tmp_path / "home")
+    assert env["HTTP_PROXY"] == "http://proxy.invalid:8080"
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["SYNAPSE_ENV_TRUST_SOURCE"] == "user-subprocess"
+
+
+def test_user_subprocess_environment_overrides_host_after_merge(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "host-path")
+    monkeypatch.setenv("HTTPS_PROXY", "http://host-proxy.invalid:8080")
+    monkeypatch.setattr("synapse.runtime_env.get_agent_python_executable", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_app_python_executable", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_workspace_dependency_cache_root", lambda: tmp_path / "cache")
+
+    env = build_user_subprocess_environment(
+        {"PATH": "override-path", "HTTPS_PROXY": "http://override.invalid:8080"}
+    )
+
+    assert env["PATH"] == "override-path"
+    assert env["HTTPS_PROXY"] == "http://override.invalid:8080"
+
+
+def test_managed_toolchain_seed_resolvers(monkeypatch, tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"python_seed": {"path": "python/python.exe"}, "node_seed": {"path": "node/node.exe"}}',
+        encoding="utf-8",
+    )
+    py = tmp_path / "python" / "python.exe"
+    node = tmp_path / "node" / "node.exe"
+    py.parent.mkdir()
+    node.parent.mkdir()
+    py.write_text("", encoding="utf-8")
+    node.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("synapse.runtime_env.get_bootstrap_manifest_path", lambda: manifest)
+    monkeypatch.setattr("synapse.runtime_env.verify_python_executable", lambda path: path == str(py))
+
+    assert get_managed_python_seed() == str(py)
+    assert get_managed_node_seed() == str(node)
+
+
+def test_bootstrap_manifest_path_prefers_explicit_env(monkeypatch, tmp_path):
+    bootstrap = tmp_path / "resources" / "bootstrap"
+    bootstrap.mkdir(parents=True)
+    manifest = bootstrap / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("SYNAPSE_BOOTSTRAP_DIR", str(bootstrap))
+
+    assert get_bootstrap_manifest_path() == manifest
+
+
+def test_bootstrap_manifest_path_resolves_dual_venv_home(monkeypatch, tmp_path):
+    bootstrap = tmp_path / "SynapseDesktop" / "resources" / "bootstrap"
+    bootstrap.mkdir(parents=True)
+    manifest = bootstrap / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    venv = tmp_path / "runtime" / "app-venv"
+    scripts = venv / "Scripts"
+    scripts.mkdir(parents=True)
+    monkeypatch.setattr(sys, "executable", str(scripts / "python.exe"))
+    monkeypatch.delenv("SYNAPSE_BOOTSTRAP_DIR", raising=False)
+    (venv / "pyvenv.cfg").write_text(f"home = {bootstrap / 'python'}\n", encoding="utf-8")
+
+    assert get_bootstrap_manifest_path() == manifest
+
+
+def test_managed_node_environment_uses_runtime_cache(monkeypatch, tmp_path):
+    node = tmp_path / "node" / "node.exe"
+    node.parent.mkdir()
+    node.write_text("", encoding="utf-8")
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: str(node))
+    monkeypatch.setattr("synapse.runtime_env.get_workspace_dependency_cache_root", lambda: tmp_path / "cache")
+
+    env = apply_managed_node_environment({"PATH": "base"})
+
+    assert env["SYNAPSE_NODE"] == str(node)
+    assert env["SYNAPSE_NODE_BIN"] == str(node.parent)
+    assert env["PATH"].startswith(str(node.parent))
+    assert env["NPM_CONFIG_CACHE"] == str(tmp_path / "cache" / "npm-cache")
+    assert env["NPM_CONFIG_PREFIX"] == str(tmp_path / "cache" / "npm-prefix")
+    assert env["COREPACK_HOME"] == str(tmp_path / "cache" / "corepack")
+
+
+def test_readonly_seed_roots_and_node_command(monkeypatch, tmp_path):
+    seed = tmp_path / "seed"
+    node = seed / "node" / ("node.exe" if sys.platform == "win32" else "node")
+    node.parent.mkdir(parents=True)
+    node.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SYNAPSE_READONLY_SEED_DIRS", str(seed))
+    monkeypatch.setattr("synapse.runtime_env.get_bootstrap_manifest_path", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: "")
+    monkeypatch.setattr("shutil.which", lambda command: None)
+
+    assert get_readonly_seed_roots() == [seed.resolve()]
+    assert resolve_toolchain_command("node") == str(node.resolve())
+
+
+def test_mcp_command_resolution_uses_managed_npx(monkeypatch, tmp_path):
+    from synapse.tools.mcp import MCPClient, MCPServerConfig
+
+    node_dir = tmp_path / "managed-node"
+    node_dir.mkdir()
+    node = node_dir / ("node.exe" if sys.platform == "win32" else "node")
+    npx = node_dir / ("npx.cmd" if sys.platform == "win32" else "npx")
+    node.write_text("", encoding="utf-8")
+    npx.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: str(node))
+    monkeypatch.setattr("synapse.runtime_env.get_workspace_dependency_cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr("shutil.which", lambda command, path=None: None)
+
+    resolved = MCPClient._resolve_command(MCPServerConfig(name="chrome-devtools", command="npx"))
+
+    assert resolved == str(npx)
+
+
+def test_mcp_command_resolution_falls_back_to_host_path(monkeypatch, tmp_path):
+    """When no managed Node is present, _resolve_command must still find npx via PATH.
+
+    This guards the chrome-devtools MCP path for users who installed Node via the host
+    package manager (apt, brew, nvm, scoop, etc.) and do not have Synapse-managed Node.
+    """
+    from synapse.tools.mcp import MCPClient, MCPServerConfig
+
+    host_npx = tmp_path / "host-bin" / ("npx.cmd" if sys.platform == "win32" else "npx")
+    host_npx.parent.mkdir()
+    host_npx.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_bootstrap_manifest_path", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_readonly_seed_roots", list)
+    monkeypatch.setattr("shutil.which", lambda command, path=None: str(host_npx))
+
+    resolved = MCPClient._resolve_command(MCPServerConfig(name="chrome-devtools", command="npx"))
+
+    assert resolved == str(host_npx)
+
+
+def test_mcp_command_resolution_returns_none_when_npx_missing(monkeypatch, tmp_path):
+    """When neither managed Node nor host PATH expose npx, resolution returns None
+    so the MCP pre-check can surface a clear error to the user."""
+    from synapse.tools.mcp import MCPClient, MCPServerConfig
+
+    monkeypatch.setattr("synapse.runtime_env.get_managed_node_seed", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_bootstrap_manifest_path", lambda: None)
+    monkeypatch.setattr("synapse.runtime_env.get_readonly_seed_roots", list)
+    monkeypatch.setattr("shutil.which", lambda command, path=None: None)
+
+    resolved = MCPClient._resolve_command(MCPServerConfig(name="chrome-devtools", command="npx"))
+
+    assert resolved is None
+
+
+def test_runtime_manager_facade_exposes_runtime_report():
+    assert callable(manager_runtime_report)
+

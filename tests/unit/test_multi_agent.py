@@ -13,29 +13,28 @@ Tests all core components:
 from __future__ import annotations
 
 import asyncio
-import time
 import threading
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from synapse.agents.fallback import _AUTO_DEGRADE_THRESHOLD, FallbackResolver
+from synapse.agents.orchestrator import (
+    MAX_DELEGATION_DEPTH,
+    AgentHealth,
+    AgentMailbox,
+    AgentOrchestrator,
+    DelegationRequest,
+)
 from synapse.agents.profile import (
     AgentProfile,
     AgentType,
     ProfileStore,
     SkillsMode,
 )
-from synapse.agents.fallback import FallbackResolver, _AUTO_DEGRADE_THRESHOLD
-from synapse.agents.orchestrator import (
-    AgentHealth,
-    AgentMailbox,
-    AgentOrchestrator,
-    DelegationRequest,
-    MAX_DELEGATION_DEPTH,
-)
 from synapse.sessions.session import Session, SessionConfig, SessionContext
-
 
 # ================================================================
 # Helpers
@@ -157,6 +156,130 @@ class TestAgentProfile:
         assert restored.memory_mode == "isolated"
         assert restored.memory_inherit_global is False
 
+    def test_isolation_fields_are_normalized(self):
+        p = _make_profile(
+            identity_mode=" Custom ",
+            memory_mode=" Isolated ",
+            memory_inherit_global="false",
+        )
+        assert p.identity_mode == "custom"
+        assert p.memory_mode == "isolated"
+        assert p.memory_inherit_global is False
+
+    def test_derive_preserves_isolation_fields(self):
+        base = _make_profile(
+            "base",
+            "Base",
+            identity_mode="custom",
+            memory_mode="isolated",
+            memory_inherit_global=False,
+            runtime_env_mode="agent",
+            runtime_env_dependencies=["requests"],
+        )
+
+        derived = base.derive(
+            id="ephemeral_base_1",
+            name="Base Clone",
+            created_by="test",
+            ephemeral=True,
+            inherit_from="base",
+        )
+
+        assert derived.id == "ephemeral_base_1"
+        assert derived.identity_mode == "custom"
+        assert derived.memory_mode == "isolated"
+        assert derived.memory_inherit_global is False
+        assert derived.runtime_env_mode == "agent"
+        assert derived.runtime_env_dependencies == ["requests"]
+
+    # ---- name_i18n invariant: __post_init__ default ----
+
+    def test_post_init_mirrors_name_into_zh_when_missing(self):
+        # Direct construction with no name_i18n - common path for
+        # tools/handlers/agent.py:create_agent and ad-hoc tests.
+        p = AgentProfile(id="x", name="中秋")
+        assert p.name_i18n.get("zh") == "中秋"
+        assert p.get_display_name("zh") == "中秋"
+
+    def test_post_init_respects_explicit_zh_in_name_i18n(self):
+        # Caller wants different Chinese display name than the primary name.
+        p = AgentProfile(id="x", name="Alice", name_i18n={"zh": "艾莉丝"})
+        assert p.name_i18n.get("zh") == "艾莉丝"
+        assert p.get_display_name("zh") == "艾莉丝"
+        # Other langs untouched
+        assert "en" not in p.name_i18n
+
+    def test_post_init_mirrors_description_into_zh_when_missing(self):
+        p = AgentProfile(id="x", name="X", description="一个测试代理")
+        assert p.description_i18n.get("zh") == "一个测试代理"
+
+    def test_post_init_does_not_touch_empty_name(self):
+        # If name is empty, do not write empty string into name_i18n[zh].
+        p = AgentProfile(id="x", name="")
+        assert p.name_i18n.get("zh") in (None, "")
+        # The dict may be empty or absent; the invariant only fires for truthy name.
+        assert not p.name_i18n.get("zh")
+
+    def test_from_dict_applies_name_invariant(self):
+        # JSON missing name_i18n entirely (legacy on-disk profile).
+        p = AgentProfile.from_dict({"id": "x", "name": "小秋"})
+        assert p.name_i18n.get("zh") == "小秋"
+
+    # ---- derive() mirror on name override ----
+
+    def test_derive_mirrors_new_name_into_zh(self):
+        base = _make_profile(
+            "base",
+            "OldName",
+            name_i18n={"zh": "老名", "en": "OldName"},
+        )
+        derived = base.derive(
+            id="d1",
+            name="NewName",
+            created_by="test",
+        )
+        # zh must follow the new name, but other langs stay
+        assert derived.name == "NewName"
+        assert derived.name_i18n["zh"] == "NewName"
+        assert derived.name_i18n["en"] == "OldName"
+
+    def test_derive_respects_overrides_name_i18n(self):
+        # Caller explicitly passes name_i18n - mirror logic must not clobber it.
+        base = _make_profile("base", "Old", name_i18n={"zh": "老", "en": "Old"})
+        derived = base.derive(
+            id="d2",
+            name="NewEn",
+            name_i18n={"zh": "完全自定义", "en": "NewEn"},
+            created_by="test",
+        )
+        assert derived.name_i18n["zh"] == "完全自定义"
+        assert derived.name_i18n["en"] == "NewEn"
+
+    def test_derive_preserves_parent_i18n_when_name_not_overridden(self):
+        base = _make_profile("base", "Old", name_i18n={"zh": "老", "en": "Old"})
+        derived = base.derive(
+            id="d3",
+            created_by="test",
+        )
+        assert derived.name == "Old"
+        assert derived.name_i18n == {"zh": "老", "en": "Old"}
+
+    def test_derive_mirrors_new_description_into_zh(self):
+        base = _make_profile(
+            "base",
+            "Base",
+            description="原描述",
+            description_i18n={"zh": "原描述", "en": "Original"},
+        )
+        derived = base.derive(
+            id="d4",
+            description="新描述",
+            created_by="test",
+        )
+        assert derived.description == "新描述"
+        assert derived.description_i18n["zh"] == "新描述"
+        assert derived.description_i18n["en"] == "Original"
+
 
 # ================================================================
 # ProfileStore Tests
@@ -255,6 +378,155 @@ class TestProfileStore:
     def test_update_nonexistent_raises(self, store: ProfileStore):
         with pytest.raises(KeyError):
             store.update("ghost", {"name": "Ghost"})
+
+    def test_update_name_mirrors_to_name_i18n_zh(self, store: ProfileStore):
+        """改 name 时应自动镜像到 name_i18n['zh']，避免 UI 显示双名漂移。
+
+        Regression: UI 通过 PUT /api/agents/profiles/{id} 只传 {name: "中秋"}
+        而不传 name_i18n 时，旧 name_i18n.zh "小秋" 会残留，造成 system prompt
+        显示 "中秋" 但 IM/像素办公室/日志显示 "小秋" 的精神分裂状态。
+        """
+        store.save(
+            _make_profile(name="Old Name", name_i18n={"zh": "旧名", "en": "Old Name"}),
+        )
+        updated = store.update("test-agent", {"name": "新名"})
+        assert updated.name == "新名"
+        assert updated.name_i18n["zh"] == "新名"
+        # 其它语种不应被改名兜底覆盖，保持向后兼容
+        assert updated.name_i18n["en"] == "Old Name"
+
+    def test_update_name_with_explicit_i18n_respects_caller(self, store: ProfileStore):
+        """同时传 name 和 name_i18n 时，调用方显式提供的 i18n 应优先。"""
+        store.save(_make_profile(name_i18n={"zh": "旧", "en": "Old"}))
+        updated = store.update(
+            "test-agent",
+            {"name": "中文名", "name_i18n": {"zh": "显式中文", "en": "Explicit"}},
+        )
+        assert updated.name == "中文名"
+        assert updated.name_i18n["zh"] == "显式中文"
+        assert updated.name_i18n["en"] == "Explicit"
+
+    def test_update_description_mirrors_to_description_i18n_zh(self, store: ProfileStore):
+        """description 字段也应有同样的 i18n 镜像兜底。"""
+        store.save(
+            _make_profile(description_i18n={"zh": "旧描述", "en": "Old desc"}),
+        )
+        updated = store.update("test-agent", {"description": "新描述"})
+        assert updated.description == "新描述"
+        assert updated.description_i18n["zh"] == "新描述"
+        assert updated.description_i18n["en"] == "Old desc"
+
+    def test_update_empty_name_does_not_mirror(self, store: ProfileStore):
+        """空字符串 / 全空白 name 不触发镜像，避免把 name_i18n 写空。"""
+        store.save(_make_profile(name_i18n={"zh": "保留", "en": "Keep"}))
+        updated = store.update("test-agent", {"name": "   "})
+        assert updated.name_i18n["zh"] == "保留"
+
+    def test_load_self_heals_system_profile_with_stale_name_i18n_zh(
+        self, tmp_path: Path
+    ):
+        """SYSTEM Profile 加载时若 name 与 name_i18n['zh'] 漂移，应自动镜像并落盘。
+
+        Regression: 老版本 ProfileStore.update 不同步 name 到 name_i18n['zh']，
+        升级到新版本的用户磁盘上仍残留 `name="中秋", name_i18n.zh="小秋"`
+        这种内部不自洽状态。新 __post_init__ 兜底规则只在 name_i18n.zh 为空时
+        才填值，无法修这种已有非空但漂移的情况。
+        ProfileStore._load_all 现在对 SYSTEM 型 profile 做额外自愈，确保
+        Agent._resolve_agent_voice() 读到的中文名跟 UI 显示的 name 一致。
+        """
+        import json as _json
+
+        profiles_dir = tmp_path / "agents" / "profiles"
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        stale_path = profiles_dir / "default.json"
+        stale_payload = {
+            "id": "default",
+            "name": "中秋",
+            "description": "新描述",
+            "type": "system",
+            "name_i18n": {"zh": "小秋", "en": "Akita"},
+            "description_i18n": {"zh": "旧描述", "en": "Stale"},
+        }
+        stale_path.write_text(
+            _json.dumps(stale_payload, ensure_ascii=False), encoding="utf-8"
+        )
+
+        store = ProfileStore(tmp_path / "agents")
+        healed = store.get("default")
+        assert healed is not None
+        # 内存对象按 name 兜底回正
+        assert healed.name == "中秋"
+        assert healed.name_i18n["zh"] == "中秋"
+        # `en` 译名属于合法独立本地化，必须保留
+        assert healed.name_i18n["en"] == "Akita"
+        assert healed.description_i18n["zh"] == "新描述"
+        # 落盘也应回正，避免下次加载时再走一遍 heal
+        on_disk = _json.loads(stale_path.read_text(encoding="utf-8"))
+        assert on_disk["name_i18n"]["zh"] == "中秋"
+        assert on_disk["name_i18n"]["en"] == "Akita"
+        assert on_disk["description_i18n"]["zh"] == "新描述"
+
+    def test_load_does_not_heal_custom_profile_with_diverged_name_i18n_zh(
+        self, tmp_path: Path, caplog
+    ):
+        """CUSTOM Profile 的 name_i18n.zh 漂移可能是 Hub 发布者的合法独立译名，
+        加载时只记 WARNING，绝不写盘覆盖发布者意图。
+        """
+        import json as _json
+        import logging
+
+        profiles_dir = tmp_path / "agents" / "profiles"
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        path = profiles_dir / "alice.json"
+        payload = {
+            "id": "alice",
+            "name": "Alice",
+            "description": "Assistant",
+            "type": "custom",
+            "name_i18n": {"zh": "艾莉丝", "en": "Alice"},
+        }
+        path.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="synapse.agents.profile"):
+            store = ProfileStore(tmp_path / "agents")
+
+        profile = store.get("alice")
+        assert profile is not None
+        # CUSTOM 型保留原始独立译名，不被自动覆盖
+        assert profile.name == "Alice"
+        assert profile.name_i18n["zh"] == "艾莉丝"
+        # 磁盘上的 JSON 也未被改写
+        on_disk = _json.loads(path.read_text(encoding="utf-8"))
+        assert on_disk["name_i18n"]["zh"] == "艾莉丝"
+        # 但应在日志里提醒维护者人工对齐
+        assert any(
+            "alice" in record.message and "name_i18n" in record.message
+            for record in caplog.records
+        )
+
+    def test_load_leaves_aligned_system_profile_untouched(self, tmp_path: Path):
+        """SYSTEM Profile 的 name 与 name_i18n.zh 已一致时，加载不应改写文件。"""
+        import json as _json
+
+        profiles_dir = tmp_path / "agents" / "profiles"
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        path = profiles_dir / "default.json"
+        payload = {
+            "id": "default",
+            "name": "小秋",
+            "type": "system",
+            "name_i18n": {"zh": "小秋", "en": "Akita"},
+        }
+        raw_before = _json.dumps(payload, ensure_ascii=False)
+        path.write_text(raw_before, encoding="utf-8")
+        mtime_before = path.stat().st_mtime_ns
+
+        # Sleep a tick so a rewrite would actually bump mtime on filesystems
+        # whose resolution is coarse (FAT, some networked FS); then re-stat.
+        time.sleep(0.01)
+        ProfileStore(tmp_path / "agents")
+        mtime_after = path.stat().st_mtime_ns
+        assert mtime_after == mtime_before, "aligned profile must not be rewritten"
 
     def test_ephemeral_profile_memory_only(self, store: ProfileStore):
         eph = _make_profile("eph-1", "Ephemeral", ephemeral=True)
@@ -606,10 +878,13 @@ class TestAgentInstancePool:
         mock_agent = MagicMock()
         entry = _PoolEntry(mock_agent, "agent-a", "session-1")
         old_time = entry.last_used
-        time.sleep(0.01)
+        # ``time.sleep(0.01)`` 在 Windows 上的 monotonic clock 实际颗粒度
+        # 经常 ≥ 15ms 但偶尔 < 1ms，会让 ``last_used > old_time`` 退化成
+        # ``==``。改用 ≥ 并主动 sleep 让 release 后的时间至少“没有倒退”。
+        time.sleep(0.02)
         pool._pool["session-1::agent-a"] = entry
         pool.release("session-1", "agent-a")
-        assert entry.last_used > old_time
+        assert entry.last_used >= old_time
 
     def test_reap_idle(self, pool):
         from synapse.agents.factory import _PoolEntry
@@ -716,7 +991,10 @@ class TestAgentOrchestrator:
     async def test_handle_message_routes_correctly(self, orchestrator, mock_pool):
         session = _make_session(agent_profile_id="default")
         result = await orchestrator.handle_message(session, "Hello")
-        assert result == "Agent response"
+        # orchestrator 现在通过 ``DelegationResult.to_tool_response`` 给响应加结构化 header
+        # （``[任务完成通知] Agent: ... | 状态: ... | 耗时: ...`` + ``工具调用:`` 一行 + 原文）
+        # ，所以这里改为 substring 断言。
+        assert "Agent response" in result
         mock_pool.get_or_create.assert_awaited()
 
     @pytest.mark.asyncio
@@ -752,7 +1030,7 @@ class TestAgentOrchestrator:
         result = await orchestrator.delegate(
             session, "main", "helper", "do something", reason="testing"
         )
-        assert result == "Agent response"
+        assert "Agent response" in result
         assert len(session.context.handoff_events) == 1
         assert session.context.handoff_events[0]["from_agent"] == "main"
 
@@ -848,8 +1126,8 @@ class TestAgentOrchestrator:
             assert "处理失败" in r
 
         # 3rd failure: hits threshold, auto-degrades and dispatches to fallback
-        # which succeeds — returning "fallback response"
-        assert results[-1] == "fallback response"
+        # which succeeds — returning "fallback response"（外面包了 to_tool_response header）
+        assert "fallback response" in results[-1]
 
     @pytest.mark.asyncio
     async def test_collaboration_start(self, orchestrator):
@@ -1111,7 +1389,12 @@ class TestAgentToolHandler:
                 "extra_skills": ["web_scrape"],
                 "custom_prompt_overlay": "Focus on performance",
             })
-            assert result == "spawned result"
+            # C16: spawn_agent return is wrapped with EXTERNAL_CONTENT_*
+            # markers so the sub-agent's text cannot inject instructions
+            # into the parent's transcript. The payload itself stays
+            # unchanged; we just assert it survives the wrap.
+            assert "spawned result" in result
+            assert "EXTERNAL_CONTENT_BEGIN" in result
             mock_orch.delegate.assert_awaited_once()
             # Verify ephemeral profile was created
             ephemeral_profiles = mock_store.list_all(include_ephemeral=True)
@@ -1347,7 +1630,7 @@ class TestEdgeCasesAndBugs:
         t1 = asyncio.create_task(orch.handle_message(session, "msg1"))
         t2 = asyncio.create_task(orch.handle_message(session, "msg2"))
         results = await asyncio.gather(t1, t2, return_exceptions=True)
-        assert all(r == "ok" for r in results)
+        assert all(isinstance(r, str) and "ok" in r for r in results)
 
     @pytest.mark.asyncio
     async def test_delegation_depth_chain_not_accumulated_from_tool(self, tmp_path):
@@ -1488,10 +1771,26 @@ class TestEdgeCasesAndBugs:
         from synapse.tools.handlers.agent import AgentToolHandler
 
         store = ProfileStore(tmp_path / "agents")
-        store.save(_make_profile("browser-agent", "Browser Agent"))
+        store.save(
+            _make_profile(
+                "browser-agent",
+                "Browser Agent",
+                memory_mode="isolated",
+                memory_inherit_global=False,
+            )
+        )
+        captured: list[AgentProfile] = []
+        original_save = store.save
+
+        def capture_save(profile: AgentProfile) -> None:
+            captured.append(profile)
+            original_save(profile)
+
+        store.save = capture_save
 
         agent = MagicMock()
         agent._is_sub_agent_call = False
+        agent.browser_manager = None
         session = _make_session()
         session.context.agent_profile_id = "default"
         agent._current_session = session
@@ -1519,6 +1818,88 @@ class TestEdgeCasesAndBugs:
             ephemeral_profiles = store.list_all(include_ephemeral=True)
             eph_count = sum(1 for p in ephemeral_profiles if p.ephemeral)
             assert eph_count == 0
+            clones = [p for p in captured if p.id.startswith("ephemeral_browser-agent_")]
+            assert len(clones) == 2
+            assert all(p.memory_mode == "isolated" for p in clones)
+            assert all(p.memory_inherit_global is False for p in clones)
+
+    @pytest.mark.asyncio
+    async def test_create_agent_can_enable_isolated_memory(self, tmp_path):
+        """BUG CHECK: create_agent should let the model create a long-lived
+        specialist with isolated memory when the user asks for one.
+        """
+        from synapse.tools.handlers.agent import AgentToolHandler
+
+        store = ProfileStore(tmp_path / "agents")
+        agent = MagicMock()
+        agent._is_sub_agent_call = False
+        agent._current_session = _make_session(session_id="sess-create")
+        handler = AgentToolHandler(agent)
+
+        with patch.object(handler, "_get_profile_store", return_value=store):
+            result = await handler.handle(
+                "create_agent",
+                {
+                    "name": "Personal Memory Agent",
+                    "description": "Long-lived specialist that should learn separately",
+                    "persistent": True,
+                    "memory_mode": "isolated",
+                    "memory_inherit_global": False,
+                    "force": True,
+                },
+            )
+
+        assert "Agent created" in result
+        [profile] = store.list_all(include_ephemeral=True)
+        assert profile.memory_mode == "isolated"
+        assert profile.memory_inherit_global is False
+
+    @pytest.mark.asyncio
+    async def test_spawn_agent_inherits_isolated_memory(self, tmp_path):
+        """BUG CHECK: spawn_agent should preserve the base profile's memory
+        isolation instead of silently falling back to shared memory.
+        """
+        from synapse.tools.handlers.agent import AgentToolHandler
+
+        store = ProfileStore(tmp_path / "agents")
+        store.save(
+            _make_profile(
+                "base",
+                "Base",
+                memory_mode="isolated",
+                memory_inherit_global=False,
+                skills=["read_file"],
+            )
+        )
+        agent = MagicMock()
+        agent._is_sub_agent_call = False
+        agent._current_session = _make_session(session_id="sess-spawn")
+        handler = AgentToolHandler(agent)
+        mock_orch = MagicMock()
+        mock_orch.delegate = AsyncMock(return_value="ok")
+
+        with patch.object(handler, "_get_profile_store", return_value=store), \
+             patch.object(handler, "_get_orchestrator", return_value=mock_orch):
+            result = await handler.handle(
+                "spawn_agent",
+                {
+                    "inherit_from": "base",
+                    "message": "do work",
+                    "extra_skills": ["write_file"],
+                },
+            )
+
+        # C16 Phase A: spawn_agent return wrapped with EXTERNAL_CONTENT_*
+        # markers (anti-injection). Assert payload reached the parent
+        # transcript, not the literal wrap-free form.
+        assert "ok" in result
+        assert "EXTERNAL_CONTENT_BEGIN" in result
+        spawned_id = mock_orch.delegate.await_args.kwargs["to_agent"]
+        spawned = store.get(spawned_id)
+        assert spawned is not None
+        assert spawned.memory_mode == "isolated"
+        assert spawned.memory_inherit_global is False
+        assert spawned.skills == ["read_file", "write_file"]
 
     def test_session_context_multi_agent_serialization(self):
         """BUG CHECK: Multi-agent fields should survive serialization roundtrip."""
@@ -1569,32 +1950,6 @@ class TestEdgeCasesAndBugs:
         agent = MagicMock(spec=[])
         tools = AgentOrchestrator._get_tools_executed(agent, "s1")
         assert tools == []
-
-    def test_extract_progress_from_trace_fallback(self):
-        agent = MagicMock()
-        agent.agent_state = None
-        agent._last_finalized_trace = [
-            {"tool_calls": [{"name": "grep"}, {"name": "read_file"}]},
-            {"tool_calls": [{"name": "read_file"}]},
-        ]
-        tools, skills, iteration = AgentOrchestrator._extract_progress_from_agent(agent, "s1")
-        assert tools == ["grep", "read_file"]
-        assert iteration == 2
-
-    def test_refresh_sub_agent_progress_snapshot_preserves_tools(self):
-        orch = AgentOrchestrator.__new__(AgentOrchestrator)
-        orch._sub_agent_states = {
-            "k1": {"status": "running", "tools_executed": ["grep"], "tools_total": 1}
-        }
-        agent = MagicMock()
-        agent.agent_state = None
-        agent._last_finalized_trace = [
-            {"tool_calls": [{"name": "grep"}, {"name": "write_file"}]},
-        ]
-        orch._refresh_sub_agent_progress_snapshot("k1", agent, "s1")
-        snap = orch._sub_agent_states["k1"]
-        assert snap["tools_total"] >= 2
-        assert "write_file" in snap["tools_executed"]
 
 
 # ================================================================

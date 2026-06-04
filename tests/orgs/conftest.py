@@ -2,30 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from synapse.orgs.models import (
     EdgeType,
-    InboxMessage,
-    InboxPriority,
-    MemoryScope,
-    MemoryType,
-    MsgType,
-    NodeSchedule,
-    NodeStatus,
     Organization,
     OrgEdge,
-    OrgMemoryEntry,
-    OrgMessage,
     OrgNode,
-    OrgStatus,
-    ScheduleType,
 )
 from synapse.orgs.manager import OrgManager
 
@@ -132,6 +119,11 @@ def mock_runtime(persisted_org: Organization, org_manager: OrgManager, org_dir: 
     rt.get_org = MagicMock(return_value=persisted_org)
     rt._active_orgs = {persisted_org.id: persisted_org}
     rt._chain_delegation_depth = {}
+    # MagicMock attribute access otherwise returns truthy MagicMocks, which would
+    # trip the closed-chain gate in tool_handler. Default to "no chain is closed".
+    rt.is_chain_closed = MagicMock(return_value=False)
+    rt.get_current_chain_id = MagicMock(return_value=None)
+    rt._cleanup_accepted_chain = MagicMock(return_value=None)
 
     from synapse.orgs.event_store import OrgEventStore
     from synapse.orgs.blackboard import OrgBlackboard

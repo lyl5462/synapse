@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -13,8 +12,7 @@ from synapse.orgs.node_scheduler import (
     FREQUENCY_MULTIPLIER,
     MAX_FREQUENCY_FACTOR,
 )
-from synapse.orgs.models import NodeSchedule, ScheduleType, OrgStatus
-from .conftest import make_org
+from synapse.orgs.models import NodeSchedule, ScheduleType
 
 
 @pytest.fixture()
@@ -114,3 +112,4 @@ class TestConstants:
         assert CLEAN_THRESHOLD > 0
         assert FREQUENCY_MULTIPLIER > 1.0
         assert MAX_FREQUENCY_FACTOR > 1.0
+

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 from synapse.orgs.messenger import NodeMailbox, OrgMessenger
-from synapse.orgs.models import MsgType, NodeStatus, OrgMessage
-from .conftest import make_org, make_node, make_edge
+from synapse.orgs.models import MsgType, OrgMessage
+from .conftest import make_node
 
 
 @pytest.fixture()
@@ -249,3 +248,4 @@ class TestBackgroundTasks:
         await org_with_messenger.stop_background_tasks()
         assert org_with_messenger._deadlock_task is None
         assert org_with_messenger._ttl_task is None
+

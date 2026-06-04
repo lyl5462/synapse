@@ -27,13 +27,12 @@ from synapse.channels.adapters.wework_ws import (
     CMD_RESPONSE,
     CMD_SEND_MSG,
     CMD_SUBSCRIBE,
-    STREAM_CONTENT_MAX_BYTES,
     WeWorkWsAdapter,
     WeWorkWsConfig,
     _decrypt_file,
     _generate_req_id,
 )
-from synapse.channels.types import MediaFile, MessageContent, OutgoingMessage
+from synapse.channels.types import MediaFile, OutgoingMessage
 
 
 # ==================== Fixtures ====================
@@ -510,7 +509,7 @@ class TestStreamReply:
         msg.metadata = {}  # no req_id → active push
 
         ack_task = asyncio.create_task(auto_ack())
-        result = await adapter.send_message(msg)
+        await adapter.send_message(msg)
         await ack_task
 
         assert len(sent_frames) == 1
@@ -610,6 +609,40 @@ class TestThinkingIndicator:
 
         assert len(sent_frames) == 0
         assert "req_think_2" not in adapter._pre_streams
+
+    @pytest.mark.asyncio
+    async def test_org_command_skips_presend_thinking(self, connected_adapter):
+        """Org control commands are handled by gateway without a pre-created thinking stream."""
+        adapter = connected_adapter
+        sent_frames = []
+
+        async def mock_send(frame_json):
+            sent_frames.append(json.loads(frame_json))
+
+        adapter._ws.send = mock_send
+
+        frame = {
+            "cmd": CMD_CALLBACK,
+            "headers": {"req_id": "req_org_list"},
+            "body": {
+                "msgid": "org_msg_1",
+                "msgtype": "text",
+                "chattype": "single",
+                "from": {"userid": "user1"},
+                "chatid": "chat1",
+                "text": {"content": "/org list"},
+            },
+        }
+
+        with patch.object(adapter, "_emit_message", new_callable=AsyncMock) as emit_message:
+            with patch("synapse.config.settings") as mock_settings:
+                mock_settings.wework_ws_thinking_indicator = True
+                await adapter._route_frame(frame)
+                await asyncio.sleep(0.1)
+
+        emit_message.assert_awaited_once()
+        assert len(sent_frames) == 0
+        assert "req_org_list" not in adapter._pre_streams
 
     @pytest.mark.asyncio
     async def test_stream_reply_reuses_pre_stream_id(self, connected_adapter):
@@ -964,7 +997,7 @@ class TestAdapterProperties:
 
     def test_upload_media_requires_connection(self, adapter):
         with pytest.raises(ConnectionError, match="WebSocket not connected"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 adapter.upload_media(Path("test.jpg"), "image/jpeg")
             )
 

@@ -9,7 +9,6 @@ The interactive prompts are NOT tested here — only the file-writing logic.
 import json
 
 import pytest
-from pathlib import Path
 
 from synapse.setup.wizard import SetupWizard
 
@@ -66,7 +65,10 @@ class TestGenerateEnvContent:
     def test_env_contains_agent_settings(self, wizard):
         wizard.config = {}
         content = wizard._generate_env_content()
-        assert "AGENT_NAME=Synapse" in content
+        # Agent display name is owned by AgentProfile (Agents menu), not by .env.
+        # The wizard must NOT seed an AGENT_NAME line, otherwise existing forks
+        # silently revert to "Synapse" on first launch.
+        assert "AGENT_NAME=" not in content
         assert "AUTO_CONFIRM=false" in content
         assert "DATABASE_PATH=data/agent.db" in content
 
@@ -112,8 +114,10 @@ class TestWriteLLMEndpoints:
 
         data = json.loads(ep_file.read_text(encoding="utf-8"))
         assert "endpoints" in data
-        assert len(data["endpoints"]) >= 1
-        assert data["endpoints"][0]["name"] == "primary"
+        assert len(data["endpoints"]) >= 2
+        names = {e["name"] for e in data["endpoints"]}
+        assert "primary" in names
+        assert "backup" in names
 
     def test_endpoints_have_settings(self, wizard, tmp_path):
         (tmp_path / "data").mkdir(exist_ok=True)
@@ -171,14 +175,28 @@ class TestWriteLLMEndpoints:
 
 
 class TestCreateIdentityExamples:
-    def test_creates_soul_md(self, wizard, tmp_path):
+    def test_creates_soul_md_from_template(self, wizard, tmp_path):
+        """SOUL.md must be seeded from the bundled SOUL.md.example so the
+        ``{{agent_name}}`` placeholder survives to the prompt builder.
+
+        Regression: the wizard used to inline a short hardcoded stub that
+        hardcoded ``你是 Synapse`` and that stub then masked the templated
+        example on every fresh install — every Agent profile read back the
+        product name regardless of what the user had picked in the Agents
+        manager.
+        """
         (tmp_path / "identity").mkdir(exist_ok=True)
         wizard._create_identity_examples()
 
         soul = tmp_path / "identity" / "SOUL.md"
         assert soul.exists()
         content = soul.read_text(encoding="utf-8")
-        assert "Synapse" in content
+        # The bundled example is the templated form; the literal placeholder
+        # must reach disk so the prompt builder can substitute per-Agent.
+        assert "{{agent_name}}" in content
+        # Conversely, the short hardcoded stub that previously preempted the
+        # templated example must no longer be written verbatim.
+        assert "你是 Synapse，一个忠诚可靠的 AI 助手。" not in content
 
     def test_does_not_overwrite_existing(self, wizard, tmp_path):
         identity_dir = tmp_path / "identity"
@@ -211,3 +229,4 @@ class TestLocaleDefaults:
         }
         assert wizard._defaults["MODEL_DOWNLOAD_SOURCE"] == "huggingface"
         assert wizard._defaults["SCHEDULER_TIMEZONE"] == "UTC"
+

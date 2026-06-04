@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from synapse.orgs.manager import OrgManager
 from synapse.orgs.runtime import OrgRuntime
-from synapse.orgs.models import NodeStatus, OrgProject, OrgStatus, ProjectTask, ProjectStatus, TaskStatus
-from synapse.orgs.project_store import ProjectStore
+from synapse.orgs.models import NodeStatus, OrgStatus
 from .conftest import make_org
 
 
@@ -228,7 +226,7 @@ class TestAutoKickoff:
 
             captured_prompt = None
 
-            async def capture_activate(org_obj, node, prompt):
+            async def capture_activate(org_obj, node, prompt, *args, **kwargs):
                 nonlocal captured_prompt
                 captured_prompt = prompt
                 return {"result": "ok"}
@@ -250,7 +248,6 @@ class TestAutoKickoff:
         with patch("synapse.orgs.templates.ensure_builtin_templates"):
             await runtime.start()
         try:
-            from synapse.orgs.models import UserPersona
             org_data = make_org(name="投资项目").to_dict()
             org_data["core_business"] = "AI 研究"
             org_data["operation_mode"] = "autonomous"
@@ -259,7 +256,7 @@ class TestAutoKickoff:
 
             captured_prompt = None
 
-            async def capture_activate(org_obj, node, prompt):
+            async def capture_activate(org_obj, node, prompt, *args, **kwargs):
                 nonlocal captured_prompt
                 captured_prompt = prompt
                 return {"result": "ok"}

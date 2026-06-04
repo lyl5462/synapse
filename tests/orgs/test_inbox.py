@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
 
 from synapse.orgs.inbox import OrgInbox
-from synapse.orgs.models import InboxMessage, InboxPriority
+from synapse.orgs.models import InboxPriority
 
 
 @pytest.fixture()
@@ -161,3 +160,4 @@ class TestSubscription:
             assert msg.title == "新消息"
         finally:
             inbox.unsubscribe(persisted_org.id, q)
+

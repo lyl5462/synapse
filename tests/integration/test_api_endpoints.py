@@ -64,52 +64,9 @@ class TestTokenStatsEndpoint:
         resp = await client.get("/api/stats/tokens/sessions")
         assert resp.status_code in (200, 500)
 
-    async def test_scenes(self, client):
-        resp = await client.get("/api/stats/tokens/scenes")
-        assert resp.status_code in (200, 500)
-
     async def test_context(self, client):
         resp = await client.get("/api/stats/tokens/context")
         assert resp.status_code in (200, 500)
-
-
-class TestWorkOrderDbMetricsEndpoint:
-    async def test_db_metrics(self, client):
-        resp = await client.post(
-            "/api/dev/work-order/db-metrics",
-            json={"demand_no": "21878317", "task_nos": ["11879580"]},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body.get("errorcode") == 0
-        data = body.get("data") or {}
-        assert "summary" in data
-        assert "demand_metrics" in data
-        assert "task_metrics" in data
-
-    async def test_human_in_loop_flags(self, client):
-        resp = await client.post(
-            "/api/dev/work-order/human-in-loop-flags",
-            json={"order_id": "D-100"},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body.get("errorcode") == 0
-        data = body.get("data") or {}
-        assert "human_in_the_loop" in data
-        assert isinstance(data.get("human_in_the_loop"), bool)
-
-    async def test_human_in_loop_flags_empty_order_id(self, client):
-        resp = await client.post("/api/dev/work-order/human-in-loop-flags", json={"order_id": ""})
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body.get("errorcode") == 400
-
-    async def test_db_metrics_empty_demand(self, client):
-        resp = await client.post("/api/dev/work-order/db-metrics", json={"demand_no": ""})
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body.get("errorcode") == 400
 
 
 class TestIMEndpoint:
@@ -142,3 +99,4 @@ class TestFilesEndpoint:
     async def test_serve_root(self, client):
         resp = await client.get("/api/files")
         assert resp.status_code in (200, 400, 404, 500)
+

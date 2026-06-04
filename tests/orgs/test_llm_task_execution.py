@@ -23,8 +23,8 @@ import pytest
 
 from synapse.orgs.manager import OrgManager
 from synapse.orgs.runtime import OrgRuntime
-from synapse.orgs.models import NodeStatus, OrgStatus
-from .conftest import make_org, make_node, make_edge
+from synapse.orgs.models import NodeStatus
+from .conftest import make_org
 
 _SKIP_REASON = "LLM tests require SYNAPSE_LLM_TESTS=1 env"
 
@@ -124,7 +124,7 @@ class TestMultiHopDelegation:
         org = manager.create(make_org(name="事件链测试").to_dict())
         await runtime.start_org(org.id)
 
-        result = await asyncio.wait_for(
+        await asyncio.wait_for(
             runtime.send_command(
                 org.id, "node_ceo",
                 "给CTO分配任务：写一份技术方案摘要。用 org_delegate_task。",
@@ -270,3 +270,4 @@ class TestCompletedTaskCount:
         refreshed = runtime.get_org(org.id)
         assert refreshed.total_tasks_completed > initial, \
             f"Tasks completed should increment. Initial={initial}, Now={refreshed.total_tasks_completed}"
+

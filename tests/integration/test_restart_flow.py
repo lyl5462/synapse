@@ -135,7 +135,6 @@ class TestRestartOrchestratorRecovery:
         ) as c:
             with (
                 patch("synapse.config.settings") as mock_settings,
-                patch("synapse.config.runtime_state") as mock_rs,
                 patch("synapse.api.routes.config._hot_patch_agent_tools"),
             ):
                 mock_settings.multi_agent_enabled = True

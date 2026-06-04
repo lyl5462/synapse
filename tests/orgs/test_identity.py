@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from synapse.orgs.identity import OrgIdentity, ResolvedIdentity
-from synapse.orgs.models import Organization, OrgNode
 from .conftest import make_org, make_node, make_edge
 
 

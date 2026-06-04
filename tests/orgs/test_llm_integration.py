@@ -15,14 +15,13 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from synapse.orgs.manager import OrgManager
 from synapse.orgs.runtime import OrgRuntime
-from synapse.orgs.models import OrgStatus, NodeStatus
-from .conftest import make_org, make_node, make_edge
+from synapse.orgs.models import NodeStatus
+from .conftest import make_org
 
 _SKIP_REASON = "LLM tests require --api-keys flag or SYNAPSE_LLM_TESTS=1 env"
 
@@ -173,3 +172,4 @@ class TestLLMFreezeNode:
         result = await runtime.send_command(org.id, "node_dev", "你好")
         assert "error" in result
         assert "冻结" in result["error"]
+
