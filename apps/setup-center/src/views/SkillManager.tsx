@@ -6,7 +6,7 @@ import { invoke, IS_TAURI } from "../platform";
 import { useTranslation } from "react-i18next";
 import type { SkillInfo, SkillConfigField, MarketplaceSkill, EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
-import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye } from "../icons";
+import { IconGear, IconZap, IconWrench, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye } from "../icons";
 import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { safeFetch } from "../providers";
 import { toast } from "sonner";
@@ -836,7 +836,7 @@ function SkillConfigForm({
 
 // ─── 技能卡片 ───
 
-function SkillCard({
+export function SkillCard({
   skill,
   expanded,
   onToggleExpand,
@@ -849,6 +849,9 @@ function SkillCard({
   onSaveConfig,
   saving,
   onMoveCategory,
+  leadVariant = "default",
+  lockEnabled = false,
+  lockEnabledHint,
 }: {
   skill: SkillInfo;
   expanded: boolean;
@@ -862,6 +865,9 @@ function SkillCard({
   onSaveConfig: () => void;
   saving: boolean;
   onMoveCategory?: () => void;
+  leadVariant?: "default" | "devTool";
+  lockEnabled?: boolean;
+  lockEnabledHint?: string;
 }) {
   const hasConfig = skill.config && skill.config.length > 0;
   const configComplete = skill.configComplete ?? true;
@@ -879,14 +885,26 @@ function SkillCard({
     : configComplete
       ? t("skills.configComplete")
       : t("skills.configIncomplete");
+  const isDevToolLead = !skill.system && leadVariant === "devTool";
+  const leadIconClass = skill.system
+    ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
+    : isDevToolLead
+      ? "bg-teal-500/10 text-teal-600 dark:text-teal-400"
+      : "bg-purple-500/10 text-purple-600 dark:text-purple-400";
 
   return (
     <Card className="gap-0 overflow-hidden border-border/80 py-0 shadow-sm transition-all hover:shadow-md">
       <CardContent className="p-4">
         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
           <div className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer" onClick={onViewDetail}>
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${skill.system ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : "bg-purple-500/10 text-purple-600 dark:text-purple-400"}`}>
-              {skill.system ? <IconGear size={20} /> : <IconZap size={20} />}
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${leadIconClass}`}>
+              {skill.system ? (
+                <IconGear size={20} />
+              ) : isDevToolLead ? (
+                <IconWrench size={20} />
+              ) : (
+                <IconZap size={20} />
+              )}
             </div>
             <div className="flex flex-col min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -946,10 +964,16 @@ function SkillCard({
               </Button>
             )}
             {!skill.system && (
-              <Label className="flex items-center gap-1.5 cursor-pointer text-xs font-normal ml-2 mr-2">
+              <Label
+                className={`flex items-center gap-1.5 text-xs font-normal ml-2 mr-2 ${lockEnabled ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                title={lockEnabled ? lockEnabledHint : undefined}
+              >
                 <Checkbox
                   checked={skill.enabled !== false}
-                  onCheckedChange={() => onToggleEnabled()}
+                  disabled={lockEnabled}
+                  onCheckedChange={() => {
+                    if (!lockEnabled) onToggleEnabled();
+                  }}
                 />
                 {t("skills.enabled")}
               </Label>
