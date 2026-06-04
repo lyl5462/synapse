@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { IconBot, IconRefresh, IconPlus, IconEdit, IconTrash, IconDownload, IconUpload } from "../icons";
 import { safeFetch } from "../providers";
@@ -13,8 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import type { SkillInfo } from "../types";
-import { isWhalecloudDevToolSkill, rdToolDisplayLabel } from "../utils/whalecloudDevToolSkill";
+import { ProviderIcon } from "@/components/ProviderIcon";
 
 type AgentProfile = {
   id: string;
@@ -27,12 +26,15 @@ type AgentProfile = {
   skills_mode: string;
   custom_prompt: string;
   preferred_endpoint?: string | null;
+  endpoint_policy?: "prefer" | "require";
   category?: string;
   hidden?: boolean;
   user_customized?: boolean;
   identity_mode?: string;
   memory_mode?: string;
   memory_inherit_global?: boolean;
+  name_i18n?: Record<string, string>;
+  description_i18n?: Record<string, string>;
 };
 
 type SkillItem = {
@@ -40,20 +42,7 @@ type SkillItem = {
   name: string;
   enabled: boolean;
   name_i18n?: Record<string, string> | null;
-  label?: string | null;
-  toolName?: string | null;
-  category?: string | null;
 };
-
-function skillItemDisplayName(skill: SkillItem, lang: string, rdPrefix = ""): string {
-  const asInfo = skill as SkillInfo;
-  if (isWhalecloudDevToolSkill(asInfo)) {
-    const label = rdToolDisplayLabel(asInfo, lang);
-    return rdPrefix ? `${rdPrefix}${label}` : label;
-  }
-  const key = lang.startsWith("zh") ? "zh" : lang;
-  return skill.name_i18n?.[key] || skill.name;
-}
 
 type ModelInfo = {
   name: string;
@@ -74,6 +63,7 @@ const EMPTY_PROFILE: AgentProfile = {
   skills_mode: "all",
   custom_prompt: "",
   preferred_endpoint: null,
+  endpoint_policy: "prefer",
   category: "",
   hidden: false,
   identity_mode: "shared",
@@ -206,6 +196,7 @@ export function AgentManagerView({
   const [newCatLabel, setNewCatLabel] = useState("");
   const [newCatColor, setNewCatColor] = useState("#6b7280");
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+  const [skillSearch, setSkillSearch] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
 
   // Isolation UI state
@@ -313,9 +304,6 @@ export function AgentManagerView({
           name: s.name,
           enabled: s.enabled !== false,
           name_i18n: s.name_i18n || null,
-          label: s.label ?? null,
-          toolName: s.tool_name ?? null,
-          category: s.category ?? null,
         })),
       );
     } catch {
@@ -469,6 +457,7 @@ export function AgentManagerView({
   const closeEditor = () => {
     setEditorOpen(false);
     setEmojiPickerOpen(false);
+    setSkillSearch("");
   };
 
   const generateId = (name: string) =>
@@ -504,6 +493,7 @@ export function AgentManagerView({
         skills_mode: editingProfile.skills_mode,
         custom_prompt: editingProfile.custom_prompt,
         preferred_endpoint: editingProfile.preferred_endpoint || null,
+        endpoint_policy: editingProfile.endpoint_policy || "prefer",
         category: editingProfile.category || "",
         identity_mode: editingProfile.identity_mode || "shared",
         memory_mode: editingProfile.memory_mode || "shared",
@@ -550,30 +540,6 @@ export function AgentManagerView({
     });
   };
 
-  /** 人设里写了 skill id，但当前 /api/skills 未返回（常见于全局关闭后已卸载） */
-  const profileSkillIdsNotInGlobalList = useMemo(() => {
-    if (editingProfile.skills_mode === "all") return [];
-    const ids = new Set(availableSkills.map((s) => s.skillId));
-    return editingProfile.skills.filter((id) => !ids.has(id));
-  }, [editingProfile.skills_mode, editingProfile.skills, availableSkills]);
-
-  const rdSkillDisplayPrefix = t("agentManager.rdSkillDisplayPrefix", "研发技能-");
-
-  /** 研发技能置顶，同组内按展示名排序 */
-  const sortedAvailableSkills = useMemo(() => {
-    const lang = i18n.language || "zh";
-    const locale = lang.startsWith("zh") ? "zh-CN" : lang;
-    return [...availableSkills].sort((a, b) => {
-      const da = isWhalecloudDevToolSkill(a as SkillInfo) ? 0 : 1;
-      const db = isWhalecloudDevToolSkill(b as SkillInfo) ? 0 : 1;
-      if (da !== db) return da - db;
-      return skillItemDisplayName(a, lang, rdSkillDisplayPrefix).localeCompare(
-        skillItemDisplayName(b, lang, rdSkillDisplayPrefix),
-        locale,
-      );
-    });
-  }, [availableSkills, i18n.language, rdSkillDisplayPrefix]);
-
   const handleVisibility = async (profileId: string, hidden: boolean) => {
     try {
       await safeFetch(`${apiBaseUrl}/api/agents/profiles/${profileId}/visibility`, {
@@ -611,6 +577,10 @@ export function AgentManagerView({
     };
     return i18nMap[catId] ? t(`agentManager.${i18nMap[catId]}`) : catId;
   };
+
+  const langKey = i18n.language?.startsWith("zh") ? "zh" : "en";
+  const getI18nName = (agent: AgentProfile) => agent.name_i18n?.[langKey] || agent.name;
+  const getI18nDesc = (agent: AgentProfile) => agent.description_i18n?.[langKey] || agent.description;
 
   const getCategoryColor = (catId: string): string => {
     const found = categories.find((c) => c.id === catId);
@@ -884,12 +854,12 @@ export function AgentManagerView({
                   {agent.icon.startsWith("svg:") ? <SvgIcon name={agent.icon.slice(4)} size={28} color={agent.color || "currentColor"} /> : agent.icon}
                 </span>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.name}</div>
+                  <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{getI18nName(agent)}</div>
                   <div style={{ fontSize: 11, opacity: 0.45, fontFamily: "monospace" }}>{agent.id}</div>
                 </div>
               </div>
               <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10, minHeight: 18, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {agent.description || "\u2014"}
+                {getI18nDesc(agent) || "\u2014"}
               </div>
 
               {/* Actions */}
@@ -964,8 +934,8 @@ export function AgentManagerView({
       </div>
 
       {filteredProfiles.length === 0 && !loading && (
-        <div style={{ textAlign: "center", padding: 40, opacity: 0.5 }}>
-          <IconBot size={40} />
+        <div style={{ textAlign: "center", padding: 28, opacity: 0.55 }}>
+          <IconBot size={32} />
           <div style={{ marginTop: 8 }}>{t("common.noData")}</div>
         </div>
       )}
@@ -1005,7 +975,7 @@ export function AgentManagerView({
                       {agent.icon.startsWith("svg:") ? <SvgIcon name={agent.icon.slice(4)} size={28} color={agent.color || "currentColor"} /> : agent.icon}
                     </span>
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{agent.name}</div>
+                      <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{getI18nName(agent)}</div>
                     </div>
                   </div>
                   <button
@@ -1087,7 +1057,7 @@ export function AgentManagerView({
           <SheetHeader className="px-6 pt-6 pb-2">
             <SheetTitle>{isCreating ? t("agentManager.create") : t("agentManager.edit")}</SheetTitle>
             <SheetDescription className="sr-only">
-              {isCreating ? "Create a new agent profile" : "Edit agent profile"}
+              {isCreating ? t("agentManager.create") : t("agentManager.edit")}
             </SheetDescription>
           </SheetHeader>
 
@@ -1237,7 +1207,7 @@ export function AgentManagerView({
               <Label className="text-xs opacity-70">{t("agentManager.skills")}</Label>
               <Select
                 value={editingProfile.skills_mode}
-                onValueChange={(v) => setEditingProfile((p) => ({ ...p, skills_mode: v }))}
+                onValueChange={(v) => { setEditingProfile((p) => ({ ...p, skills_mode: v })); setSkillSearch(""); }}
               >
                 <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -1249,80 +1219,44 @@ export function AgentManagerView({
             </div>
 
             {/* Skills multi-select */}
-            {editingProfile.skills_mode !== "all" && sortedAvailableSkills.length > 0 && (
-              <div className="max-h-[220px] overflow-y-auto rounded-lg border p-1">
-                {sortedAvailableSkills.map((skill) => {
-                  const checked = editingProfile.skills.includes(skill.skillId);
-                  const showGlobalOff = checked && !skill.enabled;
-                  return (
-                    <label
-                      key={skill.skillId}
-                      className={`flex flex-wrap items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] transition-colors ${
-                        checked ? "bg-primary/8" : "hover:bg-accent/50"
-                      }`}
-                    >
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={() => toggleSkill(skill.skillId)}
-                      />
-                      <span
-                        className="flex-1 min-w-0 truncate"
-                        title={
-                          skill.skillId !==
-                          skillItemDisplayName(skill, i18n.language || "zh", rdSkillDisplayPrefix)
-                            ? skill.skillId
-                            : undefined
-                        }
-                      >
-                        {skillItemDisplayName(skill, i18n.language || "zh", rdSkillDisplayPrefix)}
-                      </span>
-                      {showGlobalOff && (
-                        <Badge
-                          variant="outline"
-                          className="shrink-0 text-xs font-normal text-muted-foreground border-border"
-                          title={t("agentManager.skillGloballyDisabledTag")}
+            {editingProfile.skills_mode !== "all" && availableSkills.length > 0 && (
+              <div className="rounded-lg border">
+                <div className="p-1.5 border-b">
+                  <Input
+                    placeholder={t("agentManager.skillSearchPlaceholder")}
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                    className="h-7 text-xs"
+                  />
+                </div>
+                <div className="max-h-[200px] overflow-y-auto p-1">
+                  {availableSkills
+                    .filter((skill) => {
+                      if (!skillSearch.trim()) return true;
+                      const q = skillSearch.trim().toLowerCase();
+                      const displayName = skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name;
+                      return displayName.toLowerCase().includes(q) || skill.name.toLowerCase().includes(q);
+                    })
+                    .map((skill) => {
+                      const checked = editingProfile.skills.includes(skill.skillId);
+                      return (
+                        <label
+                          key={skill.skillId}
+                          className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md cursor-pointer text-[13px] transition-colors ${
+                            checked ? "bg-primary/8" : "hover:bg-accent/50"
+                          }`}
                         >
-                          {t("agentManager.skillGloballyDisabledTag")}
-                        </Badge>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            )}
-
-            {editingProfile.skills_mode !== "all" && profileSkillIdsNotInGlobalList.length > 0 && (
-              <div className="rounded-lg border border-amber-500/35 bg-amber-500/[0.06] p-3 space-y-2">
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {t("agentManager.profileSkillsNotLoadedHint")}
-                </p>
-                <ul className="space-y-1.5">
-                  {profileSkillIdsNotInGlobalList.map((sid) => (
-                    <li
-                      key={sid}
-                      className="flex flex-wrap items-center gap-2 text-[13px] min-w-0"
-                    >
-                      <span className="font-mono truncate flex-1 min-w-0" title={sid}>
-                        {sid}
-                      </span>
-                      <Badge
-                        variant="outline"
-                        className="shrink-0 text-amber-800 dark:text-amber-300 border-amber-500/45"
-                      >
-                        {t("agentManager.profileSkillUnavailableTag")}
-                      </Badge>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 shrink-0"
-                        onClick={() => toggleSkill(sid)}
-                      >
-                        {t("agentManager.removeProfileSkill")}
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={() => toggleSkill(skill.skillId)}
+                          />
+                          <span className="flex-1 min-w-0 truncate">
+                            {skill.name_i18n?.[i18n.language?.startsWith("zh") ? "zh" : i18n.language || "zh"] || skill.name}
+                          </span>
+                        </label>
+                      );
+                    })}
+                </div>
               </div>
             )}
 
@@ -1331,18 +1265,41 @@ export function AgentManagerView({
               <Label className="text-xs opacity-70">{t("agentManager.preferredEndpoint")}</Label>
               <Select
                 value={editingProfile.preferred_endpoint || "_auto_"}
-                onValueChange={(v) => setEditingProfile((p) => ({ ...p, preferred_endpoint: v === "_auto_" ? null : v }))}
+                onValueChange={(v) => setEditingProfile((p) => ({
+                  ...p,
+                  preferred_endpoint: v === "_auto_" ? null : v,
+                  endpoint_policy: v === "_auto_" ? "prefer" : (p.endpoint_policy || "prefer"),
+                }))}
               >
                 <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="_auto_">{t("agentManager.preferredEndpointAuto")}</SelectItem>
                   {availableModels.map((m) => (
                     <SelectItem key={m.name} value={m.name} disabled={m.status !== "healthy"}>
-                      {m.name} ({m.model}){m.status !== "healthy" ? " ⚠" : ""}
+                      <span className="inline-flex items-center gap-2 align-middle">
+                        <ProviderIcon slug={m.provider} size={14} title={m.provider} />
+                        <span>{m.name} ({m.model}){m.status !== "healthy" ? " ⚠" : ""}</span>
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs opacity-70">{t("agentManager.endpointPolicy")}</Label>
+              <Select
+                value={editingProfile.endpoint_policy || "prefer"}
+                onValueChange={(v) => setEditingProfile((p) => ({ ...p, endpoint_policy: v as "prefer" | "require" }))}
+                disabled={!editingProfile.preferred_endpoint}
+              >
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="prefer">{t("agentManager.endpointPolicyPrefer")}</SelectItem>
+                  <SelectItem value="require">{t("agentManager.endpointPolicyRequire")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">{t("agentManager.endpointPolicyHint")}</p>
             </div>
 
             {/* Custom Prompt */}

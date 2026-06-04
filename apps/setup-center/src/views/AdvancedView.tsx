@@ -8,6 +8,7 @@
 
 import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { IconFolder, IconFile, IconClipboard, IconLightbulb, IconCheck } from "../icons";
 import { invoke, IS_TAURI, saveFileDialog } from "../platform";
 import { safeFetch } from "../providers";
 import { joinPath, envGet, envSet } from "../utils";
@@ -27,13 +28,24 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { EnvMap, PlatformInfo, WorkspaceSummary, ViewId } from "../types";
 
+const SHOW_EXTENSIONS_CARD = false;
+
 export interface AdvancedViewProps {
   envDraft: EnvMap;
   setEnvDraft: React.Dispatch<React.SetStateAction<EnvMap>>;
   busy: string | null;
   workspaces: WorkspaceSummary[];
   currentWorkspaceId: string | null;
-  serviceStatus: { running: boolean; pid: number | null; pidFile: string; port?: number } | null;
+  serviceStatus: {
+    running: boolean;
+    pid: number | null;
+    pidFile: string;
+    port?: number;
+    heartbeatPhase?: string;
+    heartbeatHttpReady?: boolean;
+    heartbeatImReady?: boolean;
+    heartbeatReady?: boolean;
+  } | null;
   dataMode: "local" | "remote";
   info: PlatformInfo | null;
   storeVisible: boolean;
@@ -41,10 +53,12 @@ export interface AdvancedViewProps {
   desktopVersion: string;
   shouldUseHttpApi: () => boolean;
   httpApiBase: () => string;
+  backendBootPhase: "unknown" | "starting" | "running" | "stopped" | "error";
+  onOpenRuntimeEnvironment: () => void;
   askConfirm: (msg: string, onConfirm: () => void) => void;
   refreshAll: () => Promise<void>;
   restartService: () => Promise<void>;
-  setView: React.Dispatch<React.SetStateAction<ViewId>>;
+  setView: (view: ViewId) => void;
 }
 
 export function AdvancedView(props: AdvancedViewProps) {
@@ -52,7 +66,9 @@ export function AdvancedView(props: AdvancedViewProps) {
     envDraft, setEnvDraft, busy,
     workspaces, currentWorkspaceId, serviceStatus, dataMode, info,
     storeVisible, setStoreVisible, desktopVersion,
-    shouldUseHttpApi, httpApiBase, askConfirm,
+    shouldUseHttpApi, httpApiBase,
+    backendBootPhase, onOpenRuntimeEnvironment,
+    askConfirm,
     refreshAll, restartService, setView,
   } = props;
 
@@ -159,6 +175,10 @@ export function AdvancedView(props: AdvancedViewProps) {
     { label: t("adv.opsLogsPath"), path: opsLogsPath },
     { label: t("adv.opsIdentityPath"), path: opsIdentityPath },
   ];
+  const runtimeHealthy =
+    !!serviceStatus?.running &&
+    backendBootPhase === "running" &&
+    serviceStatus?.heartbeatReady !== false;
 
   async function opsOpenFolder(p: string) {
     if (!p) return;
@@ -372,7 +392,7 @@ export function AdvancedView(props: AdvancedViewProps) {
     <>
       {/* ── Card 1: 系统配置（桌面通知 / 会话 / 日志） ── */}
       <div className="card">
-        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{t("config.agentAdvanced")}</h3>
+        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{t("config.agentAdvanced")}</h3>
 
         <Section title={t("config.agentDesktopNotify")}>
           <div className="grid2">
@@ -412,9 +432,121 @@ export function AdvancedView(props: AdvancedViewProps) {
         </Section>
       </div>
 
+      {/* ── Card 1.5: 长任务与上下文保护 ── */}
+      <div className="card" style={{ marginTop: 10 }}>
+        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>{t("config.ctxLongTaskTitle")}</h3>
+        <p className="mb-2 text-xs leading-5 text-muted-foreground">{t("config.ctxLongTaskHint")}</p>
+
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!!busy}
+            onClick={() => {
+              setEnvDraft((prev) => {
+                let next = prev;
+                next = envSet(next, "TASK_BUDGET_DURATION", "0");
+                next = envSet(next, "TASK_BUDGET_ITERATIONS", "0");
+                next = envSet(next, "TASK_BUDGET_TOOL_CALLS", "0");
+                next = envSet(next, "TASK_BUDGET_TOKENS", "0");
+                next = envSet(next, "TASK_BUDGET_COST", "0");
+                next = envSet(next, "SAME_TOOL_CALL_LIMIT", "0");
+                next = envSet(next, "READONLY_STAGNATION_LIMIT", "0");
+                next = envSet(next, "READONLY_STAGNATION_HARD_LIMIT", "0");
+                next = envSet(next, "SUPERVISOR_ENABLED", "false");
+                next = envSet(next, "PROGRESS_TIMEOUT_SECONDS", "0");
+                next = envSet(next, "HARD_TIMEOUT_SECONDS", "0");
+                return next;
+              });
+              notifySuccess(t("config.unrestrictedPresetSaved"));
+            }}
+          >
+            {t("config.unrestrictedPresetBtn")}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!!busy}
+            onClick={() => {
+              setEnvDraft((prev) => {
+                let next = prev;
+                next = envSet(next, "TASK_BUDGET_DURATION", "600");
+                next = envSet(next, "TASK_BUDGET_ITERATIONS", "100");
+                next = envSet(next, "TASK_BUDGET_TOOL_CALLS", "100");
+                next = envSet(next, "SAME_TOOL_CALL_LIMIT", "8");
+                next = envSet(next, "READONLY_STAGNATION_LIMIT", "3");
+                next = envSet(next, "READONLY_STAGNATION_HARD_LIMIT", "10");
+                next = envSet(next, "SUPERVISOR_ENABLED", "true");
+                next = envSet(next, "PROGRESS_TIMEOUT_SECONDS", "1200");
+                return next;
+              });
+              notifySuccess(t("config.strictPresetSaved"));
+            }}
+          >
+            {t("config.strictPresetBtn")}
+          </Button>
+          <span className="text-xs text-muted-foreground">{t("config.presetHint")}</span>
+        </div>
+
+        <Section title={t("config.ctxMgmtTitle")}>
+          <div className="grid3">
+            {FT({ k: "CONTEXT_MAX_WINDOW", label: t("config.ctxMaxWindow"), placeholder: t("config.ctxMaxWindowPlaceholder"), help: t("config.ctxMaxWindowHelp") })}
+            {FT({ k: "CONTEXT_COMPRESSION_THRESHOLD", label: t("config.ctxCompressionThreshold"), placeholder: "0.85", help: t("config.ctxCompressionThresholdHelp") })}
+            {FT({ k: "CONTEXT_HARD_TERMINATE_RATIO", label: t("config.ctxHardTerminateRatio"), placeholder: "0.98", help: t("config.ctxHardTerminateRatioHelp") })}
+          </div>
+          <div className="grid3 mt-2">
+            {FT({ k: "CONTEXT_MIN_RECENT_TURNS", label: t("config.ctxMinRecentTurns"), placeholder: "12", help: t("config.ctxMinRecentTurnsHelp") })}
+            {FT({ k: "CONTEXT_LARGE_TOOL_THRESHOLD", label: t("config.ctxLargeToolThreshold"), placeholder: "5000", help: t("config.ctxLargeToolThresholdHelp") })}
+            {FB({ k: "CONTEXT_ENABLE_TOOL_COMPRESSION", label: t("config.ctxEnableToolCompression"), help: t("config.ctxEnableToolCompressionHelp"), defaultValue: true })}
+          </div>
+        </Section>
+
+        <Section title={t("config.ctxAnomalyTitle")} className="mt-2">
+          <div className="grid2">
+            {FT({ k: "CONTEXT_TOKEN_ANOMALY_THRESHOLD", label: t("config.ctxAnomalyThreshold"), placeholder: "80000", help: t("config.ctxAnomalyThresholdHelp") })}
+            {FT({ k: "CONTEXT_TOKEN_ANOMALY_MAX_RECOVERIES", label: t("config.ctxAnomalyMaxRecoveries"), placeholder: "3", help: t("config.ctxAnomalyMaxRecoveriesHelp") })}
+          </div>
+        </Section>
+
+        <Section title={t("config.ctxTaskBudgetTitle")} subtitle={t("config.ctxTaskBudgetHint")} className="mt-2">
+          <div className="grid3">
+            {FT({ k: "TASK_BUDGET_TOOL_CALLS", label: t("config.ctxTaskBudgetToolCalls"), placeholder: "0", help: t("config.ctxTaskBudgetToolCallsHelp") })}
+            {FT({ k: "SAME_TOOL_CALL_LIMIT", label: t("config.ctxSameToolLimit"), placeholder: "0", help: t("config.ctxSameToolLimitHelp") })}
+            {FT({ k: "READONLY_STAGNATION_HARD_LIMIT", label: t("config.ctxReadonlyHardLimit"), placeholder: "0", help: t("config.ctxReadonlyHardLimitHelp") })}
+          </div>
+          <div className="grid2 mt-2">
+            {FT({ k: "TASK_BUDGET_DURATION", label: t("config.ctxTaskBudgetDuration"), placeholder: "0", help: t("config.ctxTaskBudgetDurationHelp") })}
+            {FT({ k: "TASK_BUDGET_ITERATIONS", label: t("config.ctxTaskBudgetIterations"), placeholder: "0", help: t("config.ctxTaskBudgetIterationsHelp") })}
+          </div>
+          <div className="grid3 mt-2">
+            {FT({ k: "PROGRESS_TIMEOUT_SECONDS", label: t("config.ctxProgressTimeout"), placeholder: "0", help: t("config.ctxProgressTimeoutHelp") })}
+            {FT({ k: "HARD_TIMEOUT_SECONDS", label: t("config.ctxHardTimeout"), placeholder: "0", help: t("config.ctxHardTimeoutHelp") })}
+            {FB({ k: "SUPERVISOR_ENABLED", label: t("config.ctxSupervisorEnabled"), help: t("config.ctxSupervisorEnabledHelp") })}
+          </div>
+        </Section>
+
+        <Section title={t("config.ctxAdvancedTitle")} subtitle={t("config.ctxAdvancedHint")} className="mt-2">
+          <div className="grid3">
+            {FT({ k: "CONTEXT_REAL_USAGE_DECAY", label: t("config.ctxRealUsageDecay"), placeholder: "0.9", help: t("config.ctxRealUsageDecayHelp") })}
+            {FT({ k: "CONTEXT_COMPRESSION_RATIO", label: t("config.ctxCompressionRatio2"), placeholder: "0.25", help: t("config.ctxCompressionRatio2Help") })}
+            {FT({ k: "CONTEXT_BOUNDARY_COMPRESSION_RATIO", label: t("config.ctxBoundaryRatio2"), placeholder: "0.25", help: t("config.ctxBoundaryRatio2Help") })}
+          </div>
+          <div className="grid3 mt-2">
+            {FT({ k: "CONTEXT_CACHED_SUMMARY_CHARS", label: t("config.ctxCachedSummaryChars"), placeholder: "2400", help: t("config.ctxCachedSummaryCharsHelp") })}
+            {FT({ k: "CONTEXT_TOOL_RESULTS_TOTAL_CHARS", label: t("config.ctxToolResultsTotalChars"), placeholder: "80000", help: t("config.ctxToolResultsTotalCharsHelp") })}
+            {FT({ k: "API_TOOLS_SCHEMA_BUDGET_TOKENS", label: t("config.apiToolsSchemaBudget"), placeholder: "12000", help: t("config.apiToolsSchemaBudgetHelp") })}
+          </div>
+          <div className="grid3 mt-2">
+            {FT({ k: "READONLY_STAGNATION_LIMIT", label: t("config.ctxReadonlySoftLimit"), placeholder: "0", help: t("config.ctxReadonlySoftLimitHelp") })}
+            {FT({ k: "TASK_BUDGET_TOKENS", label: t("config.ctxTaskBudgetTokens"), placeholder: "0", help: t("config.ctxTaskBudgetTokensHelp") })}
+            {FT({ k: "TASK_BUDGET_COST", label: t("config.ctxTaskBudgetCost"), placeholder: "0", help: t("config.ctxTaskBudgetCostHelp") })}
+          </div>
+        </Section>
+      </div>
+
       {/* ── Card 2: 网络与安全 ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{t("adv.networkSecurityTitle")}</h3>
+      <div className="card" style={{ marginTop: 10 }}>
+        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{t("adv.networkSecurityTitle")}</h3>
 
         <Section title={t("adv.webNetworkTitle", { defaultValue: "Web 访问" })}>
           <div className="cardHint" style={{ marginBottom: 4 }}>
@@ -444,7 +576,7 @@ export function AdvancedView(props: AdvancedViewProps) {
           </p>
         </Section>
 
-        {IS_TAURI && !!serviceStatus?.running && dataMode !== "remote" && (
+        {!!serviceStatus?.running && (
           <Section title={t("adv.webPasswordTitle")} className="mt-2">
             <div className="cardHint" style={{ marginBottom: 4 }}>{t("adv.webPasswordHint")}</div>
             <WebPasswordManager apiBase={httpApiBase()} />
@@ -452,20 +584,27 @@ export function AdvancedView(props: AdvancedViewProps) {
         )}
 
         <Section title={t("config.toolsNetwork")} className="mt-2">
-          <div className="grid3">
-            {FT({ k: "HTTP_PROXY", label: "HTTP_PROXY", placeholder: "http://127.0.0.1:7890" })}
-            {FT({ k: "HTTPS_PROXY", label: "HTTPS_PROXY", placeholder: "http://127.0.0.1:7890" })}
-            {FT({ k: "ALL_PROXY", label: "ALL_PROXY", placeholder: "socks5://..." })}
+          <div className="grid2">
+            {FT({ k: "ALL_PROXY", label: t("config.proxyAddr"), placeholder: "http://127.0.0.1:7890", help: t("config.proxyAddrHelp") })}
+            {FT({ k: "NO_PROXY", label: t("config.proxyExcept"), placeholder: "192.168.0.0/16, 10.0.0.0/8, .corp", help: t("config.proxyExceptHelp") })}
           </div>
           <div className="grid2 mt-2">
             {FB({ k: "FORCE_IPV4", label: t("config.toolsForceIPv4"), help: t("config.toolsForceIPv4Help") })}
           </div>
+          <details className="mt-2">
+            <summary className="text-xs text-muted-foreground cursor-pointer select-none">{t("config.proxyAdvanced")}</summary>
+            <div className="grid2 mt-2">
+              {FT({ k: "HTTP_PROXY", label: "HTTP_PROXY", placeholder: "http://127.0.0.1:7890" })}
+              {FT({ k: "HTTPS_PROXY", label: "HTTPS_PROXY", placeholder: "http://127.0.0.1:7890" })}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground/60">{t("config.proxyAdvancedHint")}</p>
+          </details>
         </Section>
       </div>
 
       {/* ── Card 3: 平台与云服务 ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{t("adv.platformTitle")}</h3>
+      <div className="card" style={{ marginTop: 10 }}>
+        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{t("adv.platformTitle")}</h3>
 
         <Section title={t("adv.hubTitle")}
           toggle={
@@ -537,8 +676,8 @@ export function AdvancedView(props: AdvancedViewProps) {
       </div>
 
       {/* ── Card 4: 数据与备份 ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{t("adv.dataBackupTitle")}</h3>
+      <div className="card" style={{ marginTop: 10 }}>
+        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{t("adv.dataBackupTitle")}</h3>
 
         <Section title={t("adv.backupAutoTitle")} subtitle={t("adv.backupAutoHint")}
           toggle={
@@ -719,7 +858,7 @@ export function AdvancedView(props: AdvancedViewProps) {
                       <div className="flex flex-col gap-0.5 mt-1">
                         {migratePreflight.entries.map((e) => (
                           <div key={e.name} className="flex justify-between text-xs py-0.5 px-2 rounded bg-muted/30">
-                            <span className="font-mono">{e.isDir ? "📁" : "📄"} {e.name}{e.existsAtTarget ? ` (${t("adv.migrateConflictHint")})` : ""}</span>
+                            <span className="font-mono">{e.isDir ? <IconFolder size={12} /> : <IconFile size={12} />} {e.name}{e.existsAtTarget ? ` (${t("adv.migrateConflictHint")})` : ""}</span>
                             <span className="text-muted-foreground">{e.sizeMb.toFixed(1)} MB</span>
                           </div>
                         ))}
@@ -753,11 +892,13 @@ export function AdvancedView(props: AdvancedViewProps) {
       </div>
 
       {/* ── Card 5: 外部扩展模块 ── */}
-      <ExtensionsCard shouldUseHttpApi={shouldUseHttpApi} httpApiBase={httpApiBase} />
+      {SHOW_EXTENSIONS_CARD && (
+        <ExtensionsCard shouldUseHttpApi={shouldUseHttpApi} httpApiBase={httpApiBase} />
+      )}
 
       {/* ── Card 6: 系统信息与运维 ── */}
-      <div className="card" style={{ marginTop: 12 }}>
-        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>{t("adv.sysOpsTitle")}</h3>
+      <div className="card" style={{ marginTop: 10 }}>
+        <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>{t("adv.sysOpsTitle")}</h3>
 
         <Section title={t("adv.sysTitle")}
           toggle={IS_TAURI ? (
@@ -791,6 +932,28 @@ export function AdvancedView(props: AdvancedViewProps) {
             </div>
           )}
         </Section>
+
+        {IS_TAURI && (
+          <Section
+            title="Synapse 运行环境"
+            subtitle="runtime venv / agent tools venv"
+            className="mt-2"
+          >
+            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5">
+              <div className="min-w-[180px] flex-1">
+                <div className="text-sm font-medium">
+                  {runtimeHealthy ? "环境正常" : backendBootPhase === "error" ? "运行环境需检查" : "运行环境信息"}
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  查看 runtime venv、agent tools venv、Node/npm 与种子包状态；异常时可在弹窗内修复。
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={onOpenRuntimeEnvironment}>
+                查看与修复
+              </Button>
+            </div>
+          </Section>
+        )}
 
         {IS_TAURI && (
           <Section title={t("adv.opsPaths")} className="mt-2">
@@ -925,7 +1088,7 @@ function ExtensionsCard({
   }
 
   return (
-    <div className="card" style={{ marginTop: 12 }}>
+    <div className="card" style={{ marginTop: 10 }}>
       <h3 style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{t("adv.extTitle")}</h3>
       <p className="text-xs text-muted-foreground" style={{ marginBottom: 12 }}>{t("adv.extHint")}</p>
 
@@ -966,7 +1129,7 @@ function ExtensionsCard({
               background: ext.installed ? "var(--ok, #22c55e)" : "var(--line)",
               color: ext.installed ? "#fff" : "var(--muted)",
             }}>
-              {ext.installed ? `✓ ${t("adv.extInstalled")}` : t("adv.extNotInstalled")}
+              {ext.installed ? <><IconCheck size={10} /> {t("adv.extInstalled")}</> : t("adv.extNotInstalled")}
             </span>
           </div>
 
@@ -986,7 +1149,7 @@ function ExtensionsCard({
               {ext.install_cmd}
             </code>
             <Button variant="ghost" size="xs" onClick={() => copyCmd(ext.install_cmd)} style={{ padding: "2px 6px", fontSize: 11 }}>
-              📋
+              <IconClipboard size={12} />
             </Button>
 
             <span className="text-muted-foreground">{t("adv.extUpgrade")}:</span>
@@ -994,7 +1157,7 @@ function ExtensionsCard({
               {ext.upgrade_cmd}
             </code>
             <Button variant="ghost" size="xs" onClick={() => copyCmd(ext.upgrade_cmd)} style={{ padding: "2px 6px", fontSize: 11 }}>
-              📋
+              <IconClipboard size={12} />
             </Button>
 
             {ext.setup_cmd && (
@@ -1004,7 +1167,7 @@ function ExtensionsCard({
                   {ext.setup_cmd}
                 </code>
                 <Button variant="ghost" size="xs" onClick={() => copyCmd(ext.setup_cmd!)} style={{ padding: "2px 6px", fontSize: 11 }}>
-                  📋
+                  <IconClipboard size={12} />
                 </Button>
               </>
             )}
@@ -1023,7 +1186,7 @@ function ExtensionsCard({
       {exts && exts.length > 0 && (
         <div style={{ marginTop: 8, padding: "8px 0", borderTop: "1px solid var(--line)" }}>
           <p className="text-xs text-muted-foreground" style={{ marginBottom: 4 }}>
-            💡 {t("adv.extChatHint")}
+            <IconLightbulb size={12} /> {t("adv.extChatHint")}
           </p>
           <p className="text-xs text-muted-foreground" style={{ fontStyle: "italic" }}>
             {t("adv.extCreditsHint")}

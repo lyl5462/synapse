@@ -105,3 +105,4 @@ Synapse 的主动交互引擎让 AI 不只是"被动回答"，而是像真人一
 - [聊天对话](/features/chat) — 在对话中体验身份系统的效果
 - [灵魂与意志配置](/web/#/config/agent) — 人格预设与行为参数
 - [多 Agent 入门](/multi-agent/overview) — 每个 Agent 可以有不同的身份配置
+

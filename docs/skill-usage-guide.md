@@ -1,6 +1,6 @@
 # Agent Skills 用法指南与技能大全资源
 
-> 本文档整理了 Agent Skills 的完整用法、SKILL.md 规范、Synapse 项目技能体系，以及外部技能大全网站资源。
+> 本文档整理了 Agent Skills 的完整用法、SKILL.md 规范、OpenAkita 项目技能体系，以及外部技能大全网站资源。
 
 ---
 
@@ -12,7 +12,7 @@
 4. [使用方法](#使用方法)
 5. [创建自定义技能](#创建自定义技能)
 6. [技能管理命令](#技能管理命令)
-7. [Synapse 内置技能一览](#synapse-内置技能一览)
+7. [OpenAkita 内置技能一览](#openakita-内置技能一览)
 8. [技能大全网站 & 资源汇总](#技能大全网站--资源汇总)
 9. [Cursor IDE 中使用 Skills](#cursor-ide-中使用-skills)
 10. [最佳实践](#最佳实践)
@@ -157,7 +157,7 @@ category: Web Search
 | 用户档案 | update-user-profile, get-user-profile | 用户偏好管理 |
 | 技能管理 | list-skills, install-skill, load-skill, reload-skill | 技能自身管理 |
 | 网络搜索 | web-search, news-search | 网页和新闻搜索 |
-| 多媒体 | generate-image, get-image-file, get-voice-file | 图片生成和媒体处理 |
+| 多媒体 | get-image-file, get-voice-file | 媒体文件读取 |
 | 文档处理 | docx, pptx, xlsx, pdf | 办公文档处理 |
 
 ---
@@ -177,19 +177,19 @@ Agent> [自动创建计划 → 调用 browser-navigate → browser-type → brow
 
 ```bash
 # 列出所有可用技能
-synapse skills list
+openakita skills list
 
 # 运行某个技能
-synapse skills run my_skill --input "test data"
+openakita skills run my_skill --input "test data"
 
 # 从 GitHub 安装技能
-synapse skills install github:user/repo/skill_name
+openakita skills install github:user/repo/skill_name
 ```
 
 ### 3. 编程方式调用
 
 ```python
-from synapse.skills import SkillRegistry
+from openakita.skills import SkillRegistry
 
 registry = SkillRegistry()
 skill = registry.get("my_skill")
@@ -246,7 +246,7 @@ Agent> [自动生成 SKILL.md + scripts → 加载 → 可用]
 
 ---
 
-## Synapse 内置技能一览
+## OpenAkita 内置技能一览
 
 ### 浏览器控制（12 个）
 
@@ -350,11 +350,10 @@ Agent> [自动生成 SKILL.md + scripts → 加载 → 可用]
 | web-search | web_search | 网页搜索（DuckDuckGo） |
 | news-search | news_search | 新闻搜索 |
 
-### 其他工具（6 个）
+### 其他工具（5 个）
 
 | 技能名 | 工具名 | 说明 |
 |--------|--------|------|
-| generate-image | generate_image | AI 生成图片 |
 | get-image-file | get_image_file | 获取图片文件 |
 | get-voice-file | get_voice_file | 获取语音文件 |
 | get-chat-history | get_chat_history | 获取聊天记录 |
@@ -502,9 +501,10 @@ Cursor 中的 Agent Skills 可以从以下位置加载：
 - [Cursor Agent Skills 使用教程](https://cursor.zone/faq/cursor-agent-skills-guide.html)
 - [手把手教你配置 Skills 技能库](https://index.zshipu.com/ai002/post/20251125/)
 - [Cursor 2.4: Skills 官方公告](https://forum.cursor.com/t/cursor-2-4-skills/149402)
-- [Synapse 技能加载架构文档](./skill-loading-architecture.md)
-- [Synapse 技能系统文档](./skills.md)
+- [OpenAkita 技能加载架构文档](./skill-loading-architecture.md)
+- [OpenAkita 技能系统文档](./skills.md)
 
 ---
 
 *最后更新：2026-02-09*
+

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { PhaserGame, type GameRef } from '../components/pixel-office/PhaserGame';
 import { PixelOfficeEventLog, type EventLogEntry } from '../components/pixel-office/PixelOfficeEventLog';
 import { PixelOfficeAgentList, type AgentListItem } from '../components/pixel-office/PixelOfficeAgentList';
@@ -7,6 +8,7 @@ import { EventBus } from '../components/pixel-office/EventBus';
 import type { OrgData } from '../components/pixel-office/OfficeScene';
 import type { AgentSpriteConfig } from '../components/pixel-office/AgentSprite';
 import { safeFetch } from '../providers';
+import { IconClipboard, IconSearch, IconFile, IconBot } from '../icons';
 import '../components/pixel-office/pixel-office.css';
 
 interface AgentDetailPanel {
@@ -42,6 +44,7 @@ export function PixelOfficeView({
   apiBaseUrl?: string;
   visible?: boolean;
 }) {
+  const { t } = useTranslation();
   const [themeId, setThemeId] = useState('office');
   const [orgData, setOrgData] = useState<OrgData | null>(null);
   const [agents, setAgents] = useState<AgentListItem[]>([]);
@@ -248,13 +251,13 @@ export function PixelOfficeView({
               {orgData && <span className="poNodeCount">{orgData.nodes.length} 节点</span>}
             </>
           ) : (
-            <h2 className="poOrgName">像素办公室</h2>
+            <h2 className="poOrgName">{t("pixelOffice.title", "像素办公室")}</h2>
           )}
           <div className="poOrgSwitcher">
             <button
               className="poOrgSwitchBtn"
               onClick={() => setOrgDropdownOpen(!orgDropdownOpen)}
-              title="切换模式"
+              title={t("pixelOffice.switchMode", "切换模式")}
             >
               <svg width="10" height="6" viewBox="0 0 10 6" fill="currentColor">
                 <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
@@ -268,7 +271,7 @@ export function PixelOfficeView({
                     className={`poOrgDropItem${isSoloMode ? ' active' : ''}`}
                     onClick={() => { setSelectedOrgId(SOLO_ID); setDataVersion(v => v + 1); setOrgDropdownOpen(false); }}
                   >
-                    🐕 个人工作室
+                    <IconBot size={14} /> 个人工作室
                   </button>
                   {orgList.length > 0 && <div className="poOrgDropDivider" />}
                   {orgList.map(o => (
@@ -385,12 +388,12 @@ export function PixelOfficeView({
             color: 'var(--text, #e0e0e0)', fontSize: 13,
           }}>
             {[
-              { label: '📋 分配任务', action: () => handleAssignTask(agentCtxMenu.nodeId) },
-              { label: '🔍 聚焦', action: () => { EventBus.emit('zoom-to-node', agentCtxMenu.nodeId); setAgentCtxMenu(null); } },
-              { label: '📄 查看详情', action: () => { setAgentDetail({ ...agentCtxMenu }); setAgentCtxMenu(null); } },
+              { key: 'assign', label: <><IconClipboard size={13} /> 分配任务</>, action: () => handleAssignTask(agentCtxMenu.nodeId) },
+              { key: 'focus', label: <><IconSearch size={13} /> 聚焦</>, action: () => { EventBus.emit('zoom-to-node', agentCtxMenu.nodeId); setAgentCtxMenu(null); } },
+              { key: 'detail', label: <><IconFile size={13} /> 查看详情</>, action: () => { setAgentDetail({ ...agentCtxMenu }); setAgentCtxMenu(null); } },
             ].map((item) => (
               <button
-                key={item.label}
+                key={item.key}
                 onClick={item.action}
                 style={{
                   display: 'block', width: '100%', padding: '6px 14px', border: 'none',

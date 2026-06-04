@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { invoke, IS_TAURI, logger, relaunchApp } from "../platform";
+import { invoke, IS_TAURI, logger } from "../platform";
 import { safeFetch } from "../providers";
 import { envGet } from "../utils";
 import { notifyLoading, notifyError, notifySuccess, dismissLoading } from "../utils/notify";
@@ -8,22 +8,51 @@ import { copyToClipboard } from "../utils/clipboard";
 import {
   DotGreen, DotGray, DotYellow,
   IM_LOGO_MAP,
+  IconAlertCircle,
 } from "../icons";
-import { Loader2, Play, Square, RotateCcw, Power, PowerOff, FolderOpen, Activity, ArrowRight, Server, Download, Zap } from "lucide-react";
+import { Activity, ArrowRight, Loader2, Play, Square, RotateCcw, Power, PowerOff, FolderOpen, Server, Download, Zap, Wrench, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { TroubleshootPanel } from "../components/TroubleshootPanel";
-import type { EnvMap, WorkspaceSummary, ViewId } from "../types";
+import { LinkDiagnosticsPanel, type LinkDiagnostic } from "../components/LinkDiagnosticsPanel";
+import { SkillConflictsPanel } from "../components/SkillConflictsPanel";
+import { ProviderIcon } from "../components/ProviderIcon";
+import type { EnvMap, ViewId, WorkspaceSummary } from "../types";
 import type { UpdateInfo } from "../platform";
 
 export interface StatusViewProps {
   currentWorkspaceId: string | null;
   workspaces: WorkspaceSummary[];
   envDraft: EnvMap;
-  serviceStatus: { running: boolean; pid: number | null; pidFile: string; port?: number } | null;
+  serviceStatus: {
+    running: boolean;
+    pid: number | null;
+    pidFile: string;
+    port?: number;
+    heartbeatPhase?: string;
+    heartbeatHttpReady?: boolean;
+    heartbeatImReady?: boolean;
+    heartbeatReady?: boolean;
+    lastLinkDiagnostic?: LinkDiagnostic | null;
+  } | null;
+  /**
+   * 后端启动阶段。区分 "starting"（自动启动中 / 用户刚点启动）与 "stopped"（确认未启动）
+   * 是为了避免老 UI 那种"启动中→未启动→运行中"的红色误报闪烁：
+   * starting 期间显示蓝色"正在启动" banner，只有 stopped/error 才显示红色"未启动"。
+   */
+  backendBootPhase?: "unknown" | "starting" | "running" | "stopped" | "error";
   heartbeatState: "alive" | "suspect" | "degraded" | "dead";
   busy: string | null;
   autostartEnabled: boolean | null;
@@ -60,14 +89,15 @@ export interface StatusViewProps {
   doStopService: (wsId?: string | null) => Promise<void>;
   waitForServiceDown: (base: string, maxMs?: number) => Promise<boolean>;
   doStartLocalService: (wsId: string) => Promise<void>;
-  setView: React.Dispatch<React.SetStateAction<ViewId>>;
+  onOpenRuntimeEnvironment: () => void;
+  setView: (view: ViewId) => void;
 }
 
 export function StatusView(props: StatusViewProps) {
   const { t } = useTranslation();
   const {
     currentWorkspaceId, workspaces, envDraft,
-    serviceStatus, heartbeatState, busy,
+    serviceStatus, backendBootPhase = "unknown", heartbeatState, busy,
     autostartEnabled, autoUpdateEnabled, setAutostartEnabled, setAutoUpdateEnabled,
     endpointSummary, endpointHealth, setEndpointHealth,
     imHealth, setImHealth,
@@ -77,16 +107,107 @@ export function StatusView(props: StatusViewProps) {
     shouldUseHttpApi, httpApiBase,
     startLocalServiceWithConflictCheck, refreshStatus,
     doStopService, waitForServiceDown, doStartLocalService,
+    onOpenRuntimeEnvironment,
     setView,
   } = props;
 
   const [healthChecking, setHealthChecking] = useState<string | null>(null);
   const [imChecking, setImChecking] = useState(false);
+  // Structured runtime error surface (e.g. RUNTIME_PERMISSION_DENIED|...)
+  // —— Rust 端 `ensure_runtime_layout` 等核心 IO 失败时会把带前缀的错误写到
+  // runtime manifest.last_error，本组件读出后渲染指引 banner，让企业 AD /
+  // 杀软误杀场景下的用户知道怎么修，而不是看着空白的"已停止"发呆。
+  const [runtimeLastError, setRuntimeLastError] = useState<{
+    lastError: string | null;
+    legacyMode: boolean;
+    runtimeRoot: string;
+    manifestPath: string;
+  } | null>(null);
   const [logLevelFilter, setLogLevelFilter] = useState<Set<string>>(new Set(["INFO", "WARN", "ERROR", "DEBUG"]));
   const [logAtBottom, setLogAtBottom] = useState(true);
+  // Local guard for the "Start backend" button. The parent App.tsx exposes a
+  // `busy` prop, but it is currently hard-coded to null upstream, so without
+  // a local in-flight flag a rapid double-click fires startLocalServiceWithConflictCheck
+  // multiple times in parallel and each one queues its own loading toast,
+  // producing the "toast spam" the user complained about.
+  const [startingService, setStartingService] = useState(false);
+  const [memorySubsystem, setMemorySubsystem] = useState<{
+    status: string;
+    reason?: string | null;
+    details?: string | null;
+    repair_available?: boolean;
+  } | null>(null);
+  const [repairOpen, setRepairOpen] = useState(false);
 
   const effectiveWsId = currentWorkspaceId || workspaces[0]?.id || null;
   const ws = workspaces.find((w) => w.id === effectiveWsId) || workspaces[0] || null;
+  const startBackend = async () => {
+    if (startingService || !!busy || !effectiveWsId) return;
+    setStartingService(true);
+    try {
+      await startLocalServiceWithConflictCheck(effectiveWsId);
+    } finally {
+      setStartingService(false);
+    }
+  };
+  // Poll structured runtime error on every backend stop / error. Cheap: just
+  // reads ~1KB from disk via Tauri.
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    if (serviceStatus?.running && backendBootPhase !== "error") {
+      // 后端已起来且不在错误态：清掉上次残留的提示。
+      setRuntimeLastError(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await invoke<{
+          lastError: string | null;
+          legacyMode: boolean;
+          runtimeRoot: string;
+          manifestPath: string;
+        }>("synapse_runtime_last_error");
+        if (!cancelled) setRuntimeLastError(r);
+      } catch (e) {
+        logger.warn("synapse_runtime_last_error failed", String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceStatus?.running, backendBootPhase]);
+
+  useEffect(() => {
+    if (!serviceStatus?.running) {
+      setMemorySubsystem(null);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await safeFetch(`${httpApiBase()}/api/health`, { signal: AbortSignal.timeout(3000) });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setMemorySubsystem(data.memory_subsystem || null);
+      } catch {
+        // health polling is best-effort; main heartbeat owns service state
+      }
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [serviceStatus?.running, httpApiBase]);
+
+  const permissionDenied =
+    !!runtimeLastError?.lastError &&
+    runtimeLastError.lastError.startsWith("RUNTIME_PERMISSION_DENIED|");
+  const memoryDegraded = memorySubsystem?.status === "degraded";
+  const memoryRepairRestartRequired =
+    memorySubsystem?.status === "repair_completed_restart_required";
   const im = [
     { k: "TELEGRAM_ENABLED", name: "Telegram", required: ["TELEGRAM_BOT_TOKEN"] },
     { k: "FEISHU_ENABLED", name: t("status.feishu"), required: ["FEISHU_APP_ID", "FEISHU_APP_SECRET"] },
@@ -103,16 +224,161 @@ export function StatusView(props: StatusViewProps) {
     return { ...c, enabled, ok: enabled ? missing.length === 0 : true, missing };
   });
 
+  // ── 启动阶段与"未启动"严格区分 ──
+  // showStartingBanner: 蓝色 spinner banner，表达"正在启动 / 初始化中"。
+  //   - 后端进程还没起来，但 phase 是 starting
+  //   - 或者 HTTP API 已可访问，但 heartbeat/readiness 仍显示 starting/http_ready/starting_im
+  //   - 或者 phase 是 unknown 且 serviceStatus 还没探到（首次 mount 的极早期）
+  // showNotRunningBanner: 红色"未启动"banner，仅当：
+  //   - phase 已经明确转为 stopped 或 error
+  //   - 且后端确实没运行
+  // 这样就避免了老逻辑里"自动启动到一半 invoke 失败 → setServiceStatus(false)
+  // → 红条闪一下 → 后端真起来后又变绿"的诡异闪烁。
+  const isRunning = !!serviceStatus?.running;
+  const heartbeatPhase = serviceStatus?.heartbeatPhase || "";
+  const phaseStarting =
+    backendBootPhase === "starting" ||
+    (isRunning && serviceStatus?.heartbeatReady === false) ||
+    ["starting", "initializing", "http_ready", "starting_im"].includes(heartbeatPhase) ||
+    (backendBootPhase === "unknown" && serviceStatus === null);
+  const showStartingBanner = IS_TAURI && phaseStarting && effectiveWsId;
+  const showNotRunningBanner =
+    IS_TAURI &&
+    !isRunning &&
+    !phaseStarting &&
+    (backendBootPhase === "stopped" || backendBootPhase === "error" || (serviceStatus !== null && backendBootPhase === "unknown")) &&
+    effectiveWsId;
+
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-6 py-5">
-      {/* Banner: backend not running (hide during initial probe; hide in web mode — backend is always running) */}
-      {IS_TAURI && !serviceStatus?.running && serviceStatus !== null && effectiveWsId && (
+      {/* Banner: starting / auto-starting backend */}
+      {showStartingBanner && (
+        <Card className="gap-0 border-primary/30 bg-primary/10 py-0 shadow-sm">
+          <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
+            <div className="spinner" style={{ width: 22, height: 22, flexShrink: 0, color: "var(--brand)" }} />
+            <div className="min-w-[180px] flex-1">
+              <div className="mb-1 text-sm font-semibold text-primary">
+                {busy || (isRunning ? "后端正在完成初始化" : t("status.backendStarting"))}
+              </div>
+              <div className="text-xs text-primary/80">
+                {heartbeatPhase === "starting_im"
+                  ? "HTTP API 已就绪，正在启动 IM 通道和后台连接。"
+                  : heartbeatPhase === "http_ready"
+                    ? "HTTP API 已就绪，后台服务仍在继续初始化。"
+                    : t("status.backendStartingHint")}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {(memoryDegraded || memoryRepairRestartRequired) && (
+        <Card className="gap-0 border-amber-500/40 bg-amber-500/10 py-0 shadow-sm">
+          <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
+            <Wrench className="h-5 w-5 shrink-0 text-amber-600" />
+            <div className="min-w-[200px] flex-1">
+              <div className="mb-1 text-sm font-semibold text-amber-700 dark:text-amber-400">
+                {memoryRepairRestartRequired
+                  ? t("status.memoryRepairRestartTitle")
+                  : t("status.memoryDegradedTitle")}
+              </div>
+              <div className="text-xs text-amber-700/80 dark:text-amber-400/80">
+                {memoryRepairRestartRequired
+                  ? t("status.memoryRepairRestartDesc")
+                  : t("status.memoryDegradedDesc", {
+                      reason: memorySubsystem?.reason || t("status.unknown"),
+                    })}
+              </div>
+            </div>
+            {memoryRepairRestartRequired ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  if (effectiveWsId) {
+                    await doStopService(effectiveWsId);
+                    await doStartLocalService(effectiveWsId);
+                  }
+                }}
+              >
+                {t("status.restart")}
+              </Button>
+            ) : (
+              <Button size="sm" variant="outline" onClick={() => setRepairOpen(true)}>
+                {t("status.memoryRepairButton")}
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      {repairOpen && (
+        <MemoryRepairDialog
+          apiBase={httpApiBase()}
+          onClose={() => setRepairOpen(false)}
+          onDone={async () => {
+            setRepairOpen(false);
+            await refreshStatus();
+          }}
+          t={t}
+        />
+      )}
+      {/* Banner: RUNTIME_PERMISSION_DENIED — 企业 AD / 杀软"勒索软件防护"拦截
+          runtime 目录创建时，给用户一条可操作的指引。在"未启动" banner 前
+          展示，因为这是导致"未启动"的根因，应优先看到。
+
+          走 i18n 的 status.runtimePermissionDenied* 字段；按钮使用专门的
+          synapse_open_runtime_root 命令——它在目录尚未创建时会自动回退到
+          最近一级存在的祖先，避免通用 show_item_in_folder 抛 "Path does not
+          exist"。 */}
+      {IS_TAURI && permissionDenied && runtimeLastError && (
+        <Card className="gap-0 border-rose-500/40 bg-rose-500/10 py-0 shadow-sm">
+          <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
+            <div className="text-2xl leading-none text-rose-600">&#9940;</div>
+            <div className="min-w-[200px] flex-1">
+              <div className="mb-1 text-sm font-semibold text-rose-700 dark:text-rose-400">
+                {t("status.runtimePermissionDeniedTitle")}
+              </div>
+              <div className="text-xs text-rose-700/80 dark:text-rose-400/80">
+                {runtimeLastError.lastError?.split("|").slice(1).join("|") ||
+                  t("status.runtimePermissionDeniedHint")}
+              </div>
+              <div className="mt-1 text-[11px] text-rose-700/70 dark:text-rose-400/70 break-all">
+                {runtimeLastError.runtimeRoot}
+              </div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={async () => {
+                try {
+                  const r = await invoke<{ opened: string; fellBack: boolean }>(
+                    "synapse_open_runtime_root"
+                  );
+                  if (r.fellBack) {
+                    notifySuccess(
+                      t("status.runtimePermissionDeniedFallbackToParent", {
+                        path: r.opened,
+                      })
+                    );
+                  }
+                } catch (e) {
+                  notifyError(String(e));
+                }
+              }}
+            >
+              <FolderOpen size={14} className="mr-1" />
+              {t("status.runtimePermissionDeniedOpen")}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+      {/* Banner: backend confirmed not running (hide in web mode — backend is always running) */}
+      {showNotRunningBanner && (
         <Card className="gap-0 border-amber-500/40 bg-amber-500/10 py-0 shadow-sm">
           <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
             <div className="text-2xl leading-none text-amber-600">&#9888;</div>
             <div className="min-w-[180px] flex-1">
               <div className="mb-1 text-sm font-semibold text-amber-700 dark:text-amber-400">
-                {t("status.backendNotRunning")}
+                {backendBootPhase === "error" ? t("status.backendStartFailed") : t("status.backendNotRunning")}
               </div>
               <div className="text-xs text-amber-700/80 dark:text-amber-400/80">
                 {t("status.backendNotRunningHint")}
@@ -120,27 +386,21 @@ export function StatusView(props: StatusViewProps) {
             </div>
           <Button
             size="sm"
-            onClick={async () => { await startLocalServiceWithConflictCheck(effectiveWsId); }}
-            disabled={!!busy}
+            onClick={startBackend}
+            disabled={!!busy || startingService}
           >
-            {busy ? <><Loader2 className="animate-spin mr-1" size={14} />{busy}</> : <><Play size={14} className="mr-1" />{t("topbar.start")}</>}
+            {startingService || busy
+              ? <><Loader2 className="animate-spin mr-1" size={14} />{busy || t("topbar.starting")}</>
+              : <><Play size={14} className="mr-1" />{t("topbar.start")}</>}
           </Button>
-          </CardContent>
-        </Card>
-      )}
-      {/* Banner: auto-starting backend (shown while serviceStatus is null and busy with auto-start) */}
-      {IS_TAURI && serviceStatus === null && !!busy && effectiveWsId && (
-        <Card className="gap-0 border-primary/30 bg-primary/10 py-0 shadow-sm">
-          <CardContent className="flex flex-wrap items-center gap-4 px-5 py-4">
-            <div className="spinner" style={{ width: 22, height: 22, flexShrink: 0, color: "var(--brand)" }} />
-            <div className="min-w-[180px] flex-1">
-              <div className="mb-1 text-sm font-semibold text-primary">
-                {busy}
-              </div>
-              <div className="text-xs text-primary/80">
-                {t("status.backendNotRunningHint")}
-              </div>
-            </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onOpenRuntimeEnvironment}
+          >
+            <ArrowRight size={14} className="mr-1" />
+            查看运行环境
+          </Button>
           </CardContent>
         </Card>
       )}
@@ -157,23 +417,28 @@ export function StatusView(props: StatusViewProps) {
             <div className="statusPanelTitle">
               {t("status.service")}
               <Badge variant={
-                serviceStatus === null ? "secondary"
+                phaseStarting ? "secondary"
                 : heartbeatState === "alive" ? "default"
                 : heartbeatState === "degraded" || heartbeatState === "suspect" ? "secondary"
-                : serviceStatus?.running ? "default"
+                : isRunning ? "default"
                 : "outline"
               } className={`statusBadgeInline ${
-                serviceStatus === null ? "statusBadgeWarn"
+                phaseStarting ? "statusBadgeWarn"
                 : heartbeatState === "alive" ? "statusBadgeOk"
                 : heartbeatState === "degraded" || heartbeatState === "suspect" ? "statusBadgeWarn"
-                : serviceStatus?.running ? "statusBadgeOk"
+                : isRunning ? "statusBadgeOk"
                 : "statusBadgeOff"
               }`}>
-                {serviceStatus === null ? (busy || t("topbar.starting"))
+                {phaseStarting ? (busy || (isRunning ? "初始化中" : t("topbar.autoStarting")))
                 : heartbeatState === "degraded" ? t("status.unresponsive")
-                : serviceStatus?.running ? t("topbar.running")
+                : isRunning ? t("topbar.running")
                 : t("topbar.stopped")}
               </Badge>
+              {isRunning && !phaseStarting && (
+                <Badge variant="default" className="statusBadgeInline statusBadgeOk">
+                  环境正常
+                </Badge>
+              )}
             </div>
             <div className="statusPanelDesc">
               {serviceStatus?.pid ? `PID ${serviceStatus.pid}` : ""}
@@ -181,12 +446,20 @@ export function StatusView(props: StatusViewProps) {
           </div>
           {IS_TAURI && (
           <div className="statusPanelActions">
-            {!serviceStatus?.running && serviceStatus !== null && effectiveWsId && (
-              <Button size="sm" className="statusBtn" onClick={async () => {
-                await startLocalServiceWithConflictCheck(effectiveWsId);
-              }} disabled={!!busy}>{busy ? <><Loader2 className="animate-spin" size={13} />{busy}</> : <><Play size={13} />{t("topbar.start")}</>}</Button>
+            {!isRunning && !phaseStarting && effectiveWsId && (
+              <Button size="sm" className="statusBtn" onClick={startBackend} disabled={!!busy || startingService}>
+                {startingService || busy
+                  ? <><Loader2 className="animate-spin" size={13} />{busy || t("topbar.starting")}</>
+                  : <><Play size={13} />{t("topbar.start")}</>}
+              </Button>
             )}
-            {serviceStatus?.running && effectiveWsId && (<>
+            {phaseStarting && effectiveWsId && (
+              <Badge variant="secondary" className="statusBadgeInline statusBadgeWarn">
+                <Loader2 className="animate-spin mr-1" size={12} />
+                {t("topbar.autoStarting")}
+              </Badge>
+            )}
+            {serviceStatus?.running && !phaseStarting && effectiveWsId && (<>
               <Button size="sm" variant="destructive" className="statusBtn" onClick={async () => {
                 const _b = notifyLoading(t("status.stopping"));
                 try {
@@ -197,13 +470,9 @@ export function StatusView(props: StatusViewProps) {
                 const _b = notifyLoading(t("status.restarting"));
                 try {
                   await doStopService(effectiveWsId);
-                  await waitForServiceDown("http://127.0.0.1:18900", 15000);
+                  await waitForServiceDown(httpApiBase(), 15000);
                   dismissLoading(_b);
-                  if (IS_TAURI) {
-                    await relaunchApp();
-                  } else {
-                    await doStartLocalService(effectiveWsId);
-                  }
+                  await doStartLocalService(effectiveWsId);
                 } catch (e) { notifyError(String(e)); dismissLoading(_b); }
               }} disabled={!!busy}><RotateCcw size={13} />{t("status.restart")}</Button>
             </>)}
@@ -213,19 +482,19 @@ export function StatusView(props: StatusViewProps) {
         {/* Multi-process warning */}
         {IS_TAURI && detectedProcesses.length > 1 && (
           <div className="statusPanelAlert">
-            <span style={{ fontWeight: 600 }}>⚠ 检测到 {detectedProcesses.length} 个 Synapse 进程正在运行</span>
+            <span style={{ fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}><IconAlertCircle size={13} /> {t("statusExtra.multiProcessWarning", { count: detectedProcesses.length })}</span>
             <span style={{ fontSize: 11, opacity: 0.8 }}>
               ({detectedProcesses.map(p => `PID ${p.pid}`).join(", ")})
             </span>
             <Button size="sm" variant="destructive" style={{ marginLeft: "auto" }} onClick={async () => {
-              const _b = notifyLoading("正在停止所有进程...");
+              const _b = notifyLoading(t("statusExtra.stoppingAll"));
               try {
                 const stopped = await invoke<number[]>("synapse_stop_all_processes");
                 setDetectedProcesses([]);
-                notifySuccess(`已停止 ${stopped.length} 个进程`);
+                notifySuccess(t("statusExtra.stoppedCount", { count: stopped.length }));
                 await refreshStatus();
               } catch (e) { notifyError(String(e)); } finally { dismissLoading(_b); }
-            }} disabled={!!busy}><Square size={12} className="mr-1" />全部停止</Button>
+            }} disabled={!!busy}><Square size={12} className="mr-1" />{t("statusExtra.stopAll")}</Button>
           </div>
         )}
         {/* Degraded hint */}
@@ -243,6 +512,15 @@ export function StatusView(props: StatusViewProps) {
         {(heartbeatState === "dead" && !serviceStatus?.running) && (
           <TroubleshootPanel t={t} />
         )}
+
+        {/* Link diagnostics + per-session cache reset */}
+        <LinkDiagnosticsPanel
+          httpApiBase={httpApiBase}
+          initialDiagnostic={serviceStatus?.lastLinkDiagnostic ?? null}
+        />
+
+        {/* Skill registration conflicts (multi-source same name detection) */}
+        <SkillConflictsPanel httpApiBase={httpApiBase} />
 
         {/* Auto-update row — desktop only */}
         {IS_TAURI && (
@@ -345,7 +623,7 @@ export function StatusView(props: StatusViewProps) {
             <CardTitle className="truncate text-sm" title={`${t("status.llmEndpoints")} (${endpointSummary.length})`}>
               {t("status.llmEndpoints")} ({endpointSummary.length})
             </CardTitle>
-            <CardDescription className="mt-1 truncate text-xs" title="模型端点状态与健康检查">模型端点状态与健康检查</CardDescription>
+            <CardDescription className="mt-1 truncate text-xs" title={t("statusExtra.llmEndpointsDesc")}>{t("statusExtra.llmEndpointsDesc")}</CardDescription>
           </div>
           <Button size="sm" variant="outline" className="shrink-0" title={t("status.checkAll")} onClick={async () => {
             setHealthChecking("all");
@@ -400,7 +678,10 @@ export function StatusView(props: StatusViewProps) {
               return (
                 <TableRow key={e.name} className={e.enabled === false ? "opacity-45" : ""}>
                   <TableCell className="py-2.5 font-semibold">
-                    {e.name}
+                    <span className="inline-flex items-center gap-2 align-middle">
+                      <ProviderIcon slug={e.provider} size={16} title={e.provider} />
+                      <span>{e.name}</span>
+                    </span>
                     {e.enabled === false && <span className="ml-1.5 text-muted-foreground text-[10px] font-bold">{t("llm.disabled")}</span>}
                   </TableCell>
                   <TableCell className="py-2.5 text-muted-foreground text-xs">{e.model}</TableCell>
@@ -493,14 +774,19 @@ export function StatusView(props: StatusViewProps) {
             const channelId = c.k.replace("_ENABLED", "").toLowerCase();
             const ih = imHealth[channelId];
             const isOnline = ih && (ih.status === "healthy" || ih.status === "online");
+            const isConfigured = ih && ih.status === "configured";
             const effectiveEnabled = ih ? true : c.enabled;
             const serviceRunning = serviceStatus?.running;
-            const dot = !effectiveEnabled ? "disabled" : ih ? (isOnline ? "healthy" : "unhealthy") : c.ok ? "unknown" : serviceRunning ? "unknown" : "degraded";
+            const dot = !effectiveEnabled
+              ? "disabled"
+              : ih
+                ? (isOnline ? "healthy" : isConfigured ? "unknown" : "unhealthy")
+                : c.ok ? "unknown" : serviceRunning ? "unknown" : "degraded";
             const LogoComp = IM_LOGO_MAP[channelId];
             const label = !effectiveEnabled
               ? t("status.disabled")
               : ih
-                ? (isOnline ? t("status.online") : t("status.offline"))
+                ? (isOnline ? t("status.online") : isConfigured ? t("status.configured") : t("status.offline"))
                 : c.ok
                   ? t("status.configured")
                   : serviceRunning ? "—" : t("status.keyMissing");
@@ -510,7 +796,7 @@ export function StatusView(props: StatusViewProps) {
                   <span className={"healthDot " + dot} />
                 </span>
                 <span className="inline-flex h-4 w-4 items-center justify-center">
-                  {LogoComp && <span style={{ display: "inline-flex", flexShrink: 0 }}>{LogoComp({ size: 16 })}</span>}
+                  {LogoComp && <span style={{ display: "inline-flex", flexShrink: 0 }}><LogoComp size={16} /></span>}
                 </span>
                 <span style={{ fontWeight: 600, fontSize: 13, minWidth: 0 }}>{c.name}</span>
                 <span className="imStatusLabel text-right">{label}</span>
@@ -521,7 +807,7 @@ export function StatusView(props: StatusViewProps) {
         </Card>
         <Card className="gap-0 border-border/80 py-0 shadow-sm">
           <CardHeader className="px-5 py-4">
-            <CardTitle className="text-sm">Skills</CardTitle>
+            <CardTitle className="text-sm">{t("sidebar.skills")}</CardTitle>
           </CardHeader>
           <CardContent className="px-5 pb-4 pt-0">
           {!skillSummary && !serviceStatus?.running ? (
@@ -602,6 +888,213 @@ export function StatusView(props: StatusViewProps) {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+function MemoryRepairDialog({
+  apiBase,
+  onClose,
+  onDone,
+  t,
+}: {
+  apiBase: string;
+  onClose: () => void;
+  onDone: () => Promise<void> | void;
+  t: (key: string, vars?: Record<string, unknown>) => string;
+}) {
+  const [status, setStatus] = useState<any>(null);
+  const [selected, setSelected] = useState<string>("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<
+    "restore" | "recreate" | "run-recover" | null
+  >(null);
+
+  const loadStatus = async () => {
+    const res = await safeFetch(`${apiBase}/api/memory/repair/status`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    setStatus(data);
+    const first = [...(data.backups || []), ...(data.snapshots || [])].find(
+      (x: any) => x.integrity === "ok",
+    );
+    if (first && !selected) setSelected(first.filename);
+  };
+
+  useEffect(() => {
+    loadStatus().catch((e) => notifyError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase]);
+
+  const runAction = (action: "restore" | "recreate" | "run-recover") => {
+    if (!status?.confirmation_token) return;
+    if (action === "restore" && !selected) {
+      notifyError(t("status.memoryRepairSelectBackup"));
+      return;
+    }
+    setPendingAction(action);
+  };
+
+  const executeAction = async () => {
+    const action = pendingAction;
+    if (!action) return;
+    if (!status?.confirmation_token) {
+      setPendingAction(null);
+      return;
+    }
+    setPendingAction(null);
+    setBusyAction(action);
+    const toastId = notifyLoading(t("status.memoryRepairRunning"));
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (IS_TAURI) {
+        headers["X-Synapse-Desktop-Token"] =
+          await invoke<string>("synapse_desktop_session_token");
+      }
+      const body =
+        action === "restore"
+          ? { source: selected, confirmation_token: status.confirmation_token }
+          : { confirmation_token: status.confirmation_token };
+      const res = await safeFetch(`${apiBase}/api/memory/repair/${action}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      notifySuccess(t("status.memoryRepairDone"));
+      await onDone();
+    } catch (e) {
+      notifyError(t("status.memoryRepairFailed", { err: String(e) }));
+      await loadStatus().catch(() => undefined);
+    } finally {
+      dismissLoading(toastId);
+      setBusyAction(null);
+    }
+  };
+
+  const candidates = [...(status?.backups || []), ...(status?.snapshots || [])];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <Card className="w-full max-w-2xl border-border/80 shadow-xl">
+        <CardHeader>
+          <CardTitle>{t("status.memoryRepairTitle")}</CardTitle>
+          <CardDescription>{t("status.memoryRepairDesc")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!status ? (
+            <div className="text-sm text-muted-foreground">
+              <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+              {t("status.checking")}
+            </div>
+          ) : (
+            <>
+              <div className="rounded border border-border/60 bg-muted/30 p-3 text-xs">
+                <div>{t("status.memoryRepairReason")}: {status.reason || "-"}</div>
+                <div className="break-all">DB: {status.db_path}</div>
+              </div>
+              <div className="max-h-56 overflow-auto rounded border border-border/60">
+                {candidates.length === 0 ? (
+                  <div className="p-3 text-sm text-muted-foreground">
+                    {t("status.memoryRepairNoBackups")}
+                  </div>
+                ) : (
+                  candidates.map((b: any) => (
+                    <label key={b.filename} className="flex cursor-pointer items-center gap-3 border-b border-border/40 px-3 py-2 text-sm last:border-b-0">
+                      <input
+                        type="radio"
+                        name="memory-backup"
+                        checked={selected === b.filename}
+                        onChange={() => setSelected(b.filename)}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{b.filename}</span>
+                      <Badge variant={b.integrity === "ok" ? "default" : "destructive"}>
+                        {b.integrity}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {Math.round((b.size_bytes || 0) / 1024)} KB
+                      </span>
+                    </label>
+                  ))
+                )}
+              </div>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button variant="outline" onClick={onClose} disabled={!!busyAction}>
+                  {t("config.cancel")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => runAction("restore")}
+                  disabled={!!busyAction || !selected}
+                >
+                  {busyAction === "restore" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t("status.memoryRepairRestore")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => runAction("run-recover")}
+                  disabled={!!busyAction || status.recover_method === "unavailable"}
+                >
+                  {busyAction === "run-recover" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t("status.memoryRepairRecover")}
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => runAction("recreate")}
+                  disabled={!!busyAction}
+                >
+                  {busyAction === "recreate" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {t("status.memoryRepairRecreate")}
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <AlertDialog
+        open={pendingAction !== null}
+        onOpenChange={(open) => {
+          if (busyAction) return;
+          if (!open) setPendingAction(null);
+        }}
+      >
+        <AlertDialogContent className="sm:max-w-[480px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <span className="grid size-8 place-items-center rounded-lg border border-red-500/20 bg-red-500/10 text-red-600">
+                <ShieldAlert size={16} />
+              </span>
+              {pendingAction === "recreate"
+                ? t("status.memoryRepairRecreate")
+                : pendingAction === "restore"
+                  ? t("status.memoryRepairRestore")
+                  : t("status.memoryRepairRecover")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingAction === "recreate"
+                ? t("status.memoryRepairConfirmRecreate")
+                : t("status.memoryRepairConfirm")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={!!busyAction}>
+              {t("config.cancel")}
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={!!busyAction}
+              onClick={() => void executeAction()}
+            >
+              {busyAction && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {t("status.memoryRepairConfirmAction")}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

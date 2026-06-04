@@ -164,10 +164,10 @@
 | 38 | 流式输出后续消息复用旧卡片 | `finalize_stream` 成功后不清理 `_thinking_cards[sk]`（设计由 `send_message` 清理），但 `streamed_ok=True` 时 `send_message` 被跳过，导致下一轮 `send_typing` 跳过创卡、`stream_token` PATCH 旧卡 | `finalize_stream` 成功后 pop `_thinking_cards[sk]`；`send_typing` 入口清理残留 `_streaming_finalized` | feishu.py |
 | 39 | 流式卡片不显示思考过程 | `_call_agent_streaming` 忽略 `thinking_delta`/`thinking_end` 事件，思维链只通过非流式 `progress_callback` 推送独立消息 | 新增 `stream_thinking()` 方法及 `_streaming_thinking` buffer；`_compose_thinking_display()` 组合思考 + 回复内容；Gateway 检查 `chain_push` 后 pipe thinking 事件到 adapter | feishu.py, gateway.py |
 | 40 | 流式路径不推送 chain_text 进度到会话后台 | `_call_agent_streaming` 未处理 `chain_text` 事件（工具调用描述、结果摘要等），也未在 `thinking_end` 时调用 `emit_progress_event`，导致会话后台/IM 消息历史完全看不到思维过程 | 新增 `chain_text` 事件处理 → `emit_progress_event`；`thinking_end` 时发送 💭 思考预览进度；finalize 前调用 `flush_progress` 确保进度消息先于回答到达 | gateway.py |
-| 41 | `run_skill_script` 找不到技能 | `run_script()` 用 `_loaded_skills.get(name)` 做严格 skill_id 匹配，Agent 传入的 `name` 字段（如 `synapse/skills@datetime-tool`）匹配失败 | 改用 `_resolve_skill(name)`，支持 skill_id 和 name 回退查找，与 `get_skill()` 一致 | loader.py |
+| 41 | `run_skill_script` 找不到技能 | `run_script()` 用 `_loaded_skills.get(name)` 做严格 skill_id 匹配，Agent 传入的 `name` 字段（如 `openakita/skills@datetime-tool`）匹配失败 | 改用 `_resolve_skill(name)`，支持 skill_id 和 name 回退查找，与 `get_skill()` 一致 | loader.py |
 | 42 | 流式中间进度消息过早消费 thinking card | `emit_progress_event` → `send_text` → `send_message` 无条件 pop `_thinking_cards[sk]`，导致 `finalize_stream` 找不到卡片、返回 False，"思考中..."卡片残留 | Gateway `_call_agent_streaming` 开头初始化 `_streaming_buffers[sk]`；`send_message` 检测 `sk in _streaming_buffers` 时跳过 thinking card 消费 | gateway.py, feishu.py |
 | 43 | ForceToolCall 对 REPLY 意图冲突重试 | `[REPLY]` intent + tool_calls=0 仍保留 1 次重试，闲聊场景模型被强制再问"是否该调工具"，产生矛盾提示和额外 token 消耗 | `intent == "REPLY"` 时直接 `return clean_llm_response()`，不重试；`[ACTION]` 和无标记保留完整重试 | reasoning_engine.py |
-| 44 | 群聊"智能判断"/"所有消息"模式无效果 | Synapse `group_response_mode` 只控制 gateway 过滤，飞书平台默认只投递 @提及消息 | UI 选择非"仅@时回复"时显示提示："需在飞书后台开启「接收群聊中所有消息」"；适配器启动时输出提醒日志 | IMView.tsx, feishu.py, zh.json, en.json |
+| 44 | 群聊"智能判断"/"所有消息"模式无效果 | OpenAkita `group_response_mode` 只控制 gateway 过滤，飞书平台默认只投递 @提及消息 | UI 选择非"仅@时回复"时显示提示："需在飞书后台开启「接收群聊中所有消息」"；适配器启动时输出提醒日志 | IMView.tsx, feishu.py, zh.json, en.json |
 | 45 | `/feishu auth` 生成的 OAuth URL 报错 20029 | `get_auth_url()` 硬编码 `redirect_uri` 为占位值，未在飞书后台注册 | 默认不传 `redirect_uri`，让飞书平台自动使用已注册的回调地址 | feishu.py |
 | 46 | 非流式模式"思考中..."卡片残留 + 回复显示异常 | 非流式路径中 `_flush`（progress 合并发送）通过 `send_message` 发送进度文本时无条件 pop `_thinking_cards[sk]`，导致：①"思考中..."卡片被 PATCH 为思维过程文本而非最终回复；②`_keep_typing` 重建新卡片后无人消费 → 残留；③最终回复沦为独立新消息而非 PATCH 到占位卡片；④`_send_response` 前未 `flush_progress` 导致进度/回复顺序不稳定。另外飞书 adapter 缺少 `clear_typing` 兜底清理 | ①`_call_agent` 非流式路径也初始化 `_streaming_buffers[sk]` 保护 thinking card，agent 处理完 pop；②`_send_response` 前先 `flush_progress`；③飞书 adapter 新增 `clear_typing` 删除残留卡片；④`clear_typing` 调用传入 `thread_id` 以正确匹配 `sk` | gateway.py, feishu.py |
 
@@ -305,7 +305,7 @@ gateway._call_agent()
 | `setup/feishu_onboard.py` | FeishuOnboard 类：init → begin → poll 三步流程 |
 | `setup_center/bridge.py` | 新增子命令：`feishu-onboard-start` / `feishu-onboard-poll` / `feishu-validate` |
 | `setup/wizard.py` | `_configure_feishu()` 改为三选一菜单（扫码/手动/现有） |
-| `main.rs` | Tauri invoke 注册：`synapse_feishu_onboard_start` / `poll` / `validate` |
+| `main.rs` | Tauri invoke 注册：`openakita_feishu_onboard_start` / `poll` / `validate` |
 | `FeishuQRModal.tsx` | 前端 QR 弹窗组件 + 轮询状态机 |
 | `IMConfigView.tsx` | 飞书配置区新增扫码按钮 |
 
@@ -427,5 +427,5 @@ gateway._call_agent()
 
 | 文件 | 说明 |
 |------|------|
-| `src/synapse/setup/feishu_onboard.py` | Device Flow 扫码建应用 + 凭证校验 |
+| `src/openakita/setup/feishu_onboard.py` | Device Flow 扫码建应用 + 凭证校验 |
 | `apps/setup-center/src/components/FeishuQRModal.tsx` | 飞书 QR 扫码弹窗组件 |

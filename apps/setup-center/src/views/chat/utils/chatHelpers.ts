@@ -15,10 +15,33 @@ import { IS_TAURI } from "../../../platform";
 import { getAccessToken } from "../../../platform/auth";
 
 // ── 持久化 Key 常量 ──
+// Legacy (pre-workspace-isolation) global keys — kept as defaults for hooks that
+// don't yet thread workspaceId through, and as the source for one-time migration
+// in ChatView's workspace-change effect.
 
 export const STORAGE_KEY_CONVS = "chat_conversations";
 export const STORAGE_KEY_ACTIVE = "chat_activeConvId";
 export const STORAGE_KEY_MSGS_PREFIX = "chat_msgs_";
+
+/** Workspace-scoped storage keys. Pass `null` to get the legacy global keys. */
+export function getWorkspaceStorageKeys(workspaceId: string | null | undefined): {
+  CONVS: string;
+  ACTIVE: string;
+  MSGS_PREFIX: string;
+} {
+  if (!workspaceId) {
+    return {
+      CONVS: STORAGE_KEY_CONVS,
+      ACTIVE: STORAGE_KEY_ACTIVE,
+      MSGS_PREFIX: STORAGE_KEY_MSGS_PREFIX,
+    };
+  }
+  return {
+    CONVS: `chat_conversations_${workspaceId}`,
+    ACTIVE: `chat_activeConvId_${workspaceId}`,
+    MSGS_PREFIX: `chat_msgs_${workspaceId}_`,
+  };
+}
 
 // ── 行为阈值常量 ──
 
@@ -30,14 +53,14 @@ export const UNDO_MAX_STEPS = 50;
 // ── 加载状态轮播提示 ──
 
 const _spinnerTips = [
-  "💡 按 Ctrl+/ 查看所有快捷键",
-  "💡 输入 / 可以使用斜杠命令",
-  "💡 拖拽文件到输入框可以上传附件",
-  "💡 Ctrl+F 搜索聊天记录",
-  "💡 输入 @agent名 快速切换 Agent",
-  "💡 使用 /clear 清空当前会话上下文",
-  "💡 使用 /memory 管理 AI 记忆",
-  "💡 长按 Shift+Enter 可以换行输入",
+  "Tip: 按 Ctrl+/ 查看所有快捷键",
+  "Tip: 输入 / 可以使用斜杠命令",
+  "Tip: 拖拽文件到输入框可以上传附件",
+  "Tip: Ctrl+F 搜索聊天记录",
+  "Tip: 输入 @agent名 快速切换 Agent",
+  "Tip: 使用 /clear 清空当前会话上下文",
+  "Tip: 使用 /memory 管理 AI 记忆",
+  "Tip: 长按 Shift+Enter 可以换行输入",
 ];
 let _tipShowCounts: number[] = new Array(_spinnerTips.length).fill(0);
 
@@ -54,13 +77,17 @@ export function getNextSpinnerTip(): string {
 // ── Error Card 元数据 ──
 
 export const ERROR_META: Record<string, { icon: string; color: string; hint: string }> = {
-  auth: { icon: "🔑", color: "#ef4444", hint: "请检查 API Key 配置" },
-  quota: { icon: "📊", color: "#f59e0b", hint: "请稍后重试或升级配额" },
-  timeout: { icon: "⏱️", color: "#f59e0b", hint: "可尝试简化问题后重试" },
-  content_filter: { icon: "🛡️", color: "#8b5cf6", hint: "请换个方式重新提问" },
-  network: { icon: "🌐", color: "#f59e0b", hint: "请检查网络连接" },
-  server: { icon: "⚠️", color: "#ef4444", hint: "服务暂时不可用，请稍后重试" },
-  unknown: { icon: "❌", color: "#ef4444", hint: "" },
+  auth: { icon: "key", color: "#ef4444", hint: "请检查 API Key 配置" },
+  quota: { icon: "chart", color: "#f59e0b", hint: "请稍后重试或升级配额" },
+  timeout: { icon: "clock", color: "#f59e0b", hint: "可尝试简化问题后重试" },
+  content_filter: {
+    icon: "shield",
+    color: "#8b5cf6",
+    hint: "云端模型的内容安全审核未通过。可尝试：① 输入 /clear 清空当前对话后重新开始；② 换一种表述；③ 切换到对内容审核更宽松的模型端点。",
+  },
+  network: { icon: "globe", color: "#f59e0b", hint: "请检查网络连接" },
+  server: { icon: "warn", color: "#ef4444", hint: "服务暂时不可用，请稍后重试" },
+  unknown: { icon: "error", color: "#ef4444", hint: "" },
 };
 
 // ── SVG icon paths ──
@@ -92,13 +119,13 @@ export function exportConversation(msgs: ChatMessage[], title: string, format: "
   let mimeType: string;
   let ext: string;
   if (format === "json") {
-    content = JSON.stringify(msgs.map(({ streaming, ...rest }) => rest), null, 2);
+    content = JSON.stringify(msgs.map(({ streaming, streamStatus, ...rest }) => rest), null, 2);
     mimeType = "application/json";
     ext = "json";
   } else {
     const lines: string[] = [`# ${title}`, "", `> 导出时间: ${new Date().toLocaleString()}`, ""];
     for (const msg of msgs) {
-      const role = msg.role === "user" ? "👤 用户" : msg.role === "assistant" ? "🤖 助手" : "📢 系统";
+      const role = msg.role === "user" ? "[User] 用户" : msg.role === "assistant" ? "[AI] 助手" : "[Sys] 系统";
       lines.push(`## ${role}`, "");
       if (msg.content) lines.push(msg.content, "");
       if (msg.toolCalls?.length) {
@@ -148,6 +175,8 @@ export function stripLegacySummary(content: string): string {
 
 // ── 持久化：消息序列化 / 反序列化 ──
 
+export const STORED_MESSAGE_WINDOW = 120;
+
 export function sanitizeStoredMessages(raw: unknown): ChatMessage[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((m): m is ChatMessage => {
@@ -158,7 +187,7 @@ export function sanitizeStoredMessages(raw: unknown): ChatMessage[] {
     if (typeof m.timestamp !== "number") return false;
     return true;
   }).map((m) => {
-    const cleaned = { ...m, streaming: undefined };
+    const cleaned = { ...m, streaming: undefined, streamStatus: undefined };
     if (m.role === "assistant" && (!m.content || m.content.trim() === "") && !m.toolCalls?.length && !m.todo) {
       return null;
     }
@@ -177,13 +206,14 @@ export function loadMessagesFromStorage(key: string): ChatMessage[] {
   }
 }
 
-export function saveMessagesToStorage(key: string, msgs: ChatMessage[]): boolean {
-  const base = msgs.map(({ streaming, ...rest }) => rest);
+export function saveMessagesToStorage(key: string, msgs: ChatMessage[], maxMessages = STORED_MESSAGE_WINDOW): boolean {
+  const windowed = maxMessages > 0 && msgs.length > maxMessages ? msgs.slice(-maxMessages) : msgs;
+  const base = windowed.map(({ streaming, streamStatus, ...rest }) => rest);
   try {
     localStorage.setItem(key, JSON.stringify(base));
     return true;
   } catch {
-    const slim = msgs.map(({ streaming, thinkingChain, ...rest }) => rest);
+    const slim = windowed.map(({ streaming, streamStatus, thinkingChain, ...rest }) => rest);
     try {
       localStorage.setItem(key, JSON.stringify(slim));
       return true;
@@ -191,6 +221,50 @@ export function saveMessagesToStorage(key: string, msgs: ChatMessage[]): boolean
       return false;
     }
   }
+}
+
+export function shouldRenderConversationMessages(
+  conversationId: string | null | undefined,
+  activeConversationId: string | null | undefined,
+): boolean {
+  return Boolean(conversationId) && conversationId === activeConversationId;
+}
+
+function latestMessageTimestamp(msgs: ChatMessage[]): number {
+  return msgs.reduce((max, msg) => Math.max(max, Number.isFinite(msg.timestamp) ? msg.timestamp : 0), 0);
+}
+
+function messageSignature(msg: ChatMessage | undefined): string {
+  if (!msg) return "";
+  return `${msg.role}\n${msg.timestamp}\n${msg.content}`;
+}
+
+/**
+ * Choose which message history should hydrate the UI.
+ *
+ * Backend history is the source of truth after SSE disconnect recovery because
+ * the backend may save the completed answer after the local stream was aborted.
+ * Merge backend assistant content into local first, so a newer local streaming
+ * placeholder cannot hide a complete answer already persisted by the backend.
+ */
+export function chooseHydratedMessages(localMsgs: ChatMessage[], backendMsgs: ChatMessage[]): ChatMessage[] {
+  if (backendMsgs.length === 0) return localMsgs;
+  if (localMsgs.length === 0) return backendMsgs;
+
+  const patchedLocal = patchMessagesWithBackend(localMsgs, backendMsgs);
+
+  if (backendMsgs.length > localMsgs.length) return backendMsgs;
+  if (localMsgs.length > backendMsgs.length) return patchedLocal;
+  if (patchedLocal !== localMsgs) return patchedLocal;
+
+  const localLatest = latestMessageTimestamp(localMsgs);
+  const backendLatest = latestMessageTimestamp(backendMsgs);
+  if (backendLatest > localLatest) return backendMsgs;
+  if (localLatest > backendLatest) return localMsgs;
+
+  const localLast = messageSignature(localMsgs[localMsgs.length - 1]);
+  const backendLast = messageSignature(backendMsgs[backendMsgs.length - 1]);
+  return backendLast && backendLast !== localLast ? backendMsgs : localMsgs;
 }
 
 // ── 思维链 ──
@@ -323,16 +397,89 @@ export function formatAskUserAnswer(answer: string, askUser: ChatAskUser): strin
 
 // ── 后端数据修补 ──
 
-export function patchMessagesWithBackend(
+type BackendHistoryMessage = {
+  id?: string;
+  index?: number;
+  role: string;
+  content: string;
+  chain_summary?: ChainSummaryItem[];
+  artifacts?: ChatArtifact[] | null;
+  usage?: ChatMessage["usage"];
+};
+
+export type BackendPatchStats = {
+  matchedByHistoryIndex: number;
+  matchedById: number;
+  matchedByFallback: number;
+  patched: number;
+};
+
+export type BackendPatchResult = {
+  messages: ChatMessage[];
+  changed: boolean;
+  stats: BackendPatchStats;
+};
+
+export function patchMessagesWithBackendDetailed(
   localMsgs: ChatMessage[],
-  backendMsgs: { role: string; content: string; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[] }[],
-): ChatMessage[] {
+  backendMsgs: BackendHistoryMessage[],
+): BackendPatchResult {
   const backendAssistant = backendMsgs.filter((m) => m.role === "assistant");
-  let aIdx = 0;
+  const backendByHistoryIndex = new Map<number, BackendHistoryMessage>();
+  const backendById = new Map<string, BackendHistoryMessage>();
+  backendAssistant.forEach((m) => {
+    if (typeof m.index === "number") backendByHistoryIndex.set(m.index, m);
+    if (m.id) backendById.set(m.id, m);
+  });
+  const usedBackendMessages = new Set<BackendHistoryMessage>();
+  const stats: BackendPatchStats = {
+    matchedByHistoryIndex: 0,
+    matchedById: 0,
+    matchedByFallback: 0,
+    patched: 0,
+  };
+
+  const lastLocalAssistantIndex = localMsgs.reduce(
+    (last, m, index) => (m.role === "assistant" ? index : last),
+    -1,
+  );
+
+  const claimBackendForLocalMessage = (m: ChatMessage, localIndex: number): BackendHistoryMessage | undefined => {
+    if (typeof m.historyIndex === "number") {
+      const indexed = backendByHistoryIndex.get(m.historyIndex);
+      if (indexed && !usedBackendMessages.has(indexed)) {
+        usedBackendMessages.add(indexed);
+        stats.matchedByHistoryIndex += 1;
+        return indexed;
+      }
+    }
+
+    const byId = backendById.get(m.id);
+    if (byId && !usedBackendMessages.has(byId)) {
+      usedBackendMessages.add(byId);
+      stats.matchedById += 1;
+      return byId;
+    }
+
+    if (localIndex !== lastLocalAssistantIndex) {
+      return undefined;
+    }
+
+    for (let i = backendAssistant.length - 1; i >= 0; i -= 1) {
+      const candidate = backendAssistant[i];
+      if (!usedBackendMessages.has(candidate)) {
+        usedBackendMessages.add(candidate);
+        stats.matchedByFallback += 1;
+        return candidate;
+      }
+    }
+    return undefined;
+  };
+
   let changed = false;
-  const patched = localMsgs.map((m) => {
+  const patched = localMsgs.map((m, index) => {
     if (m.role !== "assistant") return m;
-    const backend = backendAssistant[aIdx++];
+    const backend = claimBackendForLocalMessage(m, index);
     if (!backend) return m;
 
     const patches: Partial<ChatMessage> = {};
@@ -357,13 +504,25 @@ export function patchMessagesWithBackend(
       patches.artifacts = backend.artifacts;
     }
 
+    if (!m.usage && backend.usage) {
+      patches.usage = backend.usage;
+    }
+
     if (Object.keys(patches).length > 0) {
       changed = true;
+      stats.patched += 1;
       return { ...m, ...patches };
     }
     return m;
   });
-  return changed ? patched : localMsgs;
+  return { messages: changed ? patched : localMsgs, changed, stats };
+}
+
+export function patchMessagesWithBackend(
+  localMsgs: ChatMessage[],
+  backendMsgs: BackendHistoryMessage[],
+): ChatMessage[] {
+  return patchMessagesWithBackendDetailed(localMsgs, backendMsgs).messages;
 }
 
 // ── 错误分类 ──

@@ -152,7 +152,7 @@ export function WechatQRModal({
 
           if (data.status === "expired") {
             if (pollRef.current) clearInterval(pollRef.current);
-            setState("expired");
+            startOnboard();
             return;
           }
 
@@ -317,3 +317,4 @@ export function WechatQRModal({
     </ModalOverlay>
   );
 }
+

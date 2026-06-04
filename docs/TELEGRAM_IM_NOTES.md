@@ -157,30 +157,30 @@ Agent 生成回复
 | 基础接收 | 均支持 text/photo/voice/video/document |
 | Markdown 降级 | 均在解析失败时回退纯文本 |
 | Long Polling | 均通过 `updater.start_polling()` |
-| 配对/认证 | Synapse 有配对机制，AstrBot 无；koishi 依赖 Satori 协议层 |
+| 配对/认证 | OpenAkita 有配对机制，AstrBot 无；koishi 依赖 Satori 协议层 |
 
 ### 差异点
 
-| 维度 | Synapse | koishi | AstrBot | 影响 |
+| 维度 | OpenAkita | koishi | AstrBot | 影响 |
 |------|-----------|--------|---------|------|
-| **audio 归类** | `content.voices`（错误） | 独立 `audio` 类型 | `Comp.Record` | **Synapse 缺陷**：音频文件被当成语音指令做 STT |
-| **media_group** | 不聚合，逐条处理 | 1.2s debounce 合并 | APScheduler debounce + max_wait | **Synapse 缺失**：相册每张图独立触发 Agent |
-| **视频发送** | 未实现 | `sendVideo` | `send_video` | **Synapse 缺失** |
-| **callback_query** | 未订阅 | 完整支持 → `interaction/button` | 未实现 | **Synapse 缺失** |
+| **audio 归类** | `content.voices`（错误） | 独立 `audio` 类型 | `Comp.Record` | **OpenAkita 缺陷**：音频文件被当成语音指令做 STT |
+| **media_group** | 不聚合，逐条处理 | 1.2s debounce 合并 | APScheduler debounce + max_wait | **OpenAkita 缺失**：相册每张图独立触发 Agent |
+| **视频发送** | 未实现 | `sendVideo` | `send_video` | **OpenAkita 缺失** |
+| **callback_query** | 未订阅 | 完整支持 → `interaction/button` | 未实现 | **OpenAkita 缺失** |
 | **inline_query** | 未订阅 | 类型+API 完整，需插件监听 | 未实现 | 低优先级 |
 | **channel_post** | 未订阅 | `channel_post` → `message` | 未实现 | 低优先级 |
 | **animation/GIF** | 未处理 | `sendAnimation` | 未处理 | 中优先级 |
 | **video_note** | 未处理 | 未明确 | 未处理 | 低优先级 |
-| **Forum/Topic** | 未实现 | `message_thread_id` | `message_thread_id` + `session_id` | **Synapse 缺失** |
+| **Forum/Topic** | 未实现 | `message_thread_id` | `message_thread_id` + `session_id` | **OpenAkita 缺失** |
 | **流式输出** | 未实现 | 无 | 私聊 `sendMessageDraft` / 群聊 `edit_message_text` | 中优先级 |
 | **消息反应** | 未实现 | 无 | `set_message_reaction` | 低优先级 |
-| **parse_mode** | Markdown（旧版） | HTML（统一） | MarkdownV2 + `telegramify-markdown` | Synapse 更宽容但功能受限 |
-| **自定义 API 地址** | 不支持 | 支持 `endpoint` | 支持 `telegram_api_base_url` | **Synapse 缺失**：无法用反代绕 GFW |
+| **parse_mode** | Markdown（旧版） | HTML（统一） | MarkdownV2 + `telegramify-markdown` | OpenAkita 更宽容但功能受限 |
+| **自定义 API 地址** | 不支持 | 支持 `endpoint` | 支持 `telegram_api_base_url` | **OpenAkita 缺失**：无法用反代绕 GFW |
 | **Chat Action** | 仅 `TYPING` | 无 | `upload_photo` / `upload_video` 等 | 低优先级 |
 | **语音隐私兼容** | 无处理 | 无 | `Voice_messages_forbidden` → `send_document` | 低优先级 |
-| **Bot 命令注册** | 硬编码 12 个 | `setMyCommands` 动态同步 | 自动从 handler_registry 收集 | Synapse 不够灵活 |
+| **Bot 命令注册** | 硬编码 12 个 | `setMyCommands` 动态同步 | 自动从 handler_registry 收集 | OpenAkita 不够灵活 |
 | **sendMediaGroup** | 不支持 | 支持 | 未明确 | 中优先级 |
-| **Webhook** | 设置但无 HTTP 服务 | 完整 HTTP 服务 | 不支持 | **Synapse 缺陷** |
+| **Webhook** | 设置但无 HTTP 服务 | 完整 HTTP 服务 | 不支持 | **OpenAkita 缺陷** |
 | **消息去重** | 无 | 无 | 无 | 低优先级 |
 | **getFile 20MB 限制** | 无处理 | 支持本地 Bot API 服务器 | 无处理 | 中优先级 |
 

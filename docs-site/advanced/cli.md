@@ -4,6 +4,12 @@
 
 Synapse 提供 `synapse` 命令行工具，是与系统交互的另一种方式。适合无桌面环境的服务器部署、脚本自动化，或者你就是喜欢终端。
 
+::: tip 如何获得 `synapse` / `oa` 命令
+这些命令由 Python 包提供，需先通过 `pip install synapse` 安装（详见[安装指南](/guide/installation)）。安装后 `synapse` 可执行文件会随 pip 自动加入 PATH。
+
+桌面版安装包**不会**向系统 PATH 注册 `synapse` / `oa` 命令——桌面用户请直接使用图形界面；如需终端命令，按上面的方式用 pip 安装即可。
+:::
+
 ## 子命令一览
 
 | 命令 | 说明 | 示例 |
@@ -136,3 +142,4 @@ synapse serve
 - [配置向导详解](/advanced/wizard) — 完整配置字段说明
 - [高级设置](/advanced/advanced) — 网络与系统配置
 - [生产部署](/network/production) — 服务器部署指南
+

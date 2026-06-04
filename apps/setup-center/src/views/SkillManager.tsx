@@ -6,8 +6,8 @@ import { invoke, IS_TAURI } from "../platform";
 import { useTranslation } from "react-i18next";
 import type { SkillInfo, SkillConfigField, MarketplaceSkill, EnvMap } from "../types";
 import { envGet, envSet } from "../utils";
-import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye, IconTerminal } from "../icons";
-import { Loader2 } from "lucide-react";
+import { IconGear, IconZap, IconPackage, IconStar, IconCheck, IconX, IconDownload, IconSearch, IconConfig, IconFolderOpen, IconEdit, IconTrash, IconEye } from "../icons";
+import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
 import { safeFetch } from "../providers";
 import { toast } from "sonner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -22,21 +22,17 @@ import {
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ModalOverlay } from "../components/ModalOverlay";
-import { cn } from "@/lib/utils";
 import {
-  isWhalecloudBaseScriptsSkillId,
-  isWhalecloudDevToolSkill,
-  rdToolDisplayLabel,
-  withRdBaseScriptsSkillIds,
-} from "../utils/whalecloudDevToolSkill";
+  Dialog, DialogContent, DialogDescription, DialogFooter,
+  DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ModalOverlay } from "../components/ModalOverlay";
 
 // ─── i18n 辅助：按当前语言优先显示中文名/描述 ───
 
 function getSkillDisplayName(skill: SkillInfo, lang: string): string {
-  if (isWhalecloudDevToolSkill(skill)) {
-    return rdToolDisplayLabel(skill, lang);
-  }
   const key = lang.startsWith("zh") ? "zh" : lang;
   return skill.name_i18n?.[key] || skill.name;
 }
@@ -53,6 +49,9 @@ type ErrorContext = "load" | "save" | "install" | "uninstall" | "reload" | "gene
 function friendlyError(e: unknown, t: (key: string) => string, context: ErrorContext = "general"): string {
   const raw = e instanceof Error ? e.message : String(e);
 
+  if (/外部技能不可移动到系统分类|external skills? cannot be moved to system categor(?:y|ies)/i.test(raw)) {
+    return t("skills.category.moveSystemCategoryDenied");
+  }
   if (/AbortError|signal timed out|timeout/i.test(raw)) {
     return t("skills.errorTimeout");
   }
@@ -61,6 +60,12 @@ function friendlyError(e: unknown, t: (key: string) => string, context: ErrorCon
   }
   if (/\b50[0-9]\b|Internal Server Error/i.test(raw)) {
     return t("skills.errorServer");
+  }
+  if (context === "save" && raw && raw !== "[object Object]") {
+    return raw.replace(/^Error:\s*/i, "");
+  }
+  if (context === "install" && raw && raw !== "[object Object]") {
+    return raw.replace(/^Error:\s*/i, "");
   }
 
   const contextMap: Record<ErrorContext, string> = {
@@ -72,6 +77,649 @@ function friendlyError(e: unknown, t: (key: string) => string, context: ErrorCon
     general: "skills.errorUnknown",
   };
   return t(contextMap[context]);
+}
+
+// ─── 分类对话框（新建 / 编辑） ───
+
+type CategoryDialogState = {
+  mode: "create";
+} | {
+  mode: "edit";
+  originalName: string;
+  currentDescription: string | null;
+} | null;
+
+function CategoryDialog({
+  state,
+  onClose,
+  onSubmit,
+  t,
+}: {
+  state: CategoryDialogState;
+  onClose: () => void;
+  onSubmit: (mode: "create" | "edit", data: { name: string; description: string; originalName?: string }) => Promise<void>;
+  t: (key: string) => string;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!state) return;
+    if (state.mode === "edit") {
+      setName(state.originalName);
+      setDescription(state.currentDescription ?? "");
+    } else {
+      setName("");
+      setDescription("");
+    }
+  }, [state]);
+
+  const handleSubmit = async () => {
+    if (!name.trim()) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(
+        state!.mode,
+        {
+          name: name.trim(),
+          description: description.trim(),
+          originalName: state?.mode === "edit" ? state.originalName : undefined,
+        },
+      );
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const isEdit = state?.mode === "edit";
+
+  return (
+    <Dialog open={!!state} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {isEdit ? t("skills.category.editTitle") : t("skills.category.createTitle")}
+          </DialogTitle>
+          <DialogDescription>
+            {isEdit ? t("skills.category.editSubtitle") : t("skills.category.createSubtitle")}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-2">
+          <div className="space-y-2">
+            <Label className="text-sm">
+              {t("skills.category.nameLabel")}
+              <span className="ml-1 text-destructive">*</span>
+            </Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={t("skills.category.namePlaceholder")}
+              maxLength={32}
+              autoFocus
+              onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) handleSubmit(); }}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm">
+              {t("skills.category.descLabel")}
+            </Label>
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t("skills.category.descPlaceholder")}
+              className="min-h-20 resize-none"
+            />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button onClick={handleSubmit} disabled={submitting || !name.trim()}>
+            {submitting && <Loader2 className="animate-spin mr-1" size={14} />}
+            {isEdit ? t("common.save") : t("skills.category.createBtn")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── 移动到分类对话框 ───
+
+type MoveCategoryDialogState = {
+  skillId: string;
+  skillName: string;
+  currentCategory: string | null;
+} | null;
+
+type AiOrganizePreview = {
+  categories: { name: string; description?: string | null }[];
+  bindings: Record<string, string>;
+  summary?: {
+    total?: number;
+    included?: number;
+    truncated?: number;
+    category_count?: number;
+    binding_count?: number;
+    unassigned_count?: number;
+    by_category?: Record<string, number>;
+  };
+};
+
+type AiOrganizeApplyPayload = {
+  categories: { name: string; description?: string | null }[];
+  bindings: Record<string, string>;
+  rename_map?: Record<string, string>;
+};
+
+function MoveCategoryDialog({
+  state,
+  categories,
+  onClose,
+  onSubmit,
+  t,
+}: {
+  state: MoveCategoryDialogState;
+  categories: {
+    name: string;
+    description: string | null;
+    system_readonly: boolean;
+    declared?: boolean;
+    is_system_category?: boolean;
+  }[];
+  onClose: () => void;
+  onSubmit: (skillId: string, targetCategory: string | null) => Promise<void>;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state) {
+      setSelected(state.currentCategory || null);
+    }
+  }, [state]);
+
+  const handleConfirm = async () => {
+    if (!state) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(state.skillId, selected);
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const userCategories = categories.filter(
+    (c) =>
+      !c.system_readonly &&
+      !c.is_system_category &&
+      c.name !== "Uncategorized" &&
+      (c.declared ?? true),
+  );
+
+  return (
+    <Dialog open={!!state} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t("skills.category.moveTitle")}</DialogTitle>
+          <DialogDescription>
+            {state ? t("skills.category.moveSubtitle", { name: state.skillName }) : ""}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="relative">
+          <div className="flex flex-col gap-1 py-2 max-h-[40vh] overflow-y-auto">
+            <button
+              type="button"
+              className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors ${
+                selected === null
+                  ? "bg-primary/10 border border-primary/40 text-primary font-medium"
+                  : "hover:bg-muted border border-transparent"
+              }`}
+              onClick={() => setSelected(null)}
+            >
+              <span className="flex-1">{t("skills.category.uncategorized")}</span>
+              {selected === null && <IconCheck size={14} />}
+            </button>
+            {userCategories.map((cat) => (
+              <button
+                key={cat.name}
+                type="button"
+                className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm text-left transition-colors ${
+                  selected === cat.name
+                    ? "bg-primary/10 border border-primary/40 text-primary font-medium"
+                    : "hover:bg-muted border border-transparent"
+                }`}
+                onClick={() => setSelected(cat.name)}
+              >
+                <span className="flex-1 min-w-0 truncate">{cat.name}</span>
+                {cat.description && (
+                  <span
+                    title={cat.description}
+                    className="text-xs text-muted-foreground truncate max-w-[140px] shrink-0 cursor-default"
+                  >
+                    {cat.description}
+                  </span>
+                )}
+                {selected === cat.name && <IconCheck size={14} />}
+              </button>
+            ))}
+            {userCategories.length === 0 && (
+              <div className="text-xs text-muted-foreground px-3 py-4 text-center">
+                {t("skills.category.noCategoriesHint")}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            {t("common.cancel")}
+          </Button>
+          <Button onClick={handleConfirm} disabled={submitting}>
+            {submitting && <Loader2 className="animate-spin mr-1" size={14} />}
+            {t("common.confirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── AI 整理预览对话框 ───
+
+function AiOrganizePreviewDialog({
+  preview,
+  skills,
+  applying,
+  onClose,
+  onApply,
+  t,
+}: {
+  preview: AiOrganizePreview | null;
+  skills: SkillInfo[];
+  applying: boolean;
+  onClose: () => void;
+  onApply: (payload: AiOrganizeApplyPayload) => Promise<void>;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const { i18n } = useTranslation();
+  const lang = i18n.language;
+  const [editableCategories, setEditableCategories] = useState<
+    Array<{ id: string; oldName: string; name: string; description: string }>
+  >([]);
+  const [editableBindings, setEditableBindings] = useState<Record<string, string>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const prevPreviewRef = useRef<AiOrganizePreview | null>(null);
+  useEffect(() => {
+    if (preview && preview !== prevPreviewRef.current) {
+      const nextCategories = (preview.categories || []).map((c, i) => ({
+        id: `cat_${i}_${(c.name || "").toLowerCase().replace(/\s+/g, "_")}`,
+        oldName: c.name,
+        name: c.name,
+        description: c.description || "",
+      }));
+
+      const idByName = new Map(nextCategories.map((c) => [c.name, c.id]));
+      const missingNames = Array.from(
+        new Set(Object.values(preview.bindings || {}).filter((name) => !idByName.has(name)))
+      );
+      for (const name of missingNames) {
+        const id = `cat_extra_${idByName.size}_${name.toLowerCase().replace(/\s+/g, "_")}`;
+        nextCategories.push({ id, oldName: name, name, description: "" });
+        idByName.set(name, id);
+      }
+
+      const nextBindings: Record<string, string> = {};
+      for (const [sid, catName] of Object.entries(preview.bindings || {})) {
+        const cid = idByName.get(catName);
+        if (cid) nextBindings[sid] = cid;
+      }
+
+      setEditableCategories(nextCategories);
+      setEditableBindings(nextBindings);
+      setExpanded(new Set());
+      setEditingCategoryId(null);
+      setValidationError(null);
+      prevPreviewRef.current = preview;
+    }
+    if (!preview) {
+      prevPreviewRef.current = null;
+    }
+  }, [preview]);
+
+  const skillMap = useMemo(() => {
+    const m = new Map<string, SkillInfo>();
+    for (const s of skills) m.set(s.skillId, s);
+    return m;
+  }, [skills]);
+
+  const liveByCategory = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const cat of editableCategories) counts[cat.id] = 0;
+    for (const cid of Object.values(editableBindings)) {
+      counts[cid] = (counts[cid] || 0) + 1;
+    }
+    return counts;
+  }, [editableBindings, editableCategories]);
+
+  const unassignedSkillIds = useMemo(() => {
+    const boundIds = new Set(Object.keys(editableBindings));
+    return skills
+      .filter((s) => !s.system && !boundIds.has(s.skillId))
+      .map((s) => s.skillId);
+  }, [skills, editableBindings]);
+
+  const bindingCount = Object.keys(editableBindings).length;
+  const unassignedCount = unassignedSkillIds.length;
+
+  const modifiedCount = useMemo(() => {
+    if (!preview) return 0;
+    let count = 0;
+    const origBindings = preview.bindings || {};
+    const catNameById = new Map(editableCategories.map((c) => [c.id, c.name]));
+    for (const [sid, cid] of Object.entries(editableBindings)) {
+      const catName = catNameById.get(cid) || "";
+      if (origBindings[sid] !== catName) count++;
+    }
+    const origByName = new Map((preview.categories || []).map((c) => [c.name, c.description || ""]));
+    for (const cat of editableCategories) {
+      if (cat.name !== cat.oldName) count++;
+      if ((origByName.get(cat.oldName) || "") !== (cat.description || "")) count++;
+    }
+    return count;
+  }, [editableBindings, editableCategories, preview]);
+
+  const toggleExpand = useCallback((name: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }, []);
+
+  const handleBindingChange = useCallback((skillId: string, newCategoryId: string) => {
+    setEditableBindings((prev) => ({ ...prev, [skillId]: newCategoryId }));
+  }, []);
+
+  const handleCategoryChange = useCallback(
+    (id: string, patch: Partial<{ name: string; description: string }>) => {
+      setEditableCategories((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+      );
+      setValidationError(null);
+    },
+    []
+  );
+
+  const getSkillName = useCallback((skillId: string) => {
+    const info = skillMap.get(skillId);
+    return info ? getSkillDisplayName(info, lang) : skillId;
+  }, [skillMap, lang]);
+
+  const validateBeforeApply = useCallback(() => {
+    const names = editableCategories.map((c) => c.name.trim());
+    if (names.some((n) => !n)) {
+      const msg = t("skills.aiOrganizeCategoryNameRequired");
+      setValidationError(msg);
+      return msg;
+    }
+    if (new Set(names).size !== names.length) {
+      const msg = t("skills.aiOrganizeCategoryNameDuplicate");
+      setValidationError(msg);
+      return msg;
+    }
+    setValidationError(null);
+    return null;
+  }, [editableCategories, t]);
+
+  const handleApplyClick = useCallback(async () => {
+    const err = validateBeforeApply();
+    if (err) {
+      toast.error(err);
+      return;
+    }
+    const categoriesForSubmit = editableCategories.map((c) => ({
+      name: c.name.trim(),
+      description: c.description.trim(),
+    }));
+    const nameById = new Map(editableCategories.map((c) => [c.id, c.name.trim()]));
+    const bindingsForSubmit: Record<string, string> = {};
+    for (const [sid, cid] of Object.entries(editableBindings)) {
+      const name = nameById.get(cid);
+      if (name) bindingsForSubmit[sid] = name;
+    }
+    const renameMap: Record<string, string> = {};
+    for (const c of editableCategories) {
+      const oldName = c.oldName.trim();
+      const newName = c.name.trim();
+      if (oldName && newName && oldName !== newName) renameMap[oldName] = newName;
+    }
+    await onApply({
+      categories: categoriesForSubmit,
+      bindings: bindingsForSubmit,
+      rename_map: Object.keys(renameMap).length ? renameMap : undefined,
+    });
+  }, [editableBindings, editableCategories, onApply, validateBeforeApply]);
+
+  return (
+    <Dialog open={!!preview} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent
+        className="sm:max-w-2xl"
+        onInteractOutside={(e) => e.preventDefault()}
+        onPointerDownOutside={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle>{t("skills.aiOrganizePreviewTitle")}</DialogTitle>
+          <DialogDescription>
+            {t("skills.aiOrganizePreviewSubtitle", {
+              categories: editableCategories.length,
+              bindings: bindingCount,
+            })}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-3 py-1">
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-lg border border-indigo-200 dark:border-indigo-500/20 bg-indigo-50/60 dark:bg-indigo-500/10 px-3 py-1.5">
+              <div className="text-[11px] text-muted-foreground">{t("skills.aiOrganizeCategoryCount")}</div>
+              <div className="text-base font-semibold text-indigo-600 dark:text-indigo-400">{editableCategories.length}</div>
+            </div>
+            <div className="rounded-lg border border-emerald-200 dark:border-emerald-500/20 bg-emerald-50/60 dark:bg-emerald-500/10 px-3 py-1.5">
+              <div className="text-[11px] text-muted-foreground">{t("skills.aiOrganizeBindingCount")}</div>
+              <div className="text-base font-semibold text-emerald-600 dark:text-emerald-400">{bindingCount}</div>
+            </div>
+            <div className="rounded-lg border border-amber-200 dark:border-amber-500/20 bg-amber-50/60 dark:bg-amber-500/10 px-3 py-1.5">
+              <div className="text-[11px] text-muted-foreground">{t("skills.aiOrganizeUnassignedCount")}</div>
+              <div className="text-base font-semibold text-amber-600 dark:text-amber-400">{unassignedCount}</div>
+            </div>
+          </div>
+
+          {modifiedCount > 0 && (
+            <div className="text-xs text-indigo-500 font-medium">
+              {t("skills.aiOrganizeModified", { count: modifiedCount })}
+            </div>
+          )}
+          {!!validationError && (
+            <div className="text-xs text-destructive font-medium">{validationError}</div>
+          )}
+
+          <div className="max-h-[50vh] overflow-y-auto space-y-2">
+            {editableCategories.map((cat) => {
+              const isExpanded = expanded.has(cat.id);
+              const catSkillIds = Object.entries(editableBindings)
+                .filter(([, c]) => c === cat.id)
+                .map(([sid]) => sid);
+              const isEditing = editingCategoryId === cat.id;
+              return (
+                <div key={cat.id} className="rounded-lg border border-transparent bg-card/70 overflow-hidden">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent/50 dark:hover:bg-accent/25 transition-colors"
+                    onClick={() => toggleExpand(cat.id)}
+                  >
+                    {isExpanded
+                      ? <ChevronDown size={14} className="shrink-0 text-muted-foreground" />
+                      : <ChevronRight size={14} className="shrink-0 text-muted-foreground" />}
+                    <div className="min-w-0 flex-1">
+                      {isEditing ? (
+                        <div className="flex flex-col gap-1.5" onClick={(e) => e.stopPropagation()}>
+                          <Input
+                            value={cat.name}
+                            onChange={(e) => handleCategoryChange(cat.id, { name: e.target.value })}
+                            className="h-7 text-xs"
+                            placeholder={t("skills.aiOrganizeCategoryName")}
+                          />
+                          <Textarea
+                            value={cat.description}
+                            onChange={(e) => handleCategoryChange(cat.id, { description: e.target.value })}
+                            className="min-h-[54px] text-xs resize-y"
+                            placeholder={t("skills.aiOrganizeCategoryDescription")}
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <div className="font-medium text-sm text-foreground">{cat.name}</div>
+                          {cat.description && (
+                            <div title={cat.description} className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{cat.description}</div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <Badge variant="secondary" className="shrink-0 tabular-nums text-[11px]">
+                      {liveByCategory[cat.id] || 0}
+                    </Badge>
+                    <div className="flex items-center shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className={isEditing
+                          ? "h-7 w-7 p-0 rounded-md bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/25"
+                          : "h-7 w-7 p-0 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent/60"}
+                        onClick={() => setEditingCategoryId((prev) => (prev === cat.id ? null : cat.id))}
+                        title={isEditing ? t("common.confirm") : t("common.edit")}
+                      >
+                        {isEditing ? <IconCheck size={13} /> : <IconEdit size={13} />}
+                      </Button>
+                    </div>
+                  </button>
+                  {isExpanded && (
+                    <div className="bg-muted/25 dark:bg-muted/10">
+                      {catSkillIds.length === 0 && (
+                        <div className="px-9 py-3 text-xs text-muted-foreground italic">
+                          {t("skills.aiOrganizeNoSkillsInCategory")}
+                        </div>
+                      )}
+                      {catSkillIds.map((sid) => (
+                        <div key={sid} className="flex items-center gap-2.5 pl-6 pr-3 py-2 text-sm hover:bg-accent/60 dark:hover:bg-accent/30 transition-colors">
+                          <span className="size-1.5 shrink-0 rounded-full bg-indigo-400/60 dark:bg-indigo-400/40" />
+                          <div className="min-w-0 flex-1 truncate text-foreground/90 text-[13px]" title={sid}>
+                            {getSkillName(sid)}
+                          </div>
+                          <Select value={cat.id} onValueChange={(v) => handleBindingChange(sid, v)}>
+                            <SelectTrigger size="sm" className="h-7 w-auto max-w-[140px] text-xs border border-border/60 bg-background hover:bg-accent shadow-none">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent position="popper" align="end">
+                              {editableCategories.map((c) => (
+                                <SelectItem key={c.id} value={c.id} className="text-xs">
+                                  {c.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {unassignedCount > 0 && (
+              <div className="rounded-lg border border-transparent bg-amber-50/25 dark:bg-amber-500/8 overflow-hidden">
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent/50 dark:hover:bg-accent/25 transition-colors"
+                  onClick={() => toggleExpand("__unassigned__")}
+                >
+                  {expanded.has("__unassigned__")
+                    ? <ChevronDown size={14} className="shrink-0 text-amber-500" />
+                    : <ChevronRight size={14} className="shrink-0 text-amber-500" />}
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-sm text-amber-600 dark:text-amber-400">{t("skills.aiOrganizeUnassignedCount")}</div>
+                  </div>
+                  <Badge variant="secondary" className="shrink-0 tabular-nums text-[11px] border-amber-200 dark:border-amber-500/30 text-amber-600 dark:text-amber-400">
+                    {unassignedCount}
+                  </Badge>
+                </button>
+                {expanded.has("__unassigned__") && (
+                  <div className="bg-amber-50/30 dark:bg-amber-500/5">
+                    {unassignedSkillIds.map((sid) => (
+                      <div key={sid} className="flex items-center gap-2.5 pl-6 pr-3 py-2 text-sm hover:bg-accent/60 dark:hover:bg-accent/30 transition-colors">
+                        <span className="size-1.5 shrink-0 rounded-full bg-amber-400/60 dark:bg-amber-400/40" />
+                        <div className="min-w-0 flex-1 truncate text-foreground/90 text-[13px]" title={sid}>
+                          {getSkillName(sid)}
+                        </div>
+                        <Select value="" onValueChange={(v) => handleBindingChange(sid, v)}>
+                          <SelectTrigger size="sm" className="h-7 w-auto max-w-[140px] text-xs border border-amber-300/60 dark:border-amber-500/30 bg-background hover:bg-accent shadow-none text-muted-foreground">
+                            <SelectValue placeholder={t("skills.aiOrganizeSelectCategory")} />
+                          </SelectTrigger>
+                          <SelectContent position="popper" align="end">
+                            {editableCategories.map((c) => (
+                              <SelectItem key={c.id} value={c.id} className="text-xs">
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {editableCategories.length === 0 && unassignedCount === 0 && (
+              <div className="px-3 py-8 text-center text-sm text-muted-foreground">
+                {t("skills.aiOrganizeNoPreview")}
+              </div>
+            )}
+          </div>
+
+          {!!preview?.summary?.truncated && (
+            <div className="text-[11px] text-muted-foreground">
+              {t("skills.aiOrganizeTruncatedHint", { count: preview.summary.truncated })}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={applying}>
+            {t("common.cancel")}
+          </Button>
+          <Button
+            onClick={handleApplyClick}
+            disabled={applying || editableCategories.length === 0 || bindingCount === 0}
+            className="bg-gradient-to-br from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white border-0 shadow-md shadow-indigo-500/20"
+          >
+            {applying && <Loader2 className="animate-spin mr-1" size={14} />}
+            {t("skills.aiOrganizeApply")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 // ─── 配置表单自动生成 ───
@@ -188,7 +836,7 @@ function SkillConfigForm({
 
 // ─── 技能卡片 ───
 
-export function SkillCard({
+function SkillCard({
   skill,
   expanded,
   onToggleExpand,
@@ -200,9 +848,7 @@ export function SkillCard({
   onEnvChange,
   onSaveConfig,
   saving,
-  leadVariant = "default",
-  lockEnabled = false,
-  lockEnabledHint,
+  onMoveCategory,
 }: {
   skill: SkillInfo;
   expanded: boolean;
@@ -215,12 +861,7 @@ export function SkillCard({
   onEnvChange: (fn: (prev: EnvMap) => EnvMap) => void;
   onSaveConfig: () => void;
   saving: boolean;
-  /** 引导「小鲸技能」与研发工具页：研发流程类技能使用独立图标与标签 */
-  leadVariant?: "default" | "devTool";
-  /** 引导页：研发工具须始终启用，禁用开关 */
-  lockEnabled?: boolean;
-  /** 与 lockEnabled 配套：锁定原因（优先于引导页默认提示） */
-  lockEnabledHint?: string;
+  onMoveCategory?: () => void;
 }) {
   const hasConfig = skill.config && skill.config.length > 0;
   const configComplete = skill.configComplete ?? true;
@@ -242,25 +883,10 @@ export function SkillCard({
   return (
     <Card className="gap-0 overflow-hidden border-border/80 py-0 shadow-sm transition-all hover:shadow-md">
       <CardContent className="p-4">
-        <div className="flex min-w-0 flex-col sm:flex-row sm:items-center gap-4">
-          <div className="flex min-w-0 flex-1 items-center gap-3 cursor-pointer" onClick={onViewDetail}>
-            <div
-              className={cn(
-                "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
-                skill.system && "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-                !skill.system &&
-                  leadVariant === "devTool" &&
-                  "bg-cyan-500/10 text-cyan-600 dark:text-cyan-400",
-                !skill.system && leadVariant !== "devTool" && "bg-purple-500/10 text-purple-600 dark:text-purple-400",
-              )}
-            >
-              {skill.system ? (
-                <IconGear size={20} />
-              ) : leadVariant === "devTool" ? (
-                <IconTerminal size={20} />
-              ) : (
-                <IconZap size={20} />
-              )}
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer" onClick={onViewDetail}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${skill.system ? "bg-blue-500/10 text-blue-600 dark:text-blue-400" : "bg-purple-500/10 text-purple-600 dark:text-purple-400"}`}>
+              {skill.system ? <IconGear size={20} /> : <IconZap size={20} />}
             </div>
             <div className="flex flex-col min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -278,9 +904,7 @@ export function SkillCard({
                 <Badge variant="outline" className={`text-[10px] px-1.5 py-0 h-5 font-medium ${statusColor}`}>
                   {statusText}
                 </Badge>
-                <span className="text-[11px] text-muted-foreground ml-1">
-                  {skill.system ? t("skills.system") : leadVariant === "devTool" ? t("skills.devToolShortLabel") : t("skills.external")}
-                </span>
+                <span className="text-[11px] text-muted-foreground ml-1">{skill.system ? t("skills.system") : t("skills.external")}</span>
               </div>
               <div className="text-xs text-muted-foreground truncate">
                 {displayDesc}
@@ -288,7 +912,7 @@ export function SkillCard({
             </div>
           </div>
           
-          <div className="flex min-w-0 w-full shrink-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:justify-start">
+          <div className="flex items-center gap-2 shrink-0 ml-12 sm:ml-0">
             <Button
               variant="ghost"
               size="icon-sm"
@@ -298,6 +922,17 @@ export function SkillCard({
             >
               <IconEye size={14} />
             </Button>
+            {!skill.system && onMoveCategory && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onMoveCategory}
+                title={t("skills.category.moveTitle")}
+                className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground hover:bg-muted"
+              >
+                {t("skills.category.move")}
+              </Button>
+            )}
             {!skill.system && onUninstall && (
               <Button
                 variant="ghost"
@@ -310,26 +945,15 @@ export function SkillCard({
                 {uninstalling ? <Loader2 className="animate-spin" size={14} /> : <IconTrash size={14} />}
               </Button>
             )}
-            <Label
-              className={cn(
-                "flex items-center gap-1.5 text-xs font-normal ml-2 mr-2",
-                skill.system || lockEnabled ? "cursor-not-allowed opacity-80" : "cursor-pointer",
-              )}
-              title={
-                skill.system
-                  ? t("skills.systemRequiredToggle")
-                  : lockEnabled
-                    ? (lockEnabledHint ?? t("onboarding.coreAgent.whaleDevToolsLockHint"))
-                    : undefined
-              }
-            >
-              <Checkbox
-                checked={lockEnabled ? true : skill.enabled !== false}
-                disabled={skill.system || lockEnabled}
-                onCheckedChange={() => onToggleEnabled()}
-              />
-              {t("skills.enabled")}
-            </Label>
+            {!skill.system && (
+              <Label className="flex items-center gap-1.5 cursor-pointer text-xs font-normal ml-2 mr-2">
+                <Checkbox
+                  checked={skill.enabled !== false}
+                  onCheckedChange={() => onToggleEnabled()}
+                />
+                {t("skills.enabled")}
+              </Label>
+            )}
             {hasConfig && (
               <Button
                 variant={expanded ? "secondary" : "outline"}
@@ -673,8 +1297,31 @@ export function SkillManager({
   const [refreshing, setRefreshing] = useState(false);
   
   const [installedSearch, setInstalledSearch] = useState("");
-  const [aiOrganizing, setAiOrganizing] = useState(false);
+  const [aiOrganizing, setAiOrganizing] = useState<string | null>(null);
+  const [aiOrganizeElapsed, setAiOrganizeElapsed] = useState(0);
+  const aiOrganizeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [aiOrganizeApplying, setAiOrganizeApplying] = useState(false);
+  const [aiOrganizePreview, setAiOrganizePreview] = useState<AiOrganizePreview | null>(null);
   const [localImporting, setLocalImporting] = useState(false);
+  // ── 技能分类（hermes 风格：DESCRIPTION.md + 目录） ──
+  type CategoryInfo = {
+    name: string;
+    description: string | null;
+    total: number;
+    enabled: number;
+    system_readonly: boolean;
+    declared?: boolean;
+  };
+  const [categories, setCategories] = useState<CategoryInfo[]>([]);
+  const [groupView, setGroupView] = useState(true);
+  const [categoryBusy, setCategoryBusy] = useState<string | null>(null);
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const [categoryDialogState, setCategoryDialogState] = useState<CategoryDialogState>(null);
+  const [categoryDeleteConfirm, setCategoryDeleteConfirm] = useState<string | null>(null);
+  const [moveCategoryState, setMoveCategoryState] = useState<MoveCategoryDialogState>(null);
+  const [showSystemCategories, setShowSystemCategories] = useState(false);
+  // 安装时选择落入的分类（""=不指定，安装到顶层）
+  const [installCategory, setInstallCategory] = useState<string>("");
   const [detailSkill, setDetailSkill] = useState<SkillInfo | null>(null);
   const [detailContent, setDetailContent] = useState("");
   const [detailContentLoading, setDetailContentLoading] = useState(false);
@@ -701,7 +1348,7 @@ export function SkillManager({
       // 优先从运行中的服务 HTTP API 获取（远程模式或本地服务运行时）
       if (serviceRunning && apiBaseUrl != null) {
         try {
-          const res = await safeFetch(`${apiBaseUrl}/api/skills`, { signal: AbortSignal.timeout(15_000) });
+          const res = await safeFetch(`${apiBaseUrl}/api/skills`, { signal: AbortSignal.timeout(15_000), cache: "no-store" });
           data = await res.json();
         } catch (e) {
           httpError = String(e);
@@ -730,7 +1377,6 @@ export function SkillManager({
       const list: SkillInfo[] = (data.skills || []).map((s: Record<string, unknown>) => ({
         skillId: (s.skill_id as string) || (s.name as string),
         name: s.name as string,
-        label: (s.label as string | null | undefined) ?? null,
         description: s.description as string || "",
         name_i18n: (s.name_i18n as Record<string, string> | null) || null,
         description_i18n: (s.description_i18n as Record<string, string> | null) || null,
@@ -758,9 +1404,248 @@ export function SkillManager({
     }
   }, [venvDir, currentWorkspaceId, serviceRunning, apiBaseUrl, dataMode]);
 
+  const reloadRuntimeAfterLocalInstall = useCallback(async () => {
+    if (!serviceRunning || apiBaseUrl == null) return true;
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(30_000),
+      });
+      let data: Record<string, unknown> | null = null;
+      try {
+        data = await res.json();
+      } catch {
+        data = null;
+      }
+      if (!res.ok || data?.error) {
+        throw new Error(String(data?.error || `HTTP ${res.status}`));
+      }
+      return true;
+    } catch (e) {
+      console.warn("Skill runtime reload after local install failed:", e);
+      toast.warning(t(
+        "skills.runtimeReloadFailed",
+        "技能已安装，但运行时刷新失败，可能需要重启后端服务。",
+      ));
+      return false;
+    }
+  }, [serviceRunning, apiBaseUrl, t]);
+
   useEffect(() => {
     loadSkills();
   }, [loadSkills]);
+
+  // ── 加载技能分类列表 ──
+  const loadCategories = useCallback(async () => {
+    if (!serviceRunning || apiBaseUrl == null) return;
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories`, {
+        signal: AbortSignal.timeout(8_000),
+      });
+      const data = await res.json();
+      const list: CategoryInfo[] = Array.isArray(data?.categories) ? data.categories : [];
+      setCategories(list);
+    } catch {
+      // 静默失败：分类是增强型功能，不影响主流程
+    }
+  }, [serviceRunning, apiBaseUrl]);
+
+  useEffect(() => {
+    loadCategories();
+  }, [loadCategories]);
+
+  // ── 实时刷新：监听 App.tsx 桥接的 'synapse:skills-changed' 事件 ──
+  // enabledDirty=true 时仅 toast 提示用户（避免覆盖未保存草稿），
+  // 否则静默 reload 技能与分类列表
+  const enabledDirtyRef = useRef(enabledDirty);
+  useEffect(() => { enabledDirtyRef.current = enabledDirty; }, [enabledDirty]);
+  useEffect(() => {
+    const onChange = () => {
+      if (enabledDirtyRef.current) {
+        toast.info(t("skills.realtimeDirtyHint"));
+        return;
+      }
+      loadSkills().catch(() => {});
+      loadCategories().catch(() => {});
+    };
+    window.addEventListener("synapse:skills-changed", onChange);
+    return () => window.removeEventListener("synapse:skills-changed", onChange);
+  }, [loadSkills, loadCategories, t]);
+
+  // ── 分类操作统一刷新入口 ──
+  // 所有分类写操作成功后必须经过此函数刷新 UI。
+  // 后端 propagate_skill_change 也会通过 WebSocket 广播触发 synapse:skills-changed
+  // 事件，但 WS 到达有延迟，这里显式刷新保证操作后立即看到结果。
+  // WS 事件到达时 enabledDirtyRef 仍为 false（因为批量操作不走 draft），
+  // 所以即使 WS 稍后再到一次也只是静默重复，不会冲突。
+  const refreshAfterCategoryMutation = useCallback(async () => {
+    await Promise.all([loadSkills(), loadCategories()]);
+  }, [loadSkills, loadCategories]);
+
+  // 分类名本地化显示：后端 canonical name 是 "Uncategorized"，UI 显示用 i18n
+  const displayCategoryName = useCallback(
+    (name: string) => name === "Uncategorized" ? t("skills.category.uncategorized") : name,
+    [t],
+  );
+
+  // ── 大类启用/禁用 / 创建 / 删除（mass action over allowlist） ──
+  const handleCategoryEnableAll = useCallback(async (name: string) => {
+    if (apiBaseUrl == null) return;
+    setCategoryBusy(name);
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}/enable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await res.json().catch(() => ({}));
+      const count = data?.added ?? -1;
+      const sysCount = data?.system_count ?? 0;
+      if (count === 0 && sysCount > 0) {
+        toast.info(t("skills.category.allSystemSkills", { name: displayCategoryName(name), count: sysCount }));
+      } else if (count === 0) {
+        toast.warning(t("skills.category.noSkillsInCategory", { name: displayCategoryName(name) }));
+      } else {
+        toast.success(t("skills.category.enabledAll", { name: displayCategoryName(name) }));
+      }
+      await refreshAfterCategoryMutation();
+    } catch (e) {
+      toast.error(friendlyError(e, t, "save"));
+    } finally {
+      setCategoryBusy(null);
+    }
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
+
+  const handleCategoryDisableAll = useCallback(async (name: string) => {
+    if (apiBaseUrl == null) return;
+    setCategoryBusy(name);
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}/disable`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await res.json().catch(() => ({}));
+      const count = data?.removed ?? -1;
+      const sysCount = data?.system_count ?? 0;
+      if (count === 0 && sysCount > 0) {
+        toast.info(t("skills.category.allSystemSkills", { name: displayCategoryName(name), count: sysCount }));
+      } else if (count === 0) {
+        toast.warning(t("skills.category.noSkillsInCategory", { name: displayCategoryName(name) }));
+      } else {
+        toast.success(t("skills.category.disabledAll", { name: displayCategoryName(name) }));
+      }
+      await refreshAfterCategoryMutation();
+    } catch (e) {
+      toast.error(friendlyError(e, t, "save"));
+    } finally {
+      setCategoryBusy(null);
+    }
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
+
+  const handleCategoryDialogSubmit = useCallback(async (
+    mode: "create" | "edit",
+    data: { name: string; description: string; originalName?: string },
+  ) => {
+    if (apiBaseUrl == null) return;
+    try {
+      if (mode === "create") {
+        const res = await safeFetch(`${apiBaseUrl}/api/skill-categories`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: data.name, description: data.description }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        const resp = await res.json();
+        if (resp?.error || resp?.detail) throw new Error(String(resp.error || resp.detail));
+        toast.success(t("skills.category.created", { name: data.name }));
+      } else {
+        const original = data.originalName!;
+        const payload: Record<string, string> = {};
+        if (data.name !== original) payload.new_name = data.name;
+        payload.description = data.description;
+        const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(original)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10_000),
+        });
+        const resp = await res.json();
+        if (resp?.error || resp?.detail) throw new Error(String(resp.error || resp.detail));
+        if (data.name !== original) {
+          toast.success(t("skills.category.renamed", { from: displayCategoryName(original), to: data.name }));
+        } else {
+          toast.success(t("skills.category.descUpdated"));
+        }
+      }
+      await refreshAfterCategoryMutation();
+    } catch (e) {
+      toast.error(friendlyError(e, t, "save"));
+    }
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
+
+  const openMoveDialog = useCallback((skill: SkillInfo) => {
+    setMoveCategoryState({
+      skillId: skill.skillId,
+      skillName: skill.name_i18n?.zh || skill.name_i18n?.en || skill.name,
+      currentCategory: skill.category || null,
+    });
+  }, []);
+
+  const handleMoveSkillSubmit = useCallback(async (skillId: string, targetCategory: string | null) => {
+    if (apiBaseUrl == null) return;
+    try {
+      if (targetCategory) {
+        const targetMeta = categories.find((c) => c.name === targetCategory);
+        const isSystemCategory = skills.some(
+          (s) => s.system && (s.category || "Uncategorized") === targetCategory,
+        );
+        if (targetMeta?.system_readonly || isSystemCategory) {
+          toast.error(t("skills.category.moveSystemCategoryDenied"));
+          return;
+        }
+      }
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skill_id: skillId, target_category: targetCategory }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await res.json();
+      if (data?.error || data?.detail) throw new Error(String(data.error || data.detail));
+      toast.success(t("skills.category.moved"));
+      await refreshAfterCategoryMutation();
+    } catch (e) {
+      toast.error(friendlyError(e, t, "save"));
+    }
+  }, [apiBaseUrl, categories, skills, t, refreshAfterCategoryMutation]);
+
+  const requestCategoryDelete = useCallback((name: string) => {
+    setCategoryDeleteConfirm(name);
+  }, []);
+
+  const executeCategoryDelete = useCallback(async (name: string) => {
+    if (apiBaseUrl == null) return;
+    setCategoryBusy(name);
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/skill-categories/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await res.json();
+      if (data?.error || data?.detail) throw new Error(String(data.error || data.detail));
+      toast.success(t("skills.category.deleted", { name: displayCategoryName(name) }));
+      await refreshAfterCategoryMutation();
+    } catch (e) {
+      toast.error(friendlyError(e, t, "save"));
+    } finally {
+      setCategoryBusy(null);
+    }
+  }, [apiBaseUrl, t, displayCategoryName, refreshAfterCategoryMutation]);
 
   // ── 检查配置是否完整（纯函数，不依赖于状态） ──
   function checkConfigComplete(config: SkillConfigField[] | null | undefined, env: EnvMap): boolean {
@@ -781,17 +1666,25 @@ export function SkillManager({
     [skills, envDraft, enabledDraft],
   );
 
-  /** 全局技能管理：排除 tool_name 以 whalecloud_dev_tool_ 开头的研发流程技能（改在「工作台 → 研发工具」维护） */
-  const catalogSkills = useMemo(
-    () => skillsWithConfig.filter((s) => !isWhalecloudDevToolSkill(s)),
-    [skillsWithConfig],
+  const systemCategoryNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const s of skillsWithConfig) {
+      if (!s.system) continue;
+      names.add(s.category || "Uncategorized");
+    }
+    return names;
+  }, [skillsWithConfig]);
+
+  const moveDialogCategories = useMemo(
+    () => categories.map((c) => ({ ...c, is_system_category: systemCategoryNames.has(c.name) })),
+    [categories, systemCategoryNames],
   );
 
   // 已安装技能搜索过滤（同时匹配原始字段、i18n 字段、目录名和安装来源）
   const filteredSkills = useMemo(() => {
     const q = installedSearch.trim().toLowerCase();
-    if (!q) return catalogSkills;
-    return catalogSkills.filter((s) => {
+    if (!q) return skillsWithConfig;
+    return skillsWithConfig.filter((s) => {
       if (s.name.toLowerCase().includes(q)) return true;
       if (s.description && s.description.toLowerCase().includes(q)) return true;
       if (s.category && s.category.toLowerCase().includes(q)) return true;
@@ -807,7 +1700,7 @@ export function SkillManager({
       ];
       return i18nValues.some((v) => v.toLowerCase().includes(q));
     });
-  }, [catalogSkills, installedSearch]);
+  }, [skillsWithConfig, installedSearch]);
 
   // ── 保存技能配置 ──
   const handleSaveConfig = useCallback(async (skill: SkillInfo) => {
@@ -836,8 +1729,6 @@ export function SkillManager({
 
   // ── 切换启用/禁用（仅更新本地 draft，不自动保存） ──
   const handleToggleEnabled = useCallback((skill: SkillInfo) => {
-    if (skill.system) return;
-    if (isWhalecloudBaseScriptsSkillId(skill.skillId)) return;
     const cur = enabledDraft[skill.skillId] ?? (skill.enabled !== false);
     setEnabledDraft((prev) => ({ ...prev, [skill.skillId]: !cur }));
     setEnabledDirty(true);
@@ -848,11 +1739,9 @@ export function SkillManager({
     setSavingEnabled(true);
     setError(null);
     try {
-      const externalAllowlist = withRdBaseScriptsSkillIds(
-        skills
-          .filter((s) => !s.system && (enabledDraft[s.skillId] ?? (s.enabled !== false)))
-          .map((s) => s.skillId),
-      );
+      const externalAllowlist = skills
+        .filter((s) => !s.system && (enabledDraft[s.skillId] ?? (s.enabled !== false)))
+        .map((s) => s.skillId);
 
       const content = {
         version: 1,
@@ -861,6 +1750,8 @@ export function SkillManager({
       };
 
       if (serviceRunning && apiBaseUrl != null) {
+        // POST /api/config/skills 后端已自动调 propagate_skill_change(ENABLE)，
+        // 无需再额外发 /api/skills/reload（会触发重复全量扫盘）。
         const res = await safeFetch(`${apiBaseUrl}/api/config/skills`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -869,16 +1760,6 @@ export function SkillManager({
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-
-        // 通知后端热重载
-        try {
-          await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-            signal: AbortSignal.timeout(10_000),
-          });
-        } catch { /* reload 失败不阻塞 */ }
       } else if (IS_TAURI && dataMode !== "remote" && currentWorkspaceId) {
         await invoke("workspace_write_file", {
           workspaceId: currentWorkspaceId,
@@ -901,56 +1782,75 @@ export function SkillManager({
 
   // ── AI 整理技能 ──
   const handleAiOrganize = useCallback(async () => {
-    if (!serviceRunning || !apiBaseUrl) return;
-    setAiOrganizing(true);
+    if (!serviceRunning || apiBaseUrl == null) return;
+    setAiOrganizing(t("skills.aiOrganizeStepAnalyzing"));
+    setAiOrganizeElapsed(0);
     setError(null);
+
+    const startTime = Date.now();
+    aiOrganizeTimerRef.current = setInterval(() => {
+      setAiOrganizeElapsed(Math.floor((Date.now() - startTime) / 1000));
+    }, 1000);
+
     try {
-      const skillSummary = catalogSkills
-        .filter((s) => !s.system)
-        .map((s) => `${s.name} [${s.enabled ? "启用" : "禁用"}]: ${s.description}`)
-        .join("\n");
-
-      const message = [
-        "请帮我整理技能。以下是我当前安装的外部技能列表：",
-        "",
-        skillSummary,
-        "",
-        "请根据以下原则给出建议并使用 manage_skill_enabled 工具执行：",
-        "1. 功能重复或相似的技能，只保留最好的一个",
-        "2. 通用性强、常用的技能保持启用",
-        "3. 非常小众或几乎不会用到的技能可以禁用",
-        "4. 先列出你的分析和建议，征得我同意后再执行变更",
-      ].join("\n");
-
-      const res = await safeFetch(`${apiBaseUrl}/api/chat`, {
+      setAiOrganizing(t("skills.aiOrganizeStepGenerating"));
+      const organizeRes = await safeFetch(`${apiBaseUrl}/api/skills/organize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message,
-          conversation_id: `skill-organize-${Date.now()}`,
-          depth: "deep",
-        }),
-        signal: AbortSignal.timeout(120_000),
+        body: "{}",
+        signal: AbortSignal.timeout(180_000),
       });
-
-      // SSE 流式消息只需触发，AI 的回复在聊天界面可见
-      // 读完流确保不 abort
-      const reader = res.body?.getReader();
-      if (reader) {
-        while (true) {
-          const { done } = await reader.read();
-          if (done) break;
-        }
+      const organizeData = await organizeRes.json();
+      if (!Array.isArray(organizeData?.categories) || !organizeData?.bindings) {
+        throw new Error(t("skills.aiOrganizeBuildFailed"));
       }
-
-      // 完成后刷新技能列表
-      await loadSkills();
+      setAiOrganizePreview({
+        categories: organizeData.categories,
+        bindings: organizeData.bindings,
+        summary: organizeData.summary,
+      });
     } catch (e) {
-      setError(friendlyError(e, t));
+      const raw = e instanceof Error ? e.message : String(e);
+      if (/422|validation|max_length|at most|too long|请求过长|超长/i.test(raw)) {
+        setError(t("skills.aiOrganizePayloadTooLarge"));
+      } else if (/organize|整理|生成整理请求|技能列表读取失败/i.test(raw)) {
+        setError(t("skills.aiOrganizeBuildFailed"));
+      } else {
+        setError(friendlyError(e, t));
+      }
     } finally {
-      setAiOrganizing(false);
+      if (aiOrganizeTimerRef.current) {
+        clearInterval(aiOrganizeTimerRef.current);
+        aiOrganizeTimerRef.current = null;
+      }
+      setAiOrganizing(null);
     }
-  }, [serviceRunning, apiBaseUrl, catalogSkills, loadSkills]);
+  }, [serviceRunning, apiBaseUrl, t]);
+
+  const handleApplyAiOrganize = useCallback(async (payload: AiOrganizeApplyPayload) => {
+    if (apiBaseUrl == null || !aiOrganizePreview) return;
+    setAiOrganizeApplying(true);
+    setError(null);
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/skills/organize/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const data = await res.json();
+      toast.success(t("skills.aiOrganizeApplied", {
+        categories: data?.categories ?? payload.categories.length,
+        bindings: data?.bindings ?? Object.keys(payload.bindings).length,
+      }));
+      setAiOrganizePreview(null);
+      await refreshAfterCategoryMutation();
+    } catch (e) {
+      setError(friendlyError(e, t, "save"));
+    } finally {
+      setAiOrganizeApplying(false);
+    }
+  }, [apiBaseUrl, aiOrganizePreview, refreshAfterCategoryMutation, t]);
 
   // ── 导入本地技能 ──
   const handleImportLocal = useCallback(async () => {
@@ -966,23 +1866,20 @@ export function SkillManager({
 
       if (serviceRunning && apiBaseUrl != null) {
         try {
+          // /api/skills/install 成功后后端会自动 propagate_skill_change(INSTALL)，
+          // 前端不再发追加的 /api/skills/reload。
           const res = await safeFetch(`${apiBaseUrl}/api/skills/install`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url: folderPath }),
-            signal: AbortSignal.timeout(60_000),
+            body: JSON.stringify({
+              url: folderPath,
+              ...(installCategory ? { category: installCategory } : {}),
+            }),
+            signal: AbortSignal.timeout(180_000),
           });
           const data = await res.json();
           if (data.error) throw new Error(data.error);
           installed = true;
-          try {
-            await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({}),
-              signal: AbortSignal.timeout(10_000),
-            });
-          } catch { /* reload 失败不阻塞 */ }
         } catch (apiErr) {
           const m = String(apiErr).toLowerCase();
           if (m.includes("request cancel") || m.includes("request_cancel")) {
@@ -999,6 +1896,7 @@ export function SkillManager({
           workspaceId: currentWorkspaceId,
           url: folderPath,
         });
+        await reloadRuntimeAfterLocalInstall();
       }
 
       await loadSkills();
@@ -1006,6 +1904,7 @@ export function SkillManager({
     } catch (e) {
       const msg = String(e);
       if (msg.includes("该技能已安装") || msg.toLowerCase().includes("already installed")) {
+        await reloadRuntimeAfterLocalInstall();
         await loadSkills();
         toast.success(t("skills.alreadyInstalled"));
       } else {
@@ -1014,7 +1913,7 @@ export function SkillManager({
     } finally {
       setLocalImporting(false);
     }
-  }, [dataMode, serviceRunning, apiBaseUrl, currentWorkspaceId, venvDir, loadSkills, t]);
+  }, [dataMode, serviceRunning, apiBaseUrl, currentWorkspaceId, venvDir, loadSkills, t, installCategory, reloadRuntimeAfterLocalInstall]);
 
   // ── 打开技能详情弹窗 ──
   const handleViewDetail = useCallback(async (skill: SkillInfo) => {
@@ -1028,7 +1927,7 @@ export function SkillManager({
     setDetailContentLoading(true);
     setDetailSaving(false);
 
-    if (!serviceRunning || !apiBaseUrl) {
+    if (!serviceRunning || apiBaseUrl == null) {
       setDetailContentError(t("skills.requiresBackend"));
       setDetailContentLoading(false);
       return;
@@ -1065,7 +1964,7 @@ export function SkillManager({
   }, []);
 
   const handleSaveContent = useCallback(async () => {
-    if (!detailSkill || !serviceRunning || !apiBaseUrl) return;
+    if (!detailSkill || !serviceRunning || apiBaseUrl == null) return;
     setDetailSaving(true);
     setDetailContentError(null);
     try {
@@ -1100,9 +1999,7 @@ export function SkillManager({
 
   // ── 卸载技能（第二步：确认后执行） ──
   const executeUninstall = useCallback(async (skill: SkillInfo) => {
-    const displayName = isWhalecloudDevToolSkill(skill)
-      ? rdToolDisplayLabel(skill)
-      : skill.name_i18n?.zh || skill.name_i18n?.en || skill.name;
+    const displayName = skill.name_i18n?.zh || skill.name_i18n?.en || skill.name;
     const key = skill.skillId;
     setUninstallingSet(prev => new Set(prev).add(key));
     setError(null);
@@ -1262,26 +2159,23 @@ export function SkillManager({
       let installed = false;
 
       // 方式1：服务运行中 → HTTP API 安装
+      // 后端 /api/skills/install 成功后自动 propagate_skill_change(INSTALL)，
+      // 此处不再额外发 /api/skills/reload。
       if (serviceRunning && apiBaseUrl != null) {
         setInstallStatus(t("skills.installDownloading", "正在下载技能..."));
         const res = await safeFetch(`${apiBaseUrl}/api/skills/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: skill.url }),
-          signal: AbortSignal.timeout(60_000),
+          body: JSON.stringify({
+            url: skill.url,
+            ...(installCategory ? { category: installCategory } : {}),
+          }),
+          signal: AbortSignal.timeout(180_000),
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         installed = true;
         setInstallStatus(t("skills.installParsing", "正在解析技能..."));
-        try {
-          await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-            signal: AbortSignal.timeout(10_000),
-          });
-        } catch { /* reload 失败不阻塞 */ }
       }
 
       // 方式2：服务未运行 → Tauri invoke（本地模式）
@@ -1291,6 +2185,7 @@ export function SkillManager({
           workspaceId: currentWorkspaceId,
           url: skill.url,
         });
+        await reloadRuntimeAfterLocalInstall();
       }
 
       setInstallStatus(t("skills.installDone", "安装完成"));
@@ -1303,6 +2198,7 @@ export function SkillManager({
     } catch (e) {
       const raw = String(e);
       if (raw.includes("该技能已安装") || raw.toLowerCase().includes("already installed")) {
+        await reloadRuntimeAfterLocalInstall();
         const refreshed = await loadSkills();
         if (refreshed) {
           setMarketplace((prev) => prev.map((s) =>
@@ -1322,7 +2218,7 @@ export function SkillManager({
       setInstallingSet(prev => { const next = new Set(prev); next.delete(uniqueKey); return next; });
       setInstallStatus("");
     }
-  }, [loadSkills, venvDir, currentWorkspaceId, dataMode, serviceRunning, apiBaseUrl, t]);
+  }, [loadSkills, venvDir, currentWorkspaceId, dataMode, serviceRunning, apiBaseUrl, t, installCategory, reloadRuntimeAfterLocalInstall]);
 
   // ── 手动输入链接安装技能 ──
   const handleManualInstall = useCallback(async () => {
@@ -1338,23 +2234,20 @@ export function SkillManager({
       let installed = false;
 
       if (serviceRunning && apiBaseUrl != null) {
+        // /api/skills/install 后端会自动 propagate_skill_change(INSTALL)，
+        // 此处不再发追加的 /api/skills/reload。
         const res = await safeFetch(`${apiBaseUrl}/api/skills/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url }),
-          signal: AbortSignal.timeout(120_000),
+          body: JSON.stringify({
+            url,
+            ...(installCategory ? { category: installCategory } : {}),
+          }),
+          signal: AbortSignal.timeout(180_000),
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         installed = true;
-        try {
-          await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-            signal: AbortSignal.timeout(10_000),
-          });
-        } catch { /* reload 失败不阻塞 */ }
       }
 
       if (!installed && IS_TAURI && dataMode !== "remote" && currentWorkspaceId) {
@@ -1363,6 +2256,7 @@ export function SkillManager({
           workspaceId: currentWorkspaceId,
           url,
         });
+        await reloadRuntimeAfterLocalInstall();
       }
 
       setManualUrl("");
@@ -1372,6 +2266,7 @@ export function SkillManager({
       const raw = String(e);
       if (raw.includes("该技能已安装") || raw.toLowerCase().includes("already installed")) {
         setManualUrl("");
+        await reloadRuntimeAfterLocalInstall();
         await loadSkills();
         toast.success(t("skills.alreadyInstalled"));
         setTab("installed");
@@ -1383,7 +2278,7 @@ export function SkillManager({
     } finally {
       setManualInstalling(false);
     }
-  }, [manualUrl, loadSkills, venvDir, currentWorkspaceId, dataMode, serviceRunning, apiBaseUrl, t]);
+  }, [manualUrl, loadSkills, venvDir, currentWorkspaceId, dataMode, serviceRunning, apiBaseUrl, t, installCategory, reloadRuntimeAfterLocalInstall]);
 
   if (!serviceRunning) {
     return (
@@ -1419,7 +2314,7 @@ export function SkillManager({
                   : "ml-1.5 px-1.5 py-0 text-[11px] min-w-[1.25rem] justify-center rounded-full bg-foreground/10 text-foreground/60"
               }
             >
-              {catalogSkills.length}
+              {skillsWithConfig.length}
             </Badge>
           </ToggleGroupItem>
           <ToggleGroupItem
@@ -1437,6 +2332,7 @@ export function SkillManager({
             setRefreshing(true);
             setError(null);
             try {
+              let skippedCount = 0;
               if (serviceRunning) {
                 const res = await safeFetch(`${apiBaseUrl}/api/skills/reload`, {
                   method: "POST",
@@ -1446,9 +2342,16 @@ export function SkillManager({
                 });
                 const data = await res.json();
                 if (data.error) { setError(friendlyError(data.error, t, "reload")); return; }
+                skippedCount = Number(data.skipped_count || 0);
               }
               const ok = await loadSkills();
-              if (ok) toast.success(t("skills.refreshed"));
+              if (ok) {
+                if (skippedCount > 0) {
+                  toast.warning(t("skills.refreshedPartial", { count: skippedCount }));
+                } else {
+                  toast.success(t("skills.refreshed"));
+                }
+              }
             } catch (e) {
               setError(friendlyError(e, t, "reload"));
             } finally {
@@ -1470,7 +2373,7 @@ export function SkillManager({
       {tab === "installed" && (
         <div className="flex flex-col gap-4">
           {/* 搜索 + AI 整理 */}
-          {catalogSkills.length > 0 && (
+          {skillsWithConfig.length > 0 && (
             <Card className="gap-0 border-border/80 py-0 shadow-sm">
               <CardContent className="p-4">
                 <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
@@ -1484,6 +2387,20 @@ export function SkillManager({
                     />
                   </div>
                   <div className="flex items-center gap-3">
+                    {/* 安装时归类下拉（""=安装到顶层，与旧行为一致） */}
+                    <select
+                      value={installCategory}
+                      onChange={(e) => setInstallCategory(e.target.value)}
+                      className="h-9 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                      title={t("skills.category.installToTitle")}
+                    >
+                      <option value="">{t("skills.category.installToTop")}</option>
+                      {categories
+                        .filter(c => !c.system_readonly)
+                        .map(c => (
+                          <option key={c.name} value={c.name}>{c.name}</option>
+                        ))}
+                    </select>
                     {dataMode !== "remote" && (
                       <Button
                         variant="outline"
@@ -1497,26 +2414,31 @@ export function SkillManager({
                         {t("skills.importLocal")}
                       </Button>
                     )}
-                    {serviceRunning && (
+                    {serviceRunning && (<>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={handleAiOrganize}
-                        disabled={aiOrganizing}
+                        disabled={!!aiOrganizing}
                         title={t("skills.aiOrganizeHint")}
-                        className="h-9 bg-gradient-to-br from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white border-0 shadow-md shadow-indigo-500/20"
+                        className="h-9 bg-gradient-to-br from-indigo-500 to-purple-500 hover:from-indigo-500 hover:to-purple-500 hover:saturate-90 hover:brightness-105 text-white border-0 shadow-md shadow-indigo-500/20"
                       >
                         {aiOrganizing ? <Loader2 className="animate-spin mr-1.5" size={14} /> : <IconZap size={14} className="mr-1.5" />}
-                        {t("skills.aiOrganize")}
+                        {aiOrganizing || t("skills.aiOrganize")}
                       </Button>
-                    )}
+                      {aiOrganizing && aiOrganizeElapsed > 0 && (
+                        <span className="text-xs text-muted-foreground animate-pulse">
+                          {aiOrganizeElapsed}s
+                        </span>
+                      )}
+                    </>)}
                   </div>
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {loading && skills.length === 0 && (
+          {loading && skillsWithConfig.length === 0 && (
             <Card className="border-dashed border-border/80 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground">
                 <Loader2 className="animate-spin mb-3" size={28} />
@@ -1525,7 +2447,7 @@ export function SkillManager({
             </Card>
           )}
           
-          {!loading && catalogSkills.length === 0 && (
+          {!loading && skillsWithConfig.length === 0 && (
             <Card className="border-dashed border-border/80 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-16">
                 <IconZap size={40} className="text-muted-foreground/30 mb-3" />
@@ -1546,7 +2468,7 @@ export function SkillManager({
             </Card>
           )}
           
-          {installedSearch && filteredSkills.length === 0 && catalogSkills.length > 0 && (
+          {installedSearch && filteredSkills.length === 0 && skillsWithConfig.length > 0 && (
             <Card className="border-dashed border-border/80 shadow-sm">
               <CardContent className="flex flex-col items-center justify-center py-14">
                 <IconSearch size={32} className="text-muted-foreground/30 mb-3" />
@@ -1555,24 +2477,199 @@ export function SkillManager({
             </Card>
           )}
           
-          <div className="flex flex-col gap-3">
-            {filteredSkills.map((skill) => (
-              <SkillCard
-                key={skill.skillId}
-                skill={skill}
-                expanded={expandedSkill === skill.skillId}
-                onToggleExpand={() => setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId)}
-                onToggleEnabled={() => handleToggleEnabled(skill)}
-                onViewDetail={() => handleViewDetail(skill)}
-                onUninstall={!skill.system ? () => requestUninstall(skill) : undefined}
-                uninstalling={uninstallingSet.has(skill.skillId)}
-                envDraft={envDraft}
-                onEnvChange={onEnvChange}
-                onSaveConfig={() => handleSaveConfig(skill)}
-                saving={saving}
-              />
-            ))}
-          </div>
+          {/* 分组视图开关 + 新建分类按钮 */}
+          {skillsWithConfig.length > 0 && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-1.5 text-xs text-muted-foreground select-none">
+                <input
+                  type="checkbox"
+                  checked={groupView}
+                  onChange={(e) => setGroupView(e.target.checked)}
+                />
+                {t("skills.category.groupView")}
+              </label>
+              {groupView && (
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground select-none">
+                  <input
+                    type="checkbox"
+                    checked={showSystemCategories}
+                    onChange={(e) => setShowSystemCategories(e.target.checked)}
+                  />
+                  {t("skills.category.showSystem")}
+                </label>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8"
+                onClick={() => setCategoryDialogState({ mode: "create" })}
+                title={t("skills.category.createTitle")}
+              >
+                {t("skills.category.create")}
+              </Button>
+            </div>
+          )}
+
+          {!groupView && (
+            <div className="flex flex-col gap-3">
+              {filteredSkills.map((skill) => (
+                <SkillCard
+                  key={skill.skillId}
+                  skill={skill}
+                  expanded={expandedSkill === skill.skillId}
+                  onToggleExpand={() => setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId)}
+                  onToggleEnabled={() => handleToggleEnabled(skill)}
+                  onViewDetail={() => handleViewDetail(skill)}
+                  onUninstall={!skill.system ? () => requestUninstall(skill) : undefined}
+                  uninstalling={uninstallingSet.has(skill.skillId)}
+                  envDraft={envDraft}
+                  onEnvChange={onEnvChange}
+                  onSaveConfig={() => handleSaveConfig(skill)}
+                  saving={saving}
+                  onMoveCategory={!skill.system ? () => openMoveDialog(skill) : undefined}
+                />
+              ))}
+            </div>
+          )}
+
+          {groupView && (() => {
+            const grouped: Record<string, typeof filteredSkills> = Object.fromEntries(categories.map(c => [c.name, [] as typeof filteredSkills]));
+            for (const s of filteredSkills) {
+              const k = s.category || "Uncategorized";
+              (grouped[k] ||= [] as typeof filteredSkills).push(s);
+            }
+            const sortedNames = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+            const visibleNames = showSystemCategories
+              ? sortedNames
+              : sortedNames.filter((catName) => {
+                  const items = grouped[catName];
+                  return items.length === 0 || items.some(s => !s.system);
+                });
+            const metaByName = new Map(categories.map(c => [c.name, c]));
+            return (
+              <div className="flex flex-col gap-4">
+                {visibleNames.map((catName) => {
+                  const meta = metaByName.get(catName);
+                  const items = grouped[catName];
+                  const readonly = meta?.system_readonly ?? false;
+                  const total = items.length;
+                  const enabled = items.filter(s => s.enabled).length;
+                  const busy = categoryBusy === catName;
+                  const collapsed = !expandedCategories.has(catName);
+                  const toggleCollapse = () => setExpandedCategories(prev => {
+                    const next = new Set(prev);
+                    if (next.has(catName)) next.delete(catName); else next.add(catName);
+                    return next;
+                  });
+                  return (
+                    <div key={catName} className="flex flex-col rounded-md border border-border/60 bg-card/40 p-3">
+                      <div
+                        className="flex flex-wrap items-center gap-2 cursor-pointer select-none"
+                        onClick={toggleCollapse}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleCollapse(); } }}
+                      >
+                        {collapsed
+                          ? <ChevronRight size={16} className="text-muted-foreground shrink-0" />
+                          : <ChevronDown size={16} className="text-muted-foreground shrink-0" />}
+                        <div className="font-semibold text-sm text-foreground">
+                          {displayCategoryName(catName)}
+                        </div>
+                        <Badge variant="secondary" className="text-[11px] px-1.5 py-0">
+                          {enabled}/{total}
+                        </Badge>
+                        {meta?.description && (
+                          <span
+                            title={meta.description}
+                            className="text-xs text-muted-foreground line-clamp-1 flex-1 min-w-[8rem] cursor-default"
+                          >
+                            {meta.description}
+                          </span>
+                        )}
+                        <div className="flex-1" />
+                        {(() => {
+                          const isAllSystem = items.length > 0 && items.every(s => s.system);
+                          const massActionDisabled = readonly || isAllSystem;
+                          const editable = meta ? (meta.declared ?? true) : false;
+                          const editDeleteDisabled = massActionDisabled || !editable;
+                          return (
+                            <div className="flex flex-wrap items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => handleCategoryEnableAll(catName)}
+                                disabled={massActionDisabled}
+                                title={t("skills.category.enableAllTitle")}
+                              >
+                                {t("skills.category.enableAll")}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => handleCategoryDisableAll(catName)}
+                                disabled={massActionDisabled}
+                                title={t("skills.category.disableAllTitle")}
+                              >
+                                {t("skills.category.disableAll")}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => setCategoryDialogState({
+                                  mode: "edit",
+                                  originalName: catName,
+                                  currentDescription: meta?.description ?? null,
+                                })}
+                                disabled={editDeleteDisabled}
+                                title={!editable ? t("skills.category.notDeclaredReadonly") : t("skills.category.edit")}
+                              >
+                                {t("skills.category.edit")}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                                onClick={() => requestCategoryDelete(catName)}
+                                disabled={editDeleteDisabled || categoryBusy === catName}
+                                title={!editable ? t("skills.category.notDeclaredReadonly") : t("skills.category.deleteTitle")}
+                              >
+                                {t("skills.category.delete")}
+                              </Button>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      {!collapsed && (
+                        <div className="flex flex-col gap-2 mt-2">
+                          {items.map((skill) => (
+                            <SkillCard
+                              key={skill.skillId}
+                              skill={skill}
+                              expanded={expandedSkill === skill.skillId}
+                              onToggleExpand={() => setExpandedSkill(expandedSkill === skill.skillId ? null : skill.skillId)}
+                              onToggleEnabled={() => handleToggleEnabled(skill)}
+                              onViewDetail={() => handleViewDetail(skill)}
+                              onUninstall={!skill.system ? () => requestUninstall(skill) : undefined}
+                              uninstalling={uninstallingSet.has(skill.skillId)}
+                              envDraft={envDraft}
+                              onEnvChange={onEnvChange}
+                              onSaveConfig={() => handleSaveConfig(skill)}
+                              saving={saving}
+                              onMoveCategory={!skill.system ? () => openMoveDialog(skill) : undefined}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -1731,6 +2828,60 @@ export function SkillManager({
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* 删除分类确认弹窗 */}
+      <AlertDialog open={!!categoryDeleteConfirm} onOpenChange={(open) => { if (!open) setCategoryDeleteConfirm(null); }}>
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skills.category.deleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {categoryDeleteConfirm != null
+                ? t("skills.category.deleteConfirm", { name: displayCategoryName(categoryDeleteConfirm) })
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const name = categoryDeleteConfirm!;
+                setCategoryDeleteConfirm(null);
+                void executeCategoryDelete(name);
+              }}
+            >
+              {t("skills.category.delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 分类新建/编辑对话框 */}
+      <CategoryDialog
+        state={categoryDialogState}
+        onClose={() => setCategoryDialogState(null)}
+        onSubmit={handleCategoryDialogSubmit}
+        t={t}
+      />
+
+      {/* 移动到分类对话框 */}
+      <MoveCategoryDialog
+        state={moveCategoryState}
+        categories={moveDialogCategories}
+        onClose={() => setMoveCategoryState(null)}
+        onSubmit={handleMoveSkillSubmit}
+        t={t}
+      />
+
+      {/* AI整理预览确认对话框 */}
+      <AiOrganizePreviewDialog
+        preview={aiOrganizePreview}
+        skills={skills}
+        applying={aiOrganizeApplying}
+        onClose={() => setAiOrganizePreview(null)}
+        onApply={handleApplyAiOrganize}
+        t={t}
+      />
+
       {/* 未保存更改提示栏 */}
       {enabledDirty && (
         <div className="fixed bottom-6 left-1/2 z-[9999] -translate-x-1/2">
@@ -1753,3 +2904,4 @@ export function SkillManager({
     </div>
   );
 }
+

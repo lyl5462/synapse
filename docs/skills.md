@@ -1,6 +1,6 @@
 # Skills System
 
-Synapse's skill system enables dynamic capability extension.
+OpenAkita's skill system enables dynamic capability extension.
 
 ## Overview
 
@@ -15,10 +15,10 @@ Skills are modular capabilities that can be:
 
 ```python
 # skills/my_skill.py
-from synapse.skills.base import BaseSkill, SkillResult
+from openakita.skills.base import BaseSkill, SkillResult
 
 class MySkill(BaseSkill):
-    """A custom skill for Synapse."""
+    """A custom skill for OpenAkita."""
     
     name = "my_skill"
     description = "Does something useful"
@@ -65,13 +65,13 @@ class MySkill(BaseSkill):
 
 ```bash
 # List available skills
-synapse skills list
+openakita skills list
 
 # Run a skill directly
-synapse skills run my_skill --input "test data"
+openakita skills run my_skill --input "test data"
 
 # Install a skill from GitHub
-synapse skills install github:user/repo/skill_name
+openakita skills install github:user/repo/skill_name
 ```
 
 ### From Conversation
@@ -84,7 +84,7 @@ Agent> Using excel_reader skill...
 ### Programmatically
 
 ```python
-from synapse.skills import SkillRegistry
+from openakita.skills import SkillRegistry
 
 registry = SkillRegistry()
 skill = registry.get("my_skill")
@@ -104,7 +104,7 @@ result = await skill.execute(input="test")
 ### Community Skills
 
 Community skills can be found at:
-- GitHub topics: `synapse-skill`
+- GitHub topics: `openakita-skill`
 - Skills marketplace (coming soon)
 
 ## Creating Skills
@@ -113,7 +113,7 @@ Community skills can be found at:
 
 ```python
 # skills/weather_skill.py
-from synapse.skills.base import BaseSkill, SkillResult
+from openakita.skills.base import BaseSkill, SkillResult
 import httpx
 
 class WeatherSkill(BaseSkill):
@@ -149,7 +149,7 @@ Skills in the `skills/` directory are auto-registered.
 For external skills:
 
 ```python
-from synapse.skills import SkillRegistry
+from openakita.skills import SkillRegistry
 
 registry = SkillRegistry()
 registry.register(WeatherSkill())
@@ -174,7 +174,7 @@ async def test_weather_skill():
 
 ### GitHub Search
 
-Synapse can search GitHub for skills:
+OpenAkita can search GitHub for skills:
 
 ```
 Agent: Searching GitHub for "excel processing" skills...
@@ -247,7 +247,7 @@ class WeatherSkill(BaseSkill):
 ### To GitHub
 
 1. Create repo with skill code
-2. Add `synapse-skill` topic
+2. Add `openakita-skill` topic
 3. Include README with usage
 4. Tag releases with versions
 
@@ -281,8 +281,9 @@ pip install -r skills/my_skill/requirements.txt
 
 ```bash
 # Enable debug logging
-LOG_LEVEL=DEBUG synapse
+LOG_LEVEL=DEBUG openakita
 
 # Run skill in isolation
-synapse skills test my_skill
+openakita skills test my_skill
 ```
+

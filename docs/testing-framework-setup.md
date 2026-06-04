@@ -106,7 +106,7 @@ tasks.register<JacocoReport>("jacocoTestReport") {
 src/
 ├── test/
 │   └── java/
-│       └── com/synapse/app/
+│       └── com/openakita/app/
 │           ├── data/
 │           │   └── repository/
 │           │       └── UserRepositoryTest.kt
@@ -118,7 +118,7 @@ src/
 │                   └── ProfileViewModelTest.kt
 └── androidTest/
     └── java/
-        └── com/synapse/app/
+        └── com/openakita/app/
             └── ui/
                 └── MainActivityTest.kt
 ```

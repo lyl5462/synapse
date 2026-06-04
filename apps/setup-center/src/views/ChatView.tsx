@@ -4,9 +4,12 @@
 import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { setLanguage } from "../i18n";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ProviderIcon } from "../components/ProviderIcon";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { toast } from "sonner";
 import { setThemePref } from "../theme";
 import type { Theme } from "../theme";
 import { invoke, downloadFile, openFileWithDefault, showInFolder, readFileBase64, onDragDrop, IS_TAURI, IS_WEB, IS_MOBILE_BROWSER, onWsEvent, logger, getAssetUrl } from "../platform";
@@ -24,6 +27,8 @@ import type {
   ChatAskQuestion,
   ChatAttachment,
   ChatArtifact,
+  ChatSource,
+  ChatMcpCall,
   SlashCommand,
   EndpointSummary,
   ChainGroup,
@@ -32,6 +37,7 @@ import type {
   ChainSummaryItem,
   ChatDisplayMode,
   PlanApprovalEvent,
+  OrgTimelineEntry,
 } from "../types";
 import { genId, formatTime, formatDate, timeAgo } from "../utils";
 import { notifyError } from "../utils/notify";
@@ -45,6 +51,7 @@ import {
   IconMask, IconBot, IconUsers, IconHelp, IconEdit, IconDownload,
   IconPin, IconSearch, IconCircleDot, IconXCircle,
   IconBuilding, IconShield, IconAlertCircle,
+  IconHourglass, IconTarget, IconCheckCircle, IconPlug, IconClock, IconBarChart, IconGlobe, IconMail,
   getFileTypeIcon,
 } from "../icons";
 
@@ -54,13 +61,12 @@ import type {
   SubAgentEntry, SubAgentTask, StreamContext, AgentProfile,
 } from "./chat/utils/chatTypes";
 import {
-  STORAGE_KEY_CONVS, STORAGE_KEY_ACTIVE, STORAGE_KEY_MSGS_PREFIX,
   IDLE_THRESHOLD_MS, IDLE_TOKEN_THRESHOLD, PASTE_CHAR_THRESHOLD, UNDO_MAX_STEPS,
   exportConversation, appendAuthToken, stripLegacySummary,
-  sanitizeStoredMessages, loadMessagesFromStorage, saveMessagesToStorage,
-  buildChainFromSummary, formatAskUserAnswer, patchMessagesWithBackend,
+  sanitizeStoredMessages, loadMessagesFromStorage, saveMessagesToStorage, STORED_MESSAGE_WINDOW,
+  buildChainFromSummary, formatAskUserAnswer, patchMessagesWithBackend, patchMessagesWithBackendDetailed,
   classifyError, basename, formatToolDescription, generateGroupSummary,
-  ERROR_META, SVG_PATHS, getNextSpinnerTip,
+  ERROR_META, SVG_PATHS, getNextSpinnerTip, shouldRenderConversationMessages,
 } from "./chat/utils/chatHelpers";
 import { useMdModules } from "./chat/hooks/useMdModules";
 import { useMessageReducer, useConversationReducer } from "./chat/hooks/useMessages";
@@ -77,7 +83,48 @@ import {
   MessageBubble, FlatMessageItem,
   MessageList,
 } from "./chat/components";
+import type { SecurityCloseInfo } from "./chat/components";
 import type { MessageListHandle } from "./chat/components";
+
+/** Extract "cmd subcommand" prefix — mirrors backend `_command_to_pattern`. */
+function _cmdPrefix(cmd: string): string {
+  const parts = cmd.trim().split(/\s+/);
+  if (parts.length >= 2) return `${parts[0]} ${parts[1]}`;
+  return parts[0] || "";
+}
+
+const HISTORY_PAGE_LIMIT = 80;
+type EndpointPolicy = "prefer" | "require";
+
+function formatOrgCommandPhase(phase?: string, openChainCount?: number): string {
+  switch (phase) {
+    case "awaiting_summary":
+      return "正在等待主编汇总最终结果";
+    case "done":
+      return "组织命令已完成";
+    case "error":
+      return "组织命令执行出错";
+    case "running":
+    default:
+      if (typeof openChainCount === "number" && openChainCount > 0) {
+        return `正在等待 ${openChainCount} 条下级任务链收口`;
+      }
+      return "组织正在协调任务";
+  }
+}
+
+const SOFT_ORG_EXIT_REASONS = new Set(["normal", "ask_user", "waiting_user", "verify_incomplete"]);
+
+function isSoftOrgExitReason(reason?: string): boolean {
+  return !reason || SOFT_ORG_EXIT_REASONS.has(reason);
+}
+
+type HistoryPageState = {
+  total: number;
+  startIndex: number | null;
+  hasMoreBefore: boolean;
+  loadingOlder: boolean;
+};
 
 // ─── 主组件 ───
 
@@ -87,19 +134,50 @@ export function ChatView({
   onStartService,
   apiBaseUrl = "http://127.0.0.1:18900",
   visible = true,
+  multiAgentEnabled = false,
+  currentWorkspaceId,
+  feedbackModalOpen = false,
 }: {
   serviceRunning: boolean;
   endpoints: EndpointSummary[];
   onStartService: () => void;
   apiBaseUrl?: string;
   visible?: boolean;
+  multiAgentEnabled?: boolean;
+  currentWorkspaceId?: string | null;
+  feedbackModalOpen?: boolean;
 }) {
+  // multiAgentEnabled is currently observed by App but not consumed inside ChatView
+  // (single-agent only); accept the prop for forward compat to avoid runtime warnings.
+  void multiAgentEnabled;
+
+  // Track feedbackModalOpen via ref so the Tauri drag-drop effect (deps=[]) can
+  // read the latest value without re-registering the webview listener.
+  const feedbackModalOpenRef = useRef(false);
+  useEffect(() => { feedbackModalOpenRef.current = feedbackModalOpen; }, [feedbackModalOpen]);
+
   const { t, i18n } = useTranslation();
   const mdModules = useMdModules();
 
+  // ── Workspace-scoped localStorage keys ──
+  // wsTag is the active workspace identifier used to namespace chat persistence.
+  // When currentWorkspaceId is null (initial mount before App.tsx hydrates the
+  // workspace), we use "_default"; the workspace-change effect below detects the
+  // "_default" → real transition and migrates legacy global keys exactly once.
+  const wsTag = currentWorkspaceId || "_default";
+  const STORAGE_KEY_CONVS = `chat_conversations_${wsTag}`;
+  const STORAGE_KEY_ACTIVE = `chat_activeConvId_${wsTag}`;
+  const STORAGE_KEY_MSGS_PREFIX = `chat_msgs_${wsTag}_`;
+
+  // Old (pre-isolation) global keys — used only for the one-time migration
+  // performed in the workspace-change effect.
+  const OLD_KEY_CONVS = "chat_conversations";
+  const OLD_KEY_ACTIVE = "chat_activeConvId";
+  const OLD_KEY_MSGS_PREFIX = "chat_msgs_";
+
   // ── State（useReducer 集中管理，从 localStorage 恢复） ──
-  const { messages, dispatch: msgDispatch, messagesRef: latestMessagesRef } = useMessageReducer();
-  const { conversations, dispatch: convDispatch, conversationsRef: latestConversationsRef } = useConversationReducer();
+  const { messages, dispatch: msgDispatch, messagesRef: latestMessagesRef } = useMessageReducer(currentWorkspaceId);
+  const { conversations, dispatch: convDispatch, conversationsRef: latestConversationsRef } = useConversationReducer(currentWorkspaceId);
   const queryGuard = useQueryGuard();
   const securityPolicy = useSecurityPolicy(apiBaseUrl);
 
@@ -122,17 +200,122 @@ export function ChatView({
   }, [convDispatch, latestConversationsRef]);
 
   const [activeConvId, setActiveConvId] = useState<string | null>(() => {
-    try { return localStorage.getItem(STORAGE_KEY_ACTIVE) || null; }
-    catch { return null; }
+    try {
+      // On first mount with no workspaceId yet (wsTag === "_default"), read the
+      // legacy global key — matches what useMessageReducer/useConversationReducer
+      // do via getWorkspaceStorageKeys(null). The workspace-change effect below
+      // performs the one-time _default → real migration when the workspace ID
+      // arrives, so we deliberately avoid writing to the "_default"-suffixed key
+      // before that migration runs.
+      const initialKey = currentWorkspaceId ? STORAGE_KEY_ACTIVE : OLD_KEY_ACTIVE;
+      return localStorage.getItem(initialKey) || null;
+    } catch { return null; }
   });
   const [hydrating, setHydrating] = useState(false);
+  const [historyPage, setHistoryPage] = useState<HistoryPageState>({
+    total: 0,
+    startIndex: null,
+    hasMoreBefore: false,
+    loadingOlder: false,
+  });
+
+  // ── Workspace switch: reload chat state from new scoped keys ──
+  // Also performs one-time migration of legacy global keys into the first real
+  // workspace ID encountered (default _default → real transition).
+  const prevWsRef = useRef(wsTag);
+  useEffect(() => {
+    if (wsTag === prevWsRef.current) return;
+    const migrateFromGlobal = prevWsRef.current === "_default" && wsTag !== "_default";
+    prevWsRef.current = wsTag;
+
+    // ── Conversations ──
+    let convs: ChatConversation[] = [];
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_CONVS);
+      if (raw) {
+        convs = JSON.parse(raw);
+      } else if (migrateFromGlobal) {
+        const oldRaw = localStorage.getItem(OLD_KEY_CONVS);
+        if (oldRaw) {
+          convs = JSON.parse(oldRaw);
+          localStorage.setItem(STORAGE_KEY_CONVS, oldRaw);
+          localStorage.removeItem(OLD_KEY_CONVS);
+        }
+      }
+    } catch { convs = []; }
+    convDispatch({ type: "SET_ALL", conversations: convs });
+
+    // ── activeConvId ──
+    let convId: string | null = null;
+    try {
+      convId = localStorage.getItem(STORAGE_KEY_ACTIVE) || null;
+      if (!convId && migrateFromGlobal) {
+        convId = localStorage.getItem(OLD_KEY_ACTIVE) || null;
+        if (convId) {
+          localStorage.setItem(STORAGE_KEY_ACTIVE, convId);
+          localStorage.removeItem(OLD_KEY_ACTIVE);
+        }
+      }
+    } catch { convId = null; }
+    setActiveConvId(convId);
+
+    // ── Messages for active conversation ──
+    let msgs: ChatMessage[] = [];
+    if (convId) {
+      try {
+        const rawMsgs = localStorage.getItem(STORAGE_KEY_MSGS_PREFIX + convId);
+        if (rawMsgs) {
+          msgs = JSON.parse(rawMsgs);
+        } else if (migrateFromGlobal) {
+          const oldRaw = localStorage.getItem(OLD_KEY_MSGS_PREFIX + convId);
+          if (oldRaw) {
+            msgs = JSON.parse(oldRaw);
+            localStorage.setItem(STORAGE_KEY_MSGS_PREFIX + convId, oldRaw);
+            localStorage.removeItem(OLD_KEY_MSGS_PREFIX + convId);
+          }
+        }
+      } catch { msgs = []; }
+    }
+    msgDispatch({ type: "SET_ALL", messages: msgs });
+
+    // ── Migrate remaining message entries for non-active conversations ──
+    if (migrateFromGlobal && convs.length > 0) {
+      for (const c of convs) {
+        if (c.id === convId) continue;
+        try {
+          const oldMsgKey = OLD_KEY_MSGS_PREFIX + c.id;
+          const oldMsgRaw = localStorage.getItem(oldMsgKey);
+          if (oldMsgRaw && !localStorage.getItem(STORAGE_KEY_MSGS_PREFIX + c.id)) {
+            localStorage.setItem(STORAGE_KEY_MSGS_PREFIX + c.id, oldMsgRaw);
+            localStorage.removeItem(oldMsgKey);
+          }
+        } catch { /* best effort */ }
+      }
+    }
+
+    // ── Clean up orphaned "_default" keys from the brief null→real transition ──
+    if (migrateFromGlobal) {
+      try {
+        localStorage.removeItem("chat_conversations__default");
+        localStorage.removeItem("chat_activeConvId__default");
+      } catch { /* ignore */ }
+    }
+
+    setSelectedEndpoint("auto");
+    setSelectedEndpointPolicy("prefer");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- STORAGE_KEY_*/OLD_KEY_* are
+  // derived from wsTag (or are constants); listing wsTag alone is sufficient and
+  // avoids re-running the migration on every render.
+  }, [wsTag]);
   const inputTextRef = useRef("");
   const [hasInputText, setHasInputText] = useState(false);
   const [selectedEndpoint, setSelectedEndpoint] = useState("auto");
+  const [selectedEndpointPolicy, setSelectedEndpointPolicy] = useState<EndpointPolicy>("prefer");
   const [chatMode, setChatMode] = useState<"agent" | "plan" | "ask">("agent");
   const planMode = chatMode === "plan";
   const [pendingApproval, setPendingApproval] = useState<PlanApprovalEvent | null>(null);
   const pendingApprovalRef = useRef<PlanApprovalEvent | null>(null);
+  const [deathSwitchActive, setDeathSwitchActive] = useState(false);
   const [streamingTick, setStreamingTick] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== "undefined" && window.innerWidth > 768);
   const [sidebarPinned, setSidebarPinned] = useState(() => {
@@ -156,16 +339,97 @@ export function ChatView({
   type SecurityConfirmData = {
     tool: string; args: Record<string, unknown>; reason: string;
     riskLevel: string; needsSandbox: boolean; toolId?: string;
-    countdown: number;
+    countdown: number; defaultOnTimeout?: string;
+    // C9a §1: v2 字段（向后兼容，缺失时 modal 隐藏对应 UI 元素）
+    approvalClass?: string | null; policyVersion?: number; channel?: string;
+    // C23 P2-2: 决策链（plan C9 要求），缺失时 modal 隐藏对应折叠区
+    decisionChain?: Array<{ name: string; action: string; note: string }>;
   };
   const [securityConfirm, setSecurityConfirm] = useState<SecurityConfirmData | null>(null);
   const securityQueueRef = useRef<SecurityConfirmData[]>([]);
+  // C18 Phase B: surface queue length to JSX so the "Approve all queued"
+  // affordance can light up when ≥1 confirms are stacked behind the
+  // currently-shown modal. We can't read securityQueueRef.current
+  // directly in JSX (refs don't trigger re-render), so keep a state
+  // mirror updated alongside every queue mutation.
+  const [securityQueueLen, setSecurityQueueLen] = useState(0);
+  // C18 Phase B: POLICIES.yaml ``confirmation.aggregation_window_seconds``.
+  // 0 = batch UI hidden; >0 = show "Approve all (N+1)" affordance and
+  // pass as ``within_seconds`` to POST /api/chat/security-confirm/batch
+  // (server clamps to its own config). Loaded once on mount.
+  const [securityAggWindow, setSecurityAggWindow] = useState<number>(0);
   const securityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const handleSecurityClose = useCallback(() => {
+  const handleSecurityClose = useCallback((info?: SecurityCloseInfo) => {
     if (securityTimerRef.current) clearInterval(securityTimerRef.current);
+
+    if (info && (info.decision === "deny" || info.decision === "timeout")) {
+      securityPolicy.recordDeny(info.tool);
+    }
+
+    if (info?.decision === "allow_always" && securityQueueRef.current.length > 0) {
+      const decidedPrefix = _cmdPrefix(info.command);
+      const isShell = info.tool === "run_shell" || info.tool === "run_powershell";
+      const remaining: typeof securityQueueRef.current = [];
+      for (const item of securityQueueRef.current) {
+        const sameToolType = item.tool === info.tool;
+        const match = sameToolType && (
+          !isShell || (decidedPrefix !== "" && _cmdPrefix(String(item.args.command ?? "")) === decidedPrefix)
+        );
+        if (match) {
+          safeFetch(`${apiBaseUrl}/api/chat/security-confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ confirm_id: item.toolId, decision: "allow_once" }),
+          }).catch(() => {});
+        } else {
+          remaining.push(item);
+        }
+      }
+      securityQueueRef.current = remaining;
+    }
+
     const next = securityQueueRef.current.shift();
     setSecurityConfirm(next ?? null);
-  }, []);
+    setSecurityQueueLen(securityQueueRef.current.length);
+  }, [apiBaseUrl, securityPolicy]);
+
+  // C18 Phase B：批量 resolve 当前 session 内 confirm。banner 点击进入。
+  const handleSecurityBatchResolve = useCallback(
+    async (decision: "allow_once" | "deny") => {
+      const convId = activeConvIdRef.current;
+      if (!convId) return;
+      try {
+        const r = await safeFetch(`${apiBaseUrl}/api/chat/security-confirm/batch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: convId,
+            decision,
+            within_seconds: securityAggWindow > 0 ? securityAggWindow : undefined,
+          }),
+        });
+        // C18 二轮自审 (IMPROVEMENT-B1)：必须检查 HTTP status 才能
+        // 决定是否清本地 queue。500/4xx 时静默清掉用户会以为搞定，
+        // 实际却什么都没 resolve——后续 SSE waiter 也没醒，IM 卡片
+        // 仍然挂着。出错就让用户单条点。
+        if (!r.ok) {
+          return;
+        }
+        const body = await r.json().catch(() => null) as { status?: string } | null;
+        if (body && body.status === "error") {
+          return;
+        }
+      } catch {
+        // Network error: leave queue alone so user can retry one-by-one.
+        return;
+      }
+      securityQueueRef.current = [];
+      setSecurityQueueLen(0);
+      if (securityTimerRef.current) clearInterval(securityTimerRef.current);
+      setSecurityConfirm(null);
+    },
+    [apiBaseUrl, securityAggWindow],
+  );
   const [winSize, setWinSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   useEffect(() => {
     if (!lightbox) return;
@@ -209,13 +473,10 @@ export function ChatView({
   const [selectedOrgNodeId, setSelectedOrgNodeId] = useState<string | null>(null);
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
   const orgMenuRef = useRef<HTMLDivElement | null>(null);
+  const isOrgConvSwitchRef = useRef(false);
   const [orgCommandPending, setOrgCommandPending] = useState(false);
   const orgCommandPendingRef = useRef(false);
-
-  // Org 协调可视化面板状态
-  const [orgNodeStates, setOrgNodeStates] = useState<Map<string, { status: string; task?: string; ts: number }>>(new Map());
-  const [orgFlowPanelOpen, setOrgFlowPanelOpen] = useState(true);
-  const [orgDelegations, setOrgDelegations] = useState<{ from: string; to: string; task: string; ts: number }[]>([]);
+  const activeOrgCommandRef = useRef<{ orgId: string; commandId: string } | null>(null);
 
   useEffect(() => {
     if (!orgMenuOpen) return;
@@ -243,10 +504,70 @@ export function ChatView({
   const [displayActiveSubAgents, setDisplayActiveSubAgents] = useState<SubAgentEntry[]>([]);
   const [displaySubAgentTasks, setDisplaySubAgentTasks] = useState<SubAgentTask[]>([]);
 
+  // P5.1: agent_id → parent_agent_id map, populated client-side from
+  // agent_handoff / delegate_to_agent / delegate_parallel events.  Used by
+  // SubAgentCards to render delegation chains as a tree.  We keep it in a
+  // ref (not state) because SubAgentTask.parent_agent_id snapshots the value
+  // at the time we apply the next sub_agent_state / agents:sub_state patch.
+  const parentAgentMapRef = useRef<Map<string, string>>(new Map());
+
+  // Enrich sub-agent tasks with parent_agent_id inferred from the map.
+  // Used at every place that hydrates ctx.subAgentTasks (WS patch, REST
+  // polling fallback, refresh handlers) so the tree view stays consistent.
+  const enrichTasksWithParents = useCallback((tasks: SubAgentTask[]): SubAgentTask[] => {
+    if (!tasks?.length) return tasks;
+    let mutated = false;
+    const next = tasks.map((t) => {
+      if (t.parent_agent_id) return t;
+      const p = parentAgentMapRef.current.get(t.agent_id);
+      if (!p) return t;
+      mutated = true;
+      return { ...t, parent_agent_id: p };
+    });
+    return mutated ? next : tasks;
+  }, []);
+
   // ── Per-session streaming context (supports concurrent streams) ──
   const streamContexts = useRef<Map<string, StreamContext>>(new Map());
   const activeConvIdRef = useRef(activeConvId);
   const isCurrentConvStreaming = streamContexts.current.get(activeConvId ?? "")?.isStreaming ?? false;
+
+  // C17 Phase B.3: SSE Last-Event-ID dedup state per conversation.
+  //   - lastSeqByConv: max seq we've already processed (sent as
+  //     ``Last-Event-ID`` header on the next /api/chat fetch).
+  //   - seenSeqsByConv: ringbuffer of recently-seen seqs to drop
+  //     duplicates that may arrive during replay→live overlap.
+  // Both are refs (no re-render needed); only the streaming loop reads them.
+  const lastSeqByConv = useRef<Map<string, number>>(new Map());
+  const seenSeqsByConv = useRef<Map<string, Set<number>>>(new Map());
+  const SEEN_SEQ_CAP = 256;  // cap memory per conv
+
+  const rememberSeq = useCallback((convId: string, seq: number) => {
+    if (!convId || !Number.isFinite(seq) || seq <= 0) return;
+    const prev = lastSeqByConv.current.get(convId) ?? 0;
+    if (seq > prev) lastSeqByConv.current.set(convId, seq);
+    let seen = seenSeqsByConv.current.get(convId);
+    if (!seen) {
+      seen = new Set();
+      seenSeqsByConv.current.set(convId, seen);
+    }
+    seen.add(seq);
+    // Cap the dedup set; drop oldest by iteration order (insertion order).
+    if (seen.size > SEEN_SEQ_CAP) {
+      const it = seen.values();
+      const drop = seen.size - SEEN_SEQ_CAP;
+      for (let i = 0; i < drop; i++) {
+        const v = it.next().value;
+        if (typeof v === "number") seen.delete(v);
+      }
+    }
+  }, []);
+
+  const hasSeenSeq = useCallback((convId: string, seq: number): boolean => {
+    if (!convId || !Number.isFinite(seq) || seq <= 0) return false;
+    const seen = seenSeqsByConv.current.get(convId);
+    return seen ? seen.has(seq) : false;
+  }, []);
 
   // ── Multi-device busy lock ──
   const clientIdRef = useRef(() => {
@@ -292,8 +613,12 @@ export function ChatView({
     try { const v = localStorage.getItem("chat_thinkingMode"); return (v === "on" || v === "off") ? v : "auto"; }
     catch { return "auto"; }
   });
-  const [thinkingDepth, setThinkingDepth] = useState<"low" | "medium" | "high">(() => {
-    try { const v = localStorage.getItem("chat_thinkingDepth"); return (v === "low" || v === "medium" || v === "high") ? v : "medium"; }
+  const [thinkingDepth, setThinkingDepth] = useState<"low" | "medium" | "high" | "max">(() => {
+    try {
+      const v = localStorage.getItem("chat_thinkingDepth");
+      if (v === "xhigh") return "max";
+      return (v === "low" || v === "medium" || v === "high" || v === "max") ? v : "medium";
+    }
     catch { return "medium"; }
   });
   const [thinkingModeTipOpen, setThinkingModeTipOpen] = useState(false);
@@ -330,10 +655,15 @@ export function ChatView({
   }, []);
 
   // ── 持久化会话列表 & 当前对话 ID ──
+  // STORAGE_KEY_* intentionally excluded from deps: when only the key changes
+  // (workspace switch), the workspace-change effect handles loading new data; if
+  // we included the key here, old workspace data would be written to the new key
+  // before the workspace-change effect has a chance to run.
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_CONVS, JSON.stringify(conversations));
     } catch { /* quota exceeded or private mode */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversations]);
 
   useEffect(() => {
@@ -342,6 +672,7 @@ export function ChatView({
       if (activeConvId) localStorage.setItem(STORAGE_KEY_ACTIVE, activeConvId);
       else localStorage.removeItem(STORAGE_KEY_ACTIVE);
     } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeConvId]);
 
   // Force re-render every 30s to refresh relative timestamps
@@ -389,6 +720,8 @@ export function ChatView({
       saveMessagesTimerRef.current = setTimeout(doSave, 300) as unknown as number;
     }
     return () => { if (saveMessagesTimerRef.current) clearTimeout(saveMessagesTimerRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- STORAGE_KEY_* excluded
+  // to avoid writing stale data to a new workspace key during workspace transition.
   }, [messages, activeConvId, streamingTick]);
 
   // (messagesSnapshotRef / liveMessagesCache removed — StreamContext manages live messages)
@@ -463,8 +796,7 @@ export function ChatView({
         // Re-hydrate active conversation if it was among the stale ones
         const curActive = activeConvIdRef.current;
         if (curActive && staleIds.has(curActive) && !busyIds.has(curActive)) {
-          const meta = convs.find((c) => c.id === curActive);
-          void hydrateConversationMessages(curActive, meta?.messageCount || 0);
+          void hydrateConversationMessages(curActive);
         }
       } catch {
         setConversations((prev) =>
@@ -501,52 +833,118 @@ export function ChatView({
   const hydrateSeqRef = useRef(0);
 
   const mapBackendHistoryToMessages = useCallback(
-    (rows: { id: string; role: string; content: string; timestamp: number; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[]; ask_user?: { question: string; options?: { id: string; label: string }[]; questions?: ChatAskQuestion[] } }[]): ChatMessage[] => {
+    (rows: { id: string; index?: number; role: string; content: string; timestamp: number; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[]; attachments?: ChatAttachment[]; org_timeline?: OrgTimelineEntry[]; ask_user?: { question: string; options?: { id: string; label: string }[]; questions?: ChatAskQuestion[] }; usage?: ChatMessage["usage"] }[]): ChatMessage[] => {
       return rows.map((m) => ({
         id: m.id,
+        ...(typeof m.index === "number" ? { historyIndex: m.index } : {}),
         role: m.role as "user" | "assistant" | "system",
         content: m.content,
         timestamp: m.timestamp,
         ...(m.chain_summary?.length ? { thinkingChain: buildChainFromSummary(m.chain_summary) } : {}),
         ...(m.artifacts?.length ? { artifacts: m.artifacts } : {}),
+        ...(m.attachments?.length ? { attachments: m.attachments } : {}),
+        ...(m.org_timeline?.length ? { orgTimeline: m.org_timeline } : {}),
         ...(m.ask_user ? { askUser: m.ask_user, content: "" } : {}),
+        ...(m.usage ? { usage: m.usage } : {}),
       }));
     },
     [],
   );
 
-  const hydrateConversationMessages = useCallback(async (convId: string, expectedCount = 0) => {
+  const hydrateConversationMessages = useCallback(async (convId: string) => {
     const seq = ++hydrateSeqRef.current;
     setHydrating(true);
-    const localMsgs = loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + convId);
+    const localMsgs = loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + convId).slice(-STORED_MESSAGE_WINDOW);
 
-    const localCount = Array.isArray(localMsgs) ? localMsgs.length : 0;
-    const shouldSyncBackend = serviceRunning && (localCount === 0 || (expectedCount > 0 && localCount < expectedCount));
+    // Always ask the backend when available.  A completed answer may be saved
+    // there after a desktop/web SSE disconnect while localStorage still has the
+    // interrupted placeholder with the same message count.
+    const shouldSyncBackend = serviceRunning;
 
     if (!shouldSyncBackend) {
-      if (seq === hydrateSeqRef.current) { setMessages(localMsgs); setHydrating(false); }
+      if (seq === hydrateSeqRef.current) {
+        setMessages(localMsgs);
+        setHistoryPage({
+          total: localMsgs.length,
+          startIndex: null,
+          hasMoreBefore: false,
+          loadingOlder: false,
+        });
+        setHydrating(false);
+      }
       return;
     }
 
     try {
-      const res = await safeFetch(`${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/history`);
+      const res = await safeFetch(`${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/history?limit=${HISTORY_PAGE_LIMIT}`);
       const data = await res.json();
       const backendMsgs = Array.isArray(data?.messages) ? mapBackendHistoryToMessages(data.messages) : [];
 
-      const chosen = backendMsgs.length >= localCount ? backendMsgs : localMsgs;
-      if (seq === hydrateSeqRef.current) { setMessages(chosen); setHydrating(false); }
+      const chosen = backendMsgs.length > 0 ? backendMsgs : localMsgs;
+      if (seq === hydrateSeqRef.current) {
+        setMessages(chosen);
+        setHistoryPage({
+          total: typeof data?.total === "number" ? data.total : chosen.length,
+          startIndex: typeof data?.start_index === "number" ? data.start_index : null,
+          hasMoreBefore: Boolean(data?.has_more_before),
+          loadingOlder: false,
+        });
+        setHydrating(false);
+      }
 
-      if (backendMsgs.length >= localCount) {
-        saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + convId, backendMsgs);
+      if (chosen !== localMsgs) {
+        saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + convId, chosen);
       }
     } catch {
-      if (seq === hydrateSeqRef.current) { setMessages(localMsgs); setHydrating(false); }
+      if (seq === hydrateSeqRef.current) {
+        setMessages(localMsgs);
+        setHistoryPage({
+          total: localMsgs.length,
+          startIndex: null,
+          hasMoreBefore: false,
+          loadingOlder: false,
+        });
+        setHydrating(false);
+      }
     }
   }, [serviceRunning, apiBaseUrl, mapBackendHistoryToMessages, STORAGE_KEY_MSGS_PREFIX]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const convId = activeConvIdRef.current;
+    if (!convId || !serviceRunning || historyPage.loadingOlder || !historyPage.hasMoreBefore || historyPage.startIndex == null) {
+      return;
+    }
+    setHistoryPage((prev) => ({ ...prev, loadingOlder: true }));
+    messageListRef.current?.saveScrollPosition();
+    try {
+      const res = await safeFetch(
+        `${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/history?limit=${HISTORY_PAGE_LIMIT}&before=${historyPage.startIndex}`,
+      );
+      const data = await res.json();
+      const olderMsgs = Array.isArray(data?.messages) ? mapBackendHistoryToMessages(data.messages) : [];
+      if (olderMsgs.length > 0) {
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m.id));
+          return [...olderMsgs.filter((m) => !seen.has(m.id)), ...prev];
+        });
+      }
+      setHistoryPage({
+        total: typeof data?.total === "number" ? data.total : historyPage.total,
+        startIndex: typeof data?.start_index === "number" ? data.start_index : historyPage.startIndex,
+        hasMoreBefore: Boolean(data?.has_more_before),
+        loadingOlder: false,
+      });
+      requestAnimationFrame(() => messageListRef.current?.restoreScrollPosition());
+    } catch {
+      setHistoryPage((prev) => ({ ...prev, loadingOlder: false }));
+      requestAnimationFrame(() => messageListRef.current?.restoreScrollPosition());
+    }
+  }, [serviceRunning, historyPage, apiBaseUrl, mapBackendHistoryToMessages]);
 
   useEffect(() => {
     if (!activeConvId) {
       setMessages([]);
+      setHistoryPage({ total: 0, startIndex: null, hasMoreBefore: false, loadingOlder: false });
       return;
     }
     if (skipConvLoadRef.current) {
@@ -561,9 +959,7 @@ export function ChatView({
       setDisplayActiveSubAgents(ctx.activeSubAgents);
       setDisplaySubAgentTasks(ctx.subAgentTasks);
     } else {
-      const activeMeta = conversations.find((c) => c.id === activeConvId);
-      const expectedCount = activeMeta?.messageCount || 0;
-      void hydrateConversationMessages(activeConvId, expectedCount);
+      void hydrateConversationMessages(activeConvId);
       setDisplayActiveSubAgents([]);
       setDisplaySubAgentTasks([]);
     }
@@ -574,6 +970,11 @@ export function ChatView({
     isConvSwitchRef.current = true;
     setSelectedAgent(agentId);
     setSelectedEndpoint(conv?.endpointId || "auto");
+    setSelectedEndpointPolicy(conv?.endpointPolicy || "prefer");
+    isOrgConvSwitchRef.current = true;
+    setOrgMode(Boolean(conv?.orgMode && conv?.orgId));
+    setSelectedOrgId(conv?.orgId || null);
+    setSelectedOrgNodeId(conv?.orgNodeId || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- conversations 故意排除：
     // 此 effect 语义是"切换对话时加载消息"，不应因 messageCount/title 等元数据变更而重新 hydrate，
     // 否则流结束后 setConversations 更新 messageCount 会触发竞态覆盖。
@@ -665,12 +1066,13 @@ export function ChatView({
   const prevSelectedAgentRef = useRef(selectedAgent);
   const isConvSwitchRef = useRef(false);
   useEffect(() => {
-    if (selectedAgent === prevSelectedAgentRef.current) return;
-    prevSelectedAgentRef.current = selectedAgent;
     if (isConvSwitchRef.current) {
       isConvSwitchRef.current = false;
+      prevSelectedAgentRef.current = selectedAgent;
       return;
     }
+    if (selectedAgent === prevSelectedAgentRef.current) return;
+    prevSelectedAgentRef.current = selectedAgent;
     const convId = activeConvIdRef.current;
     if (!convId) return;
     setConversations((prev) => {
@@ -678,31 +1080,123 @@ export function ChatView({
       if (current?.agentProfileId === selectedAgent) return prev;
       return prev.map((c) => c.id === convId ? { ...c, agentProfileId: selectedAgent } : c);
     });
-  }, [selectedAgent]);
+  }, [activeConvId, selectedAgent]);
 
-  // Sync selectedEndpoint → current conversation's endpointId
-  const prevSelectedEndpointRef = useRef(selectedEndpoint);
+  // Sync selectedEndpoint/selectedEndpointPolicy → current conversation's model selection.
+  const prevSelectedEndpointRef = useRef({ selectedEndpoint, selectedEndpointPolicy });
   useEffect(() => {
-    if (selectedEndpoint === prevSelectedEndpointRef.current) return;
-    prevSelectedEndpointRef.current = selectedEndpoint;
+    const prevSelected = prevSelectedEndpointRef.current;
+    if (
+      selectedEndpoint === prevSelected.selectedEndpoint &&
+      selectedEndpointPolicy === prevSelected.selectedEndpointPolicy
+    ) return;
+    prevSelectedEndpointRef.current = { selectedEndpoint, selectedEndpointPolicy };
     const convId = activeConvIdRef.current;
     if (!convId) return;
     const epVal = selectedEndpoint === "auto" ? undefined : selectedEndpoint;
+    const policyVal = epVal ? selectedEndpointPolicy : undefined;
     setConversations((prev) => {
       const current = prev.find((c) => c.id === convId);
-      if ((current?.endpointId || undefined) === epVal) return prev;
-      return prev.map((c) => c.id === convId ? { ...c, endpointId: epVal } : c);
+      if (
+        (current?.endpointId || undefined) === epVal &&
+        (current?.endpointPolicy || undefined) === policyVal
+      ) return prev;
+      return prev.map((c) => c.id === convId ? { ...c, endpointId: epVal, endpointPolicy: policyVal } : c);
     });
-  }, [selectedEndpoint]);
+  }, [selectedEndpoint, selectedEndpointPolicy]);
 
-  // Validate selectedEndpoint against current endpoints list
+  // Sync organization mode → current conversation.
+  // This mirrors endpoint/agent isolation so two chat windows can keep different orgs.
+  const prevOrgSelectionRef = useRef({
+    orgMode,
+    selectedOrgId,
+    selectedOrgNodeId,
+  });
+  useEffect(() => {
+    const prev = prevOrgSelectionRef.current;
+    if (isOrgConvSwitchRef.current) {
+      isOrgConvSwitchRef.current = false;
+      prevOrgSelectionRef.current = { orgMode, selectedOrgId, selectedOrgNodeId };
+      return;
+    }
+    if (
+      prev.orgMode === orgMode &&
+      prev.selectedOrgId === selectedOrgId &&
+      prev.selectedOrgNodeId === selectedOrgNodeId
+    ) {
+      return;
+    }
+    prevOrgSelectionRef.current = { orgMode, selectedOrgId, selectedOrgNodeId };
+    const convId = activeConvIdRef.current;
+    if (!convId) return;
+    const nextOrgMode = Boolean(orgMode && selectedOrgId);
+    setConversations((prevConvs) => {
+      const current = prevConvs.find((c) => c.id === convId);
+      if (
+        current?.orgMode === nextOrgMode &&
+        (current?.orgId || undefined) === (nextOrgMode ? selectedOrgId || undefined : undefined) &&
+        (current?.orgNodeId || undefined) === (
+          nextOrgMode ? selectedOrgNodeId || undefined : undefined
+        )
+      ) {
+        return prevConvs;
+      }
+      return prevConvs.map((c) =>
+        c.id === convId
+          ? {
+              ...c,
+              orgMode: nextOrgMode,
+              orgId: nextOrgMode ? selectedOrgId || undefined : undefined,
+              orgNodeId: nextOrgMode ? selectedOrgNodeId || undefined : undefined,
+            }
+          : c
+      );
+    });
+  }, [activeConvId, orgMode, selectedOrgId, selectedOrgNodeId, setConversations]);
+
+  // Validate selectedEndpoint against current endpoints list.
+  // When endpoints is empty (new workspace / no config), also reset to "auto"
+  // so a stale selection from a previous workspace doesn't leak through.
   useEffect(() => {
     if (selectedEndpoint === "auto") return;
-    if (endpoints.length === 0) return;
     if (!endpoints.some((ep) => ep.name === selectedEndpoint)) {
       setSelectedEndpoint("auto");
     }
   }, [endpoints, selectedEndpoint]);
+
+  useEffect(() => {
+    const convId = activeConvId;
+    if (!convId) return;
+    const conv = conversations.find((c) => c.id === convId);
+    if (!conv) return;
+    // Avoid creating empty backend sessions just because the user explored selectors.
+    if ((conv.messageCount || 0) === 0 && messages.length === 0) return;
+
+    const timer = setTimeout(() => {
+      safeFetch(`${apiBaseUrl}/api/sessions/${encodeURIComponent(convId)}/ui-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          endpointId: selectedEndpoint === "auto" ? null : selectedEndpoint,
+          endpointPolicy: selectedEndpoint === "auto" ? "prefer" : selectedEndpointPolicy,
+          orgMode: Boolean(orgMode && selectedOrgId),
+          orgId: orgMode && selectedOrgId ? selectedOrgId : null,
+          orgNodeId: orgMode && selectedOrgId ? selectedOrgNodeId : null,
+        }),
+      }).catch(() => {});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [
+    activeConvId,
+    selectedEndpoint,
+    selectedEndpointPolicy,
+    orgMode,
+    selectedOrgId,
+    selectedOrgNodeId,
+    conversations,
+    messages.length,
+    apiBaseUrl,
+  ]);
 
   useEffect(() => {
     if (!agentMenuOpen) return;
@@ -751,7 +1245,7 @@ export function ChatView({
           return;
         }
 
-        const backendSessions: { id: string; title: string; lastMessage: string; timestamp: number; messageCount: number; agentProfileId?: string }[] = data.sessions || [];
+        const backendSessions: ChatConversation[] = data.sessions || [];
 
         // ── Factory reset detection (epoch-based only) ──
         // Only clear local data when data_epoch actually changes, which signals
@@ -787,6 +1281,11 @@ export function ChatView({
           timestamp: s.timestamp,
           messageCount: s.messageCount || 0,
           agentProfileId: s.agentProfileId,
+          endpointId: s.endpointId,
+          endpointPolicy: s.endpointPolicy,
+          orgMode: s.orgMode,
+          orgId: s.orgId,
+          orgNodeId: s.orgNodeId,
         }));
 
         setConversations((prev) => {
@@ -801,6 +1300,11 @@ export function ChatView({
               timestamp: Math.max(local.timestamp || 0, b.timestamp || 0),
               messageCount: Math.max(local.messageCount || 0, b.messageCount || 0),
               agentProfileId: b.agentProfileId || local.agentProfileId,
+              endpointId: b.endpointId || local.endpointId,
+              endpointPolicy: b.endpointPolicy || local.endpointPolicy,
+              orgMode: b.orgMode ?? local.orgMode,
+              orgId: b.orgId || local.orgId,
+              orgNodeId: b.orgNodeId || local.orgNodeId,
             };
           });
           const backendIds = new Set(restoredConvs.map((c) => c.id));
@@ -879,16 +1383,20 @@ export function ChatView({
             .catch(() => {});
         }
         const preview = (d.last_message_preview as string) || "";
+        const title = (d.title as string) || "";
         const ts = ((d.timestamp as number) || 0) * 1000 || Date.now();
         setConversations((prev) => {
           const idx = prev.findIndex(c => c.id === convId);
           if (idx >= 0) {
             const updated = [...prev];
-            updated[idx] = { ...updated[idx], lastMessage: preview || updated[idx].lastMessage, timestamp: Math.max(updated[idx].timestamp || 0, ts), messageCount: (updated[idx].messageCount || 0) + 1 };
+            updated[idx] = { ...updated[idx], title: title || updated[idx].title, lastMessage: preview || updated[idx].lastMessage, timestamp: Math.max(updated[idx].timestamp || 0, ts), messageCount: (updated[idx].messageCount || 0) + 1 };
             return updated;
           }
-          return [{ id: convId, title: preview.slice(0, 20) || "对话", lastMessage: preview, timestamp: ts, messageCount: 1 }, ...prev];
+          return [{ id: convId, title: title || preview.slice(0, 20) || "对话", lastMessage: preview, timestamp: ts, messageCount: 1 }, ...prev];
         });
+        if (!activeConvIdRef.current) {
+          setActiveConvId(convId);
+        }
       } else if (event === "chat:conversation_deleted") {
         setConversations((prev) => {
           const filtered = prev.filter(c => c.id !== convId);
@@ -914,6 +1422,71 @@ export function ChatView({
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl, getClientId]);
+
+  // ── Read-only protection state initialization + WS listener ──
+  useEffect(() => {
+    safeFetch(`${apiBaseUrl}/api/config/security/self-protection`)
+      .then(r => r.json())
+      .then(data => { if (data?.readonly_mode) setDeathSwitchActive(true); })
+      .catch(() => {});
+    return onWsEvent((event, data) => {
+      if (event !== "security:death_switch") return;
+      const d = data as Record<string, unknown> | null;
+      if (d && typeof d.active === "boolean") setDeathSwitchActive(d.active);
+    });
+  }, [apiBaseUrl]);
+
+  // ── C18 Phase B: load confirmation.aggregation_window_seconds once ──
+  // 默认 0（关）。后端 POLICIES.yaml hot-reload 路径 (C18 Phase A) 改了
+  // 这个字段时，前端不会自动刷新——下次 ChatView 重新挂载（reload / 切
+  // 换页面回来）即可。这与已有的 self-protection 读法保持一致。
+  useEffect(() => {
+    safeFetch(`${apiBaseUrl}/api/config/security/confirmation`)
+      .then(r => r.json())
+      .then(data => {
+        const v = Number(data?.aggregation_window_seconds);
+        if (Number.isFinite(v) && v > 0) setSecurityAggWindow(v);
+      })
+      .catch(() => {});
+  }, [apiBaseUrl]);
+
+  // ── Sub-agent real-time updates via WebSocket (reduces polling dependency) ──
+  useEffect(() => {
+    return onWsEvent((event, raw) => {
+      if (event !== "agents:sub_state") return;
+      const d = raw as Record<string, unknown> | null;
+      if (!d || !d.agent_id) return;
+
+      const convId = activeConvIdRef.current;
+      if (!convId) return;
+      const chatId = (d.chat_id || d.session_id || "") as string;
+      if (chatId && chatId !== convId) return;
+
+      const patch = d as unknown as SubAgentTask;
+      const ctx = streamContexts.current.get(convId);
+      if (!ctx) return;
+
+      // P5.1: enrich with the inferred parent so SubAgentCards can build the
+      // delegation tree.  We only set when known so a missing parent never
+      // overwrites a previously-known one.
+      const inferredParent = parentAgentMapRef.current.get(patch.agent_id);
+      const enrichedPatch: SubAgentTask = inferredParent
+        ? { ...patch, parent_agent_id: patch.parent_agent_id || inferredParent }
+        : patch;
+
+      const idx = ctx.subAgentTasks.findIndex((t) => t.agent_id === enrichedPatch.agent_id);
+      if (idx >= 0) {
+        ctx.subAgentTasks = ctx.subAgentTasks.map((t, i) =>
+          i === idx ? { ...t, ...enrichedPatch } : t,
+        );
+      } else if (enrichedPatch.status === "starting" || enrichedPatch.status === "running") {
+        ctx.subAgentTasks = [...ctx.subAgentTasks, enrichedPatch];
+      }
+      if (activeConvIdRef.current === convId) {
+        setDisplaySubAgentTasks([...ctx.subAgentTasks]);
+      }
+    });
+  }, []);
 
   // ── IM 通道掉线主动告警：监听 im:channel_status 事件 ──
   useEffect(() => {
@@ -973,13 +1546,29 @@ export function ChatView({
   useEffect(() => { apiBaseRef.current = apiBase; }, [apiBase]);
 
   // ── 文件上传辅助函数：上传文件到 /api/upload 并返回访问 URL ──
-  const uploadFile = useCallback(async (file: Blob, filename: string): Promise<string> => {
+  const uploadFile = useCallback(async (file: Blob, filename: string): Promise<{
+    url: string;
+    localPath?: string;
+    uploadId?: string;
+    size?: number;
+    mimeType?: string;
+  }> => {
     const form = new FormData();
     form.append("file", file, filename);
-    const res = await safeFetch(`${apiBaseRef.current}/api/upload`, { method: "POST", body: form });
+    const res = await safeFetch(`${apiBaseRef.current}/api/upload`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(15 * 60 * 1000),
+    });
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
     const data = await res.json();
-    return data.url as string;
+    return {
+      url: data.url as string,
+      localPath: data.local_path as string | undefined,
+      uploadId: data.upload_id as string | undefined,
+      size: data.size as number | undefined,
+      mimeType: (data.mime_type || data.content_type) as string | undefined,
+    };
   }, []);
 
   // ── 组件卸载清理：abort 所有流式请求 + 停止麦克风 ──
@@ -1158,26 +1747,87 @@ export function ChatView({
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: "可用角色: default, business, tech_expert, butler, girlfriend, boyfriend, family, jarvis\n用法: /persona <角色ID>", timestamp: Date.now() }]);
       }
     }},
-    { id: "agent", label: "切换 Agent", description: "在多 Agent 间切换（handoff 模式）", action: (args) => {
-      if (args) {
-        setInputValue(`请切换到 Agent「${args}」来处理接下来的任务。`);
-      } else {
-        setMessages((prev) => [...prev, { id: genId(), role: "system", content: "用法: /agent <Agent名称>。在 handoff 模式下，AI 会自动在 Agent 间切换。", timestamp: Date.now() }]);
+    { id: "agent", label: "切换 Agent", description: "切换当前会话的 Agent", action: (args) => {
+      // 真切换：直接写 selectedAgent（下一条消息会随 chat 请求带上 agent_profile_id
+      // 由后端 _apply_agent_profile 写入 session.context，与 IM `/切换` 语义对齐）。
+      const trimmed = (args || "").trim();
+      if (!trimmed) {
+        const lines = agentProfiles.map((p) => {
+          const marker = p.id === selectedAgent ? " ⬅️ 当前" : "";
+          return `- \`${p.id}\` — ${p.icon || "🤖"} ${p.name}: ${p.description}${marker}`;
+        });
+        const body = lines.length
+          ? `**可用 Agent**（共 ${agentProfiles.length} 个）：\n${lines.join("\n")}\n\n用法：\`/agent <agent_id>\``
+          : "暂无可用 Agent。请检查 Agent 配置或稍后再试。";
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: body, timestamp: Date.now() }]);
+        return;
       }
+      const q = trimmed.toLowerCase();
+      // 与 @ 选择器一致：先精确 id 命中，再宽松匹配 id/name
+      const exact = agentProfiles.find((p) => p.id.toLowerCase() === q);
+      const candidates = exact ? [exact] : agentProfiles.filter(
+        (p) => p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q),
+      );
+      if (candidates.length === 0) {
+        setMessages((prev) => [...prev, {
+          id: genId(), role: "system",
+          content: `❌ 未找到 Agent \`${trimmed}\`。\n发送 \`/agent\` 不带参数可以查看所有 Agent。`,
+          timestamp: Date.now(),
+        }]);
+        return;
+      }
+      if (candidates.length > 1) {
+        const lines = candidates.map((p) => `- \`${p.id}\` — ${p.icon || "🤖"} ${p.name}`);
+        setMessages((prev) => [...prev, {
+          id: genId(), role: "system",
+          content: `🔍 匹配到 ${candidates.length} 个 Agent，请用更精确的 id：\n${lines.join("\n")}`,
+          timestamp: Date.now(),
+        }]);
+        return;
+      }
+      const target = candidates[0];
+      if (target.id === selectedAgent) {
+        setMessages((prev) => [...prev, {
+          id: genId(), role: "system",
+          content: `ℹ️ 当前已是 ${target.icon || "🤖"} **${target.name}**`,
+          timestamp: Date.now(),
+        }]);
+        return;
+      }
+      setSelectedAgent(target.id);
+      setMessages((prev) => [...prev, {
+        id: genId(), role: "system",
+        content: `✅ 已切换到 ${target.icon || "🤖"} **${target.name}** (\`${target.id}\`)`,
+        timestamp: Date.now(),
+      }]);
     }},
     { id: "agents", label: "查看 Agent 列表", description: "显示可用的 Agent 列表", action: () => {
-      setMessages((prev) => [...prev, { id: genId(), role: "system", content: "Agent 列表取决于 handoff 配置。当前可通过 /agent <名称> 手动请求切换。", timestamp: Date.now() }]);
+      if (!agentProfiles.length) {
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: "暂无可用 Agent。请检查 Agent 配置或稍后再试。", timestamp: Date.now() }]);
+        return;
+      }
+      const lines = agentProfiles.map((p) => {
+        const marker = p.id === selectedAgent ? " ⬅️ 当前" : "";
+        return `- \`${p.id}\` — ${p.icon || "🤖"} ${p.name}: ${p.description}${marker}`;
+      });
+      setMessages((prev) => [...prev, {
+        id: genId(), role: "system",
+        content: `**可用 Agent**（共 ${agentProfiles.length} 个）：\n${lines.join("\n")}\n\n切换：\`/agent <agent_id>\``,
+        timestamp: Date.now(),
+      }]);
     }},
     { id: "org", label: "组织模式", description: "切换到组织编排模式，向组织下命令", action: (args) => {
       if (args === "off" || args === "关闭") {
         setOrgMode(false);
         setSelectedOrgId(null);
+        setSelectedOrgNodeId(null);
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: "已退出组织模式", timestamp: Date.now() }]);
       } else if (args) {
         const match = orgList.find(o => o.name.includes(args) || o.id === args);
         if (match) {
           setOrgMode(true);
           setSelectedOrgId(match.id);
+          setSelectedOrgNodeId(null);
           setMessages((prev) => [...prev, { id: genId(), role: "system", content: `已切换到组织: ${match.icon} ${match.name}`, timestamp: Date.now() }]);
         } else {
           setMessages((prev) => [...prev, { id: genId(), role: "system", content: `未找到组织「${args}」。可用组织: ${orgList.map(o => o.name).join(", ") || "无"}`, timestamp: Date.now() }]);
@@ -1198,15 +1848,16 @@ export function ChatView({
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `当前思考模式: ${currentLabel}\n用法: /thinking on|off|auto`, timestamp: Date.now() }]);
       }
     }},
-    { id: "thinking_depth", label: "思考程度", description: "设置思考程度 (low/medium/high)", action: (args) => {
+    { id: "thinking_depth", label: "思考程度", description: "设置思考程度 (low/medium/high/max)", action: (args) => {
       const depth = args?.toLowerCase().trim();
-      if (depth === "low" || depth === "medium" || depth === "high") {
-        setThinkingDepth(depth);
-        const label = { low: "低", medium: "中", high: "高" }[depth];
+      const normalizedDepth = depth === "xhigh" ? "max" : depth;
+      if (normalizedDepth === "low" || normalizedDepth === "medium" || normalizedDepth === "high" || normalizedDepth === "max") {
+        setThinkingDepth(normalizedDepth);
+        const label = { low: "低", medium: "中", high: "高", max: "最大" }[normalizedDepth];
         setMessages((prev) => [...prev, { id: genId(), role: "system", content: `思考程度已设置为: ${label}`, timestamp: Date.now() }]);
       } else {
-        const currentLabel = { low: "低", medium: "中", high: "高" }[thinkingDepth];
-        setMessages((prev) => [...prev, { id: genId(), role: "system", content: `当前思考程度: ${currentLabel}\n用法: /thinking_depth low|medium|high`, timestamp: Date.now() }]);
+        const currentLabel = { low: "低", medium: "中", high: "高", max: "最大" }[thinkingDepth];
+        setMessages((prev) => [...prev, { id: genId(), role: "system", content: `当前思考程度: ${currentLabel}\n用法: /thinking_depth low|medium|high|max`, timestamp: Date.now() }]);
       }
     }},
     { id: "export", label: t("chat.exportLabel", "导出会话"), description: t("chat.exportDesc", "导出当前对话 (md/json)"), action: (args) => {
@@ -1245,6 +1896,16 @@ export function ChatView({
         setMessages(prev => [...prev, { id: genId(), role: "system", content: t("chat.skillsLoadFail", "无法加载技能列表。"), timestamp: Date.now() }]);
       });
     }},
+    { id: "unlock", label: "解除只读", description: "解除只读保护，恢复 Agent 写入能力", action: () => {
+      safeFetch(`${apiBase}/api/config/security/death-switch/reset`, { method: "POST" })
+        .then(() => {
+          setDeathSwitchActive(false);
+          setMessages((prev) => [...prev, { id: genId(), role: "system", content: "只读保护已解除，Agent 可以继续执行写入操作。", timestamp: Date.now() }]);
+        })
+        .catch(() => {
+          setMessages((prev) => [...prev, { id: genId(), role: "system", content: "重置失败，请检查后端服务状态。", timestamp: Date.now() }]);
+        });
+    }},
     { id: "help", label: "帮助", description: "显示可用命令列表", action: () => {} },
   ];
     const helpCmd = cmds.find((c) => c.id === "help");
@@ -1257,7 +1918,7 @@ export function ChatView({
       };
     }
     return cmds;
-  }, [endpoints, chatMode, orgList, orgMode, thinkingMode, thinkingDepth, activeConvId, apiBase]);
+  }, [endpoints, chatMode, orgList, orgMode, thinkingMode, thinkingDepth, activeConvId, apiBase, agentProfiles, selectedAgent]);
 
   // ── 新建对话 ──
   const newConversation = useCallback(() => {
@@ -1275,6 +1936,9 @@ export function ChatView({
     setDisplayActiveSubAgents([]);
     setDisplaySubAgentTasks([]);
     setSelectedEndpoint("auto");
+    setOrgMode(false);
+    setSelectedOrgId(null);
+    setSelectedOrgNodeId(null);
     setConversations((prev) => [{
       id,
       title: "新对话",
@@ -1282,6 +1946,7 @@ export function ChatView({
       timestamp: Date.now(),
       messageCount: 0,
       agentProfileId: selectedAgent,
+      orgMode: false,
     }, ...prev]);
   }, [activeConvId, messages, selectedAgent]);
 
@@ -1372,6 +2037,18 @@ export function ChatView({
   const sendMessage = useCallback(async (overrideText?: string, targetConvId?: string, displayContent?: string, modeOverride?: "agent" | "plan" | "ask") => {
     const text = (overrideText ?? inputTextRef.current).trim();
     if (!text && pendingAttachments.length === 0) return;
+    const pendingUploads = pendingAttachments.filter((a) =>
+      a.type !== "image" && a.type !== "video" && (!a.url || a.uploadStatus === "uploading")
+    );
+    if (pendingUploads.length > 0) {
+      notifyError(t("chat.uploadStillRunning", "附件还在上传，请稍等一下"));
+      return;
+    }
+    const failedUploads = pendingAttachments.filter((a) => a.uploadStatus === "failed");
+    if (failedUploads.length > 0) {
+      notifyError(t("chat.uploadFailedRetry", "有附件上传失败，请重新选择或稍后重试"));
+      return;
+    }
     if (orgCommandPendingRef.current) return;
 
     const resolvedConvId = targetConvId || activeConvId;
@@ -1393,219 +2070,36 @@ export function ChatView({
       }
     }
 
-    // @org: 前缀或组织模式 — 路由到组织 API
+    // @org: 前缀或组织模式 — 统一交给 /api/chat 的组织 SSE 摘要路径。
+    // 注意：这里不能再直接订阅全量 org:* WebSocket，否则聊天会泄露指挥台内部交互。
     const orgPrefixMatch = text.match(/^@org:(\S+?)(?:\/(\S+?))?\s+([\s\S]+)/);
-    if (orgPrefixMatch || (orgMode && selectedOrgId)) {
+    let orgRouteOverride: { orgId: string; nodeId: string | null; content: string } | null = null;
+    if (orgPrefixMatch) {
       let targetOrgId = selectedOrgId;
       let targetNodeId = selectedOrgNodeId;
       let msgContent = text;
-      if (orgPrefixMatch) {
-        const orgRef = orgPrefixMatch[1];
-        targetNodeId = orgPrefixMatch[2] || null;
-        msgContent = orgPrefixMatch[3];
-        const match = orgList.find(o => o.name.includes(orgRef) || o.id === orgRef);
-        if (match) {
-          targetOrgId = match.id;
-        } else {
-          notifyError(`未找到组织「${orgRef}」，请检查名称是否正确`);
-          return;
-        }
-      }
-      if (targetOrgId) {
-        const orgUserMsg: ChatMessage = { id: genId(), role: "user", content: text, timestamp: Date.now() };
-        const placeholderId = genId();
-        const orgOrgName = orgList.find(o => o.id === targetOrgId)?.name || targetOrgId;
-        const orgConvId = activeConvId;
-        const orgMsgsSnapshot: ChatMessage[] = [...messages, orgUserMsg, {
-          id: placeholderId, role: "assistant" as const,
-          content: "", streaming: true, timestamp: Date.now(),
-        }];
-        let orgMsgsLive = orgMsgsSnapshot;
-
-        const updateOrgMessages = (updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
-          orgMsgsLive = updater(orgMsgsLive);
-          if (activeConvIdRef.current === orgConvId) {
-            setMessages(orgMsgsLive);
-          }
-        };
-
-        setMessages(orgMsgsSnapshot);
-        setInputValue("");
-        orgCommandPendingRef.current = true;
-        setOrgCommandPending(true);
-
-        const progressLines: string[] = [];
-        const pushProgress = (line: string) => {
-          progressLines.push(line);
-          const preview = progressLines.slice(-8).map(l => `> ${l}`).join("\n");
-          updateOrgMessages((prev) => prev.map(m =>
-            m.id === placeholderId ? { ...m, content: preview } : m
-          ));
-        };
-
-        // Reset org flow panel for new command
-        setOrgNodeStates(new Map());
-        setOrgDelegations([]);
-        setOrgFlowPanelOpen(true);
-
-        const unsub = onWsEvent((event, raw) => {
-          const d = raw as Record<string, unknown> | null;
-          if (!d || d.org_id !== targetOrgId) return;
-          const nodeId = (d.node_id || d.from_node || "") as string;
-          const toNode = (d.to_node || "") as string;
-          if (event === "org:node_status") {
-            const st = d.status as string;
-            const task = (d.current_task || "") as string;
-            // Update node state for flow panel
-            setOrgNodeStates(prev => {
-              const m = new Map(prev);
-              m.set(nodeId, { status: st, task: task || undefined, ts: Date.now() });
-              return m;
-            });
-            if (st === "busy") {
-              pushProgress(`🟢 **${nodeId}** 开始处理${task ? `：${task.slice(0, 60)}` : ""}`);
-            } else if (st === "idle") {
-              pushProgress(`✅ **${nodeId}** 完成`);
-            } else if (st === "error") {
-              pushProgress(`❌ **${nodeId}** 出错`);
-            }
-          } else if (event === "org:task_delegated") {
-            const task = (d.task || "") as string;
-            setOrgDelegations(prev => [...prev.slice(-20), { from: nodeId, to: toNode, task, ts: Date.now() }]);
-            pushProgress(`📋 **${nodeId}** → **${toNode}** 分配任务：${(task as string).slice(0, 50)}`);
-          } else if (event === "org:message") {
-            const msgType = d.msg_type as string || "消息";
-            pushProgress(`💬 **${nodeId}** → **${toNode}** ${msgType}`);
-          } else if (event === "org:escalation") {
-            pushProgress(`⬆️ **${nodeId}** 向上汇报`);
-          } else if (event === "org:blackboard_update") {
-            pushProgress(`📝 **${nodeId}** 更新黑板`);
-          } else if (event === "org:task_complete") {
-            setOrgNodeStates(prev => {
-              const m = new Map(prev);
-              m.set(nodeId, { status: "done", ts: Date.now() });
-              return m;
-            });
-            pushProgress(`🎯 **${nodeId}** 任务完成`);
-          } else if (event === "org:task_timeout") {
-            setOrgNodeStates(prev => {
-              const m = new Map(prev);
-              m.set(nodeId, { status: "timeout", ts: Date.now() });
-              return m;
-            });
-            pushProgress(`⏰ **${nodeId}** 任务超时`);
-          }
-        });
-
-        try {
-          const submitRes = await safeFetch(`${apiBaseUrl}/api/orgs/${targetOrgId}/command`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ content: msgContent, target_node_id: targetNodeId }),
-          });
-          const submitData = await submitRes.json();
-          const commandId = submitData.command_id as string | undefined;
-
-          if (!commandId) {
-            const resultText = submitData.result || submitData.error || JSON.stringify(submitData);
-            const progressSummary = progressLines.length > 0
-              ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
-              : "";
-            updateOrgMessages((prev) => prev.map(m =>
-              m.id === placeholderId
-                ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
-                : m
-            ));
-          } else {
-            let resolved = false;
-            const onDone = onWsEvent((evt, raw) => {
-              const d = raw as Record<string, unknown> | null;
-              if (evt !== "org:command_done" || !d || d.command_id !== commandId) return;
-              resolved = true;
-              const result = d.result as Record<string, unknown> | null;
-              const error = d.error as string | undefined;
-              const resultText = (result && (result.result || result.error)) || error || JSON.stringify(d);
-              const progressSummary = progressLines.length > 0
-                ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
-                : "";
-              updateOrgMessages((prev) => prev.map(m =>
-                m.id === placeholderId
-                  ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
-                  : m
-              ));
-            });
-
-            const pollInterval = 5_000;
-            const stallThreshold = 60_000;
-            let lastProgressAt = Date.now();
-            const origPushProgress = pushProgress;
-            const wrappedPush = (line: string) => { lastProgressAt = Date.now(); origPushProgress(line); };
-            // Replace the outer pushProgress's timestamp tracking
-            void wrappedPush;
-
-            const pollStartTime = Date.now();
-            const MAX_POLL_WAIT_MS = 10 * 60 * 1000;
-
-            while (!resolved && (Date.now() - pollStartTime < MAX_POLL_WAIT_MS)) {
-              await new Promise(r => setTimeout(r, pollInterval));
-              if (resolved) break;
-              try {
-                const pollRes = await safeFetch(
-                  `${apiBaseUrl}/api/orgs/${targetOrgId}/commands/${commandId}`
-                );
-                const pollData = await pollRes.json();
-                if (pollData.status === "done" || pollData.status === "error") {
-                  if (!resolved) {
-                    resolved = true;
-                    const resultText = pollData.result?.result || pollData.result?.error || pollData.error || JSON.stringify(pollData);
-                    const progressSummary = progressLines.length > 0
-                      ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
-                      : "";
-                    updateOrgMessages((prev) => prev.map(m =>
-                      m.id === placeholderId
-                        ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
-                        : m
-                    ));
-                  }
-                }
-              } catch { /* poll failed, retry next cycle */ }
-
-              if (!resolved && Date.now() - lastProgressAt > stallThreshold) {
-                pushProgress("⏳ 执行时间较长，组织仍在处理中...");
-                lastProgressAt = Date.now();
-              }
-            }
-
-            if (!resolved) {
-              resolved = true;
-              const progressSummary = progressLines.length > 0
-                ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
-                : "";
-              updateOrgMessages((prev) => prev.map(m =>
-                m.id === placeholderId
-                  ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ⏱️ 命令执行超时（已等待 10 分钟），请稍后手动检查结果。`, streaming: false }
-                  : m
-              ));
-            }
-
-            onDone();
-          }
-        } catch (e: any) {
-          updateOrgMessages((prev) => prev.map(m =>
-            m.id === placeholderId
-              ? { ...m, content: `组织命令失败: ${e.message || e}`, streaming: false, role: "system" as const }
-              : m
-          ));
-        } finally {
-          unsub();
-          orgCommandPendingRef.current = false;
-          setOrgCommandPending(false);
-          if (orgConvId) {
-            saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + orgConvId, orgMsgsLive);
-          }
-        }
+      const orgRef = orgPrefixMatch[1];
+      targetNodeId = orgPrefixMatch[2] || null;
+      msgContent = orgPrefixMatch[3];
+      const match = orgList.find(o => o.name.includes(orgRef) || o.id === orgRef);
+      if (match) {
+        targetOrgId = match.id;
+      } else {
+        notifyError(`未找到组织「${orgRef}」，请检查名称是否正确`);
         return;
       }
+      if (targetOrgId) {
+        orgRouteOverride = { orgId: targetOrgId, nodeId: targetNodeId || null, content: msgContent };
+        setOrgMode(true);
+        setSelectedOrgId(targetOrgId);
+        setSelectedOrgNodeId(targetNodeId || null);
+      }
+    }
+
+    const orgRouteActive = Boolean(orgRouteOverride || (orgMode && selectedOrgId));
+    if (endpoints.length === 0 && !orgRouteActive) {
+      notifyError(t("chat.noChatEndpointConfigured"));
+      return;
     }
 
     // 创建用户消息
@@ -1634,6 +2128,10 @@ export function ChatView({
     if (!convId) {
       convId = genId();
       skipConvLoadRef.current = true;
+      // React state updates asynchronously; update refs immediately so the
+      // optimistic first turn renders before SSE/WebSocket events arrive.
+      activeConvIdRef.current = convId;
+      latestActiveConvIdRef.current = convId;
       setActiveConvId(convId);
       setConversations((prev) => [{
         id: convId!,
@@ -1644,6 +2142,12 @@ export function ChatView({
         status: "running",
         agentProfileId: selectedAgent,
         endpointId: selectedEndpoint !== "auto" ? selectedEndpoint : undefined,
+        endpointPolicy: selectedEndpoint !== "auto" ? selectedEndpointPolicy : undefined,
+        orgMode: Boolean(orgRouteOverride || (orgMode && selectedOrgId)),
+        orgId: orgRouteOverride?.orgId || (orgMode && selectedOrgId ? selectedOrgId : undefined),
+        orgNodeId: orgRouteOverride
+          ? orgRouteOverride.nodeId || undefined
+          : (orgMode && selectedOrgId ? selectedOrgNodeId || undefined : undefined),
       }, ...prev]);
     } else {
       updateConvStatus(convId, "running");
@@ -1668,39 +2172,69 @@ export function ChatView({
       subAgentTasks: [],
       isDelegating: false,
       pollingTimer: null,
+      _hadError: false,
     };
     streamContexts.current.set(thisConvId, sctx);
-    // Sending a new turn should always reveal the latest messages immediately.
-    messageListRef.current?.forceFollow();
-    isMessageListAtBottomRef.current = true;
+    const isTargetConversationActive = () =>
+      shouldRenderConversationMessages(thisConvId, activeConvIdRef.current);
+    const renderTargetMessages = (nextMessages: ChatMessage[]) => {
+      if (!isTargetConversationActive()) return;
+      setMessages(nextMessages);
+    };
+
+    // Sending a turn in the visible conversation should reveal the latest messages
+    // immediately. Background queued turns must not repaint the active chat.
+    if (isTargetConversationActive()) {
+      messageListRef.current?.forceFollow();
+      isMessageListAtBottomRef.current = true;
+    }
     // Functional updater chains with any pending setMessages (e.g. handleAskAnswer's answered flag)
-    if (thisConvId === activeConvIdRef.current) {
+    if (isTargetConversationActive()) {
       setMessages((prev) => {
         const updated = [...prev, userMsg, assistantMsg];
         sctx.messages = updated;
         return updated;
       });
     } else {
-      setMessages(sctx.messages);
+      saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + thisConvId, sctx.messages);
     }
     setStreamingTick(t => t + 1);
 
     // ── Per-session helpers: write to StreamContext, sync to screen only if active ──
-    // rAF throttle: StreamContext always gets the latest data immediately,
-    // but React state (setMessages) is flushed at most once per animation frame.
-    // This reduces O(N) reconciliation from ~30-60/s to ≤60fps, critical for long histories.
+    // StreamContext always gets the latest data immediately, while React state is
+    // flushed at a bounded cadence. This protects typing from long SSE event bursts.
+    //
+    // 50ms ≈ 20fps: keep perceived streaming responsive. SSE events themselves
+    // are still consumed in real time; only the visual flush is throttled.
+    const SCREEN_FLUSH_MIN_MS = 50;
     let screenFlushRaf = 0;
+    let screenFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastScreenFlushAt = 0;
     const flushToScreen = () => {
       screenFlushRaf = 0;
+      if (screenFlushTimer) {
+        clearTimeout(screenFlushTimer);
+        screenFlushTimer = null;
+      }
+      lastScreenFlushAt = Date.now();
       const c = streamContexts.current.get(thisConvId);
-      if (c && activeConvIdRef.current === thisConvId) setMessages(c.messages);
+      if (c) renderTargetMessages(c.messages);
+    };
+    const scheduleScreenFlush = () => {
+      if (screenFlushRaf || screenFlushTimer) return;
+      const elapsed = Date.now() - lastScreenFlushAt;
+      const delay = Math.max(0, SCREEN_FLUSH_MIN_MS - elapsed);
+      screenFlushTimer = setTimeout(() => {
+        screenFlushTimer = null;
+        screenFlushRaf = requestAnimationFrame(flushToScreen);
+      }, delay);
     };
     const updateMessages = (updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
       const c = streamContexts.current.get(thisConvId);
       if (!c) return;
       c.messages = updater(c.messages);
-      if (activeConvIdRef.current === thisConvId && !screenFlushRaf) {
-        screenFlushRaf = requestAnimationFrame(flushToScreen);
+      if (isTargetConversationActive()) {
+        scheduleScreenFlush();
       }
     };
     const updateSubAgents = (
@@ -1754,8 +2288,7 @@ export function ChatView({
       };
 
       const poll = () => {
-        const ctx = streamContexts.current.get(thisConvId);
-        if (!ctx || ctx.userStopped) return;
+        if (sctx.userStopped) return;
         attempts++;
         safeFetch(`${apiBaseRef.current}/api/sessions/${encodeURIComponent(convId)}/history`)
           .then((r) => r.ok ? r.json() : null)
@@ -1786,10 +2319,12 @@ export function ChatView({
               staleCount++;
             }
             setMessages((prev) => {
-              const updated = prev.map((m) => {
+              const isActiveRecovery = activeConvIdRef.current === thisConvId;
+              const baseMessages = isActiveRecovery ? prev : loadMessagesFromStorage(_recoverKey);
+              const updated = baseMessages.map((m) => {
                 if (m.id !== _recoverMsgId) return m;
-                if (m.content && m.content.length >= contentLen) return m;
-                const patched: ChatMessage = { ...m, content: lastAssistant.content };
+                if (m.content && !m.streaming && m.content.length >= contentLen) return m;
+                const patched: ChatMessage = { ...m, content: lastAssistant.content, streaming: false, streamStatus: null };
                 if (
                   (!m.thinkingChain || m.thinkingChain.length === 0) &&
                   Array.isArray(lastAssistant.chain_summary) &&
@@ -1799,8 +2334,10 @@ export function ChatView({
                 }
                 return patched;
               });
+              const liveCtx = streamContexts.current.get(thisConvId);
+              if (liveCtx) liveCtx.messages = updated;
               try { saveMessagesToStorage(_recoverKey, updated); } catch { /* quota */ }
-              return updated;
+              return isActiveRecovery ? updated : prev;
             });
             if (staleCount < maxStale && attempts < maxAttempts) {
               setTimeout(poll, getInterval());
@@ -1816,15 +2353,21 @@ export function ChatView({
 
     try {
       const effectiveMode = modeOverride ?? chatMode;
+      const effectiveOrgId = orgRouteOverride?.orgId || (orgMode && selectedOrgId ? selectedOrgId : null);
+      const effectiveOrgNodeId = orgRouteOverride ? orgRouteOverride.nodeId : (orgMode && selectedOrgId ? selectedOrgNodeId : null);
       const body: Record<string, unknown> = {
-        message: text,
+        message: orgRouteOverride?.content || text,
         conversation_id: convId,
         mode: effectiveMode,
         plan_mode: effectiveMode === "plan",
         endpoint: selectedEndpoint === "auto" ? null : selectedEndpoint,
+        endpoint_policy: selectedEndpoint === "auto" ? "prefer" : selectedEndpointPolicy,
         thinking_mode: thinkingMode !== "auto" ? thinkingMode : null,
         thinking_depth: thinkingMode !== "off" ? thinkingDepth : null,
         agent_profile_id: selectedAgent,
+        org_mode: Boolean(effectiveOrgId),
+        org_id: effectiveOrgId,
+        org_node_id: effectiveOrgNodeId,
         client_id: getClientId(),
       };
 
@@ -1834,15 +2377,42 @@ export function ChatView({
           type: a.type,
           name: a.name,
           url: a.url,
+          local_path: a.localPath,
+          upload_id: a.uploadId,
+          size: a.size,
           mime_type: a.mimeType,
         }));
       }
 
       resetIdleTimer(); // Start idle timer before fetch
 
-      const response = await fetch(`${apiBase}/api/chat`, {
+      // Crash diagnostics: record desensitized task start before the SSE fetch.
+      // Field set is intentionally narrow — no message content, no API keys.
+      // Force-flush so a native WebView2 crash during/after the request still
+      // leaves this breadcrumb on disk; logger.flush is internally re-entrant
+      // safe and swallows IPC errors.
+      logger.info("Chat", "task_started", {
+        convId,
+        mode: effectiveMode,
+        endpoint: typeof selectedEndpoint === "string" ? selectedEndpoint : "auto",
+        thinkingMode,
+        thinkingDepth: thinkingMode !== "off" ? thinkingDepth : null,
+        attachments: pendingAttachments.length,
+        textLen: text.length,
+        orgMode: Boolean(orgMode && selectedOrgId),
+      });
+      void logger.flush();
+
+      // C17 Phase B.3: Last-Event-ID 让后端把断点后的事件 replay 给我们。
+      // 首次 fetch 没有 last seq 就不带 header，后端正常推进 seq；重连
+      // 时带上最后看到的 seq，后端 SSE writer 会先 flush 缓冲事件再接
+      // active 流。``lastSeqByConv`` 是 ref，跨重渲染保留。
+      const _lastSeq = thisConvId ? lastSeqByConv.current.get(thisConvId) ?? 0 : 0;
+      const _headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (_lastSeq > 0) _headers["Last-Event-ID"] = String(_lastSeq);
+      const response = await safeFetch(`${apiBase}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _headers,
         body: JSON.stringify(body),
         signal: abort.signal,
       });
@@ -1864,9 +2434,28 @@ export function ChatView({
             }
           } catch { /* fall through to generic error */ }
         }
-        const errText = await response.text().catch(() => "请求失败");
+        let displayError = `错误：${response.status} 请求失败`;
+        try {
+          const contentType = response.headers.get("content-type") || "";
+          if (contentType.includes("application/json")) {
+            const data = await response.json().catch(() => null);
+            const pickText = (value: unknown): string => {
+              if (typeof value === "string") return value;
+              if (value == null) return "";
+              try { return JSON.stringify(value); } catch { return String(value); }
+            };
+            const message = pickText(data?.message || data?.detail || data?.error);
+            const hint = pickText(data?.hint);
+            displayError = [`错误：${response.status}`, message, hint].filter(Boolean).join("\n\n");
+          } else {
+            const errText = await response.text().catch(() => "请求失败");
+            displayError = `错误：${response.status} ${errText}`;
+          }
+        } catch {
+          // Keep the compact fallback above.
+        }
         updateMessages((prev) => prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, content: `错误：${response.status} ${errText}`, streaming: false } : m
+          m.id === assistantMsg.id ? { ...m, content: displayError, streaming: false } : m
         ));
         if (thisConvId) updateConvStatus(thisConvId, "error");
         return;
@@ -1886,12 +2475,45 @@ export function ChatView({
       let currentThinking = "";
       let isThinking = false;
       let currentToolCalls: ChatToolCall[] = [];
+      const currentToolCallsByKey = new Map<string, ChatToolCall>();
+      const currentToolCallOrder: string[] = [];
+      const syncCurrentToolCalls = () => {
+        currentToolCalls = currentToolCallOrder
+          .map((key) => currentToolCallsByKey.get(key))
+          .filter((tc): tc is ChatToolCall => Boolean(tc));
+      };
+      const upsertToolCall = (key: string, tc: ChatToolCall) => {
+        if (!currentToolCallsByKey.has(key)) currentToolCallOrder.push(key);
+        currentToolCallsByKey.set(key, tc);
+        syncCurrentToolCalls();
+      };
+      const findToolCallKey = (toolName: string, callId?: string) => {
+        if (callId) {
+          const byId = currentToolCallOrder.find((key) => currentToolCallsByKey.get(key)?.id === callId);
+          if (byId) return byId;
+        }
+        for (let i = currentToolCallOrder.length - 1; i >= 0; i -= 1) {
+          const key = currentToolCallOrder[i];
+          const tc = currentToolCallsByKey.get(key);
+          if (tc?.tool === toolName && tc.status === "running") return key;
+        }
+        return null;
+      };
       let currentPlan: ChatTodo | null = null;
       let currentAsk: ChatAskUser | null = null;
       let currentAgent: string | null = null;
       let currentArtifacts: ChatArtifact[] = [];
+      let currentAttachments: ChatAttachment[] = [];
+      let currentOrgTimeline: OrgTimelineEntry[] = [];
+      let currentSources: ChatSource[] = [];
+      let currentMcpCalls: ChatMcpCall[] = [];
       let currentError: ChatErrorInfo | null = null;
       let gracefulDone = false; // SSE 正常发送了 "done" 事件
+      let currentStreamStatus: string | null = null;
+      const streamStartedAt = Date.now();
+      let longWaitNoticeShown = false;
+      const LONG_WAIT_NOTICE_MS = 15_000;
+      const LONG_WAIT_NOTICE = t("chat.longWaitNotice", "本地模型还在生成，可能需要几十秒。");
 
       // 思维链: 分组数据
       let chainGroups: ChainGroup[] = [];
@@ -1932,18 +2554,113 @@ export function ChatView({
           buffer = lines.pop() || "";
         }
 
+        // C17 Phase B.3：SSE 帧由 ``id: <seq>\ndata: {json}\n\n`` 组成。
+        // 收到 id 行就记下来；下一条 data 行用该 seq 做 dedup。Spec 允许
+        // ``id`` 是空字符串 → 重置上次 lastEventId，但我们用 0 表示
+        // "本帧没 id"。如果同一 buffer 行里只看到 data 没看到前置 id，
+        // ``pendingSeq=0`` 让 dedup 走 no-op（向后兼容老服务端无 id 帧）。
+        //
+        // C17 二轮：``pendingSeq`` 现在只在两种边界清零：
+        //   1. 空行（SSE 帧分隔符 ``\n\n``）
+        //   2. 下一条 ``id:`` 行覆盖
+        // 之前在 ``rememberSeq`` / hasSeenSeq 命中后立即清零会让 SSE 规范
+        // 允许的 "同 id 多 data 行" 跳过 dedup（虽然后端目前 1:1，但代理 /
+        // IM 网关转发可能合并），保守起见保留 pendingSeq 直到帧结束。
+        let pendingSeq = 0;
         for (const line of lines) {
+          if (line === "") {
+            pendingSeq = 0; // SSE frame separator
+            continue;
+          }
+          if (line.startsWith("id: ")) {
+            const v = Number.parseInt(line.slice(4).trim(), 10);
+            pendingSeq = Number.isFinite(v) && v > 0 ? v : 0;
+            continue;
+          }
           if (!line.startsWith("data: ")) continue;
           const data = line.slice(6).trim();
           if (data === "[DONE]") continue;
 
+          // Dedup before parsing: if we already processed this seq, skip.
+          // Keep ``pendingSeq`` non-zero so subsequent data: lines under
+          // the same id (replay duplicates) are also dropped.
+          if (pendingSeq > 0 && thisConvId && hasSeenSeq(thisConvId, pendingSeq)) {
+            continue;
+          }
           try {
             const event: StreamEvent = JSON.parse(data);
             sseParseFailures = 0;
+            if (pendingSeq > 0 && thisConvId) {
+              rememberSeq(thisConvId, pendingSeq);
+              // intentionally NOT zeroing pendingSeq: see C17 二轮 above.
+            }
 
             switch (event.type) {
               case "heartbeat":
+                if (!currentContent && !longWaitNoticeShown && Date.now() - streamStartedAt >= LONG_WAIT_NOTICE_MS) {
+                  longWaitNoticeShown = true;
+                  currentStreamStatus = LONG_WAIT_NOTICE;
+                  updateMessages((prev) => prev.map((m) =>
+                    m.id === assistantMsg.id
+                      ? { ...m, streamStatus: currentStreamStatus }
+                      : m
+                  ));
+                }
                 continue;
+              case "org_command_started": {
+                const orgId = (event as any).org_id as string | undefined;
+                const commandId = (event as any).command_id as string | undefined;
+                if (orgId && commandId) {
+                  activeOrgCommandRef.current = { orgId, commandId };
+                  orgCommandPendingRef.current = true;
+                  setOrgCommandPending(true);
+                }
+                currentStreamStatus = t("chat.orgProcessing", "组织正在处理中...");
+                // 把"命令已下发"写进 timeline 而不是 currentContent，
+                // 这样组织的过程展示与最终回复彻底分离。
+                currentOrgTimeline = [
+                  ...currentOrgTimeline,
+                  {
+                    status: "started",
+                    summary: t("chat.orgTimelineStartedFull", "组织命令已下发，等待节点接管…"),
+                    timestamp: Date.now(),
+                  },
+                ];
+                break;
+              }
+              case "org_progress": {
+                const summary = ((event as any).summary || "") as string;
+                const nodeId = ((event as any).node_id || "") as string;
+                const category = ((event as any).category || (event as any).label || "") as string;
+                if (summary) {
+                  currentStreamStatus = null;
+                  currentOrgTimeline = [
+                    ...currentOrgTimeline,
+                    {
+                      status: "progress",
+                      summary,
+                      nodeId: nodeId || null,
+                      category: category || null,
+                      timestamp: Date.now(),
+                    },
+                  ];
+                }
+                break;
+              }
+              case "org_command_done": {
+                activeOrgCommandRef.current = null;
+                orgCommandPendingRef.current = false;
+                setOrgCommandPending(false);
+                currentOrgTimeline = [
+                  ...currentOrgTimeline,
+                  {
+                    status: "done",
+                    summary: t("chat.orgTimelineDoneFull", "组织命令已结束"),
+                    timestamp: Date.now(),
+                  },
+                ];
+                break;
+              }
               case "user_insert": {
                 const insertContent = (event.content || "").trim();
                 if (insertContent) {
@@ -2005,6 +2722,7 @@ export function ChatView({
                 }
                 break;
               case "thinking_delta":
+                currentStreamStatus = null;
                 currentThinking += event.content;
                 currentThinkingContent += event.content;
                 if (currentChainGroup) {
@@ -2035,30 +2753,84 @@ export function ChatView({
                 break;
               }
               case "chain_text":
+                currentStreamStatus = null;
                 if (!currentChainGroup) {
                   currentChainGroup = { iteration: chainGroups.length + 1, entries: [], toolCalls: [], hasThinking: false, collapsed: false };
                   chainGroups = [...chainGroups, currentChainGroup];
                 }
                 if (event.content) {
                   const grp: ChainGroup = currentChainGroup;
+                  const entry: ChainEntry = event.icon
+                    ? { kind: "text" as const, content: event.content, icon: event.icon }
+                    : { kind: "text" as const, content: event.content };
                   currentChainGroup = {
                     ...grp,
-                    entries: [...grp.entries, { kind: "text" as const, content: event.content }],
+                    entries: [...grp.entries, entry],
                   };
                   chainGroups = chainGroups.map((g, i) => i === chainGroups.length - 1 ? currentChainGroup! : g);
                 }
                 break;
               case "text_delta":
+                currentStreamStatus = null;
                 currentContent += event.content;
                 break;
               case "text_replace":
+                currentStreamStatus = null;
                 currentContent = event.content ?? "";
+                if (Array.isArray(event.attachments)) {
+                  currentAttachments = event.attachments;
+                }
                 break;
+              case "tool_intent_preview": {
+                // C23 P2-3: tool_executor 在跑批之前先发这个事件，每个 tool_call
+                // 一条，告知 approval_class。
+                // 这里只对"有副作用"的类弹 toast：纯只读 / 搜索 / 交互问询不打扰
+                // 用户。toast id 用 tool_use_id 让同一工具多次预览不会叠多个气泡。
+                const previewClass = String(event.approval_class || "unknown");
+                const noisyClasses = new Set([
+                  "readonly_scoped",
+                  "readonly_global",
+                  "readonly_search",
+                  "interactive",
+                  "unknown",
+                ]);
+                if (!noisyClasses.has(previewClass)) {
+                  const previewTool = String(event.tool_name || "");
+                  const previewId = String(event.tool_use_id || `intent_${previewTool}_${Date.now()}`);
+                  // 取一个 param 摘要给用户看（command / path / url 三选一），
+                  // 避免把整个 params dump 进 toast。
+                  const previewParams = (event.params || {}) as Record<string, unknown>;
+                  const previewSummary =
+                    (typeof previewParams.command === "string" && (previewParams.command as string)) ||
+                    (typeof previewParams.path === "string" && (previewParams.path as string)) ||
+                    (typeof previewParams.url === "string" && (previewParams.url as string)) ||
+                    "";
+                  const previewLabel = previewSummary
+                    ? `${previewTool} · ${previewSummary.length > 80 ? previewSummary.slice(0, 80) + "…" : previewSummary}`
+                    : previewTool;
+                  toast.message(
+                    t("chat.toolIntentPreview", "即将执行：{{label}}", { label: previewLabel }),
+                    {
+                      id: previewId,
+                      duration: 2500,
+                      description: t(
+                        "chat.toolIntentPreviewClass",
+                        "类型：{{cls}}",
+                        { cls: previewClass },
+                      ),
+                    },
+                  );
+                }
+                break;
+              }
               case "tool_call_start": {
+                currentStreamStatus = null;
                 const toolName = event.tool_name || event.tool;
                 const callId = event.call_id || event.id;
                 if (toolName === "delegate_to_agent" && event.args?.agent_id) {
                   const targetId = String(event.args.agent_id);
+                  // P5.1: the agent currently driving this stream is the parent.
+                  if (currentAgent) parentAgentMapRef.current.set(targetId, currentAgent);
                   updateSubAgents((prev) => {
                     const exists = prev.find((s) => s.agentId === targetId);
                     if (exists) return prev.map((s) => s.agentId === targetId ? { ...s, status: "delegating", startTime: Date.now() } : s);
@@ -2071,6 +2843,8 @@ export function ChatView({
                     for (const task of event.args.tasks as Array<{ agent_id?: string; reason?: string }>) {
                       if (!task.agent_id) continue;
                       const targetId = String(task.agent_id);
+                      // P5.1: same parent inference as delegate_to_agent.
+                      if (currentAgent) parentAgentMapRef.current.set(targetId, currentAgent);
                       const exists = updated.find((s) => s.agentId === targetId);
                       if (exists) {
                         updated = updated.map((s) => s.agentId === targetId ? { ...s, status: "delegating" as const, startTime: Date.now() } : s);
@@ -2114,8 +2888,9 @@ export function ChatView({
                   const doFetch = () => {
                     safeFetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
                       .then((r) => r.json())
-                      .then((data: SubAgentTask[]) => {
-                        if (!Array.isArray(data)) return;
+                      .then((rawData: SubAgentTask[]) => {
+                        if (!Array.isArray(rawData)) return;
+                        const data = enrichTasksWithParents(rawData);
                         const c = streamContexts.current.get(thisConvId);
                         if (c) c.subAgentTasks = data;
                         if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
@@ -2137,11 +2912,12 @@ export function ChatView({
                       });
                   };
                   setTimeout(doFetch, 500);
-                  sctx.pollingTimer = setInterval(doFetch, 2000);
+                  sctx.pollingTimer = setInterval(doFetch, 5000);
                 }
 
-                currentToolCalls = [...currentToolCalls, { tool: toolName, args: event.args, status: "running", id: callId }];
                 const _tcId = callId || genId();
+                const toolCallKey = `${thisConvId}:${assistantMsg.id}:${_tcId}`;
+                upsertToolCall(toolCallKey, { tool: toolName, args: event.args, status: "running", id: _tcId });
                 const _desc = formatToolDescription(toolName, event.args);
                 const newTc: ChainToolCall = { toolId: _tcId, tool: toolName, args: event.args, status: "running", description: _desc };
                 if (currentChainGroup) {
@@ -2156,6 +2932,7 @@ export function ChatView({
                 break;
               }
               case "tool_call_end": {
+                currentStreamStatus = null;
                 const toolName = event.tool_name || event.tool;
                 const callId = event.call_id || event.id;
                 const _isAgentToolEnd = toolName === "delegate_to_agent" || toolName === "delegate_parallel" || toolName === "spawn_agent" || toolName === "create_agent";
@@ -2168,8 +2945,9 @@ export function ChatView({
                   if (sctx.pollingTimer) { clearInterval(sctx.pollingTimer); sctx.pollingTimer = null; }
                   safeFetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
                     .then((r) => r.json())
-                    .then((data: SubAgentTask[]) => {
-                      if (!Array.isArray(data)) return;
+                    .then((rawData: SubAgentTask[]) => {
+                      if (!Array.isArray(rawData)) return;
+                      const data = enrichTasksWithParents(rawData);
                       const c = streamContexts.current.get(thisConvId);
                       if (c) c.subAgentTasks = data;
                       if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
@@ -2196,14 +2974,20 @@ export function ChatView({
                     .then((data) => { if (data?.profiles) setAgentProfiles(data.profiles); })
                     .catch(() => {});
                 }
-                let matched = false;
-                currentToolCalls = currentToolCalls.map((tc) => {
-                  if (matched) return tc;
-                  const idMatch = callId && tc.id && tc.id === callId;
-                  const nameMatch = !callId && tc.tool === toolName && tc.status === "running";
-                  if (idMatch || nameMatch) { matched = true; return { ...tc, result: event.result, status: "done" as const }; }
-                  return tc;
-                });
+                const toolCallKey = findToolCallKey(toolName, callId);
+                if (toolCallKey) {
+                  const prev = currentToolCallsByKey.get(toolCallKey);
+                  if (prev) upsertToolCall(toolCallKey, { ...prev, result: event.result, status: "done" as const });
+                } else {
+                  const fallbackId = callId || genId();
+                  upsertToolCall(`${thisConvId}:${assistantMsg.id}:${fallbackId}`, {
+                    id: fallbackId,
+                    tool: toolName,
+                    args: {},
+                    result: event.result,
+                    status: "done",
+                  });
+                }
                 if (currentChainGroup) {
                   const grp: ChainGroup = currentChainGroup;
                   let chainMatched = false;
@@ -2232,6 +3016,75 @@ export function ChatView({
                     ],
                   };
                   chainGroups = chainGroups.map((g, i) => i === chainGroups.length - 1 ? currentChainGroup! : g);
+                }
+                break;
+              }
+              case "config_hint": {
+                // Structured hint emitted right after tool_call_end when a
+                // handler raised ToolConfigError. We MUST surface it in TWO
+                // places:
+                //
+                //   1. ChatMessage.toolCalls[].configHints   — used by the
+                //      legacy ToolCallsGroup render path (only active when
+                //      thinkingChain is empty, e.g. some IM-imported messages).
+                //   2. currentChainGroup.entries [config_hint kind] — used by
+                //      ThinkingChain in the default UX where showChain=true.
+                //      Without this branch, the card would silently disappear
+                //      whenever the agent produced any thinkingChain — which
+                //      is essentially every ReAct turn.
+                //
+                // The hint is intentionally NOT serialized into the LLM
+                // context (backend strips ``_hint`` before tool_result
+                // reaches working_messages) — it only exists in the UI state.
+                const hintToolUseId = event.tool_use_id || "";
+                const hintPayload = {
+                  scope: event.scope,
+                  error_code: event.error_code,
+                  title: event.title,
+                  message: event.message,
+                  actions: event.actions,
+                };
+                // ── 1) legacy ChatToolCall.configHints ──
+                // Skip the silent mass-attach risk: when both sides are empty
+                // strings, ``"" === ""`` would match every id-less tool call.
+                // In practice ``tool_id`` is always a UUID, but guard anyway.
+                if (hintToolUseId) {
+                  const toolCallKey = findToolCallKey("", hintToolUseId);
+                  if (toolCallKey) {
+                    const tc = currentToolCallsByKey.get(toolCallKey);
+                    if (tc) {
+                      const existing = tc.configHints || [];
+                      upsertToolCall(toolCallKey, { ...tc, configHints: [...existing, hintPayload] });
+                    }
+                  }
+                }
+                // ── 2) thinkingChain entry — visible in the default UX ──
+                // We append even if currentChainGroup is missing thinking;
+                // the chain UI handles a "tool-only" group fine.
+                if (!currentChainGroup) {
+                  currentChainGroup = { iteration: chainGroups.length + 1, entries: [], toolCalls: [], hasThinking: false, collapsed: false };
+                  chainGroups = [...chainGroups, currentChainGroup];
+                }
+                {
+                  const grp: ChainGroup = currentChainGroup;
+                  // De-dupe by (error_code, scope, title) within the same
+                  // group — handlers that retry the same tool with the same
+                  // failure shouldn't stack identical cards.
+                  const dedupeKey = `${hintPayload.error_code}|${hintPayload.scope}|${hintPayload.title}`;
+                  const alreadyShown = grp.entries.some(
+                    (e) => e.kind === "config_hint" &&
+                      `${e.hint.error_code}|${e.hint.scope}|${e.hint.title}` === dedupeKey,
+                  );
+                  if (!alreadyShown) {
+                    currentChainGroup = {
+                      ...grp,
+                      entries: [
+                        ...grp.entries,
+                        { kind: "config_hint" as const, toolId: hintToolUseId, hint: hintPayload },
+                      ],
+                    };
+                    chainGroups = chainGroups.map((g, i) => i === chainGroups.length - 1 ? currentChainGroup! : g);
+                  }
                 }
                 break;
               }
@@ -2280,7 +3133,7 @@ export function ChatView({
                 };
                 if (securityPolicy.checkAutoAllow(scEvt)) {
                   securityPolicy.recordAllow(scEvt.tool);
-                  fetch(`${apiBaseUrl}/api/chat/security-confirm`, {
+                  safeFetch(`${apiBaseUrl}/api/chat/security-confirm`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ confirm_id: scEvt.id, decision: "allow_once" }),
@@ -2294,15 +3147,28 @@ export function ChatView({
                   riskLevel: scEvt.risk_level,
                   needsSandbox: scEvt.needs_sandbox,
                   toolId: scEvt.id,
-                  countdown: 120,
+                  countdown: (event.timeout_seconds as number) || 120,
+                  defaultOnTimeout: (event.default_on_timeout as string) || "deny",
+                  approvalClass: (event.approval_class as string | null | undefined) ?? null,
+                  policyVersion: (event.policy_version as number | undefined) ?? undefined,
+                  channel: (event.channel as string | undefined) ?? undefined,
+                  // C23 P2-2: 决策链透传，由 SecurityConfirmModal 折叠渲染
+                  decisionChain: Array.isArray(event.decision_chain)
+                    ? (event.decision_chain as Array<{ name: string; action: string; note: string }>)
+                    : undefined,
                 };
                 setSecurityConfirm((prev) => {
                   if (prev) {
                     securityQueueRef.current.push(newConfirm);
+                    setSecurityQueueLen(securityQueueRef.current.length);
                     return prev;
                   }
                   return newConfirm;
                 });
+                break;
+              }
+              case "death_switch": {
+                setDeathSwitchActive(event.active);
                 break;
               }
               case "sub_agent_state": {
@@ -2353,7 +3219,7 @@ export function ChatView({
               }
               case "ui_preference":
                 if (event.theme) setThemePref(event.theme as Theme);
-                if (event.language) i18n.changeLanguage(event.language);
+                if (event.language) setLanguage(event.language as "auto" | "zh" | "en");
                 break;
               case "artifact":
                 logger.debug("Chat", "Artifact SSE received", { name: event.name, file_url: event.file_url, artifact_type: event.artifact_type });
@@ -2366,7 +3232,37 @@ export function ChatView({
                   size: event.size,
                 }];
                 break;
+              case "source_used":
+                currentSources = [...currentSources, {
+                  tool_name: event.tool_name,
+                  tool_use_id: event.tool_use_id,
+                  requested_url: event.requested_url,
+                  final_url: event.final_url,
+                  hostname: event.hostname,
+                  redirected: event.redirected,
+                  from_cache: event.from_cache,
+                  status: event.status,
+                  hint: event.hint,
+                }];
+                break;
+              case "mcp_call":
+                currentMcpCalls = [...currentMcpCalls, {
+                  tool_use_id: event.tool_use_id,
+                  server: event.server,
+                  tool: event.tool,
+                  status: event.status,
+                  auto_connected: event.auto_connected,
+                  reconnected: event.reconnected,
+                  error: event.error,
+                }];
+                break;
               case "agent_handoff": {
+                // P5.1: capture delegation parentage so SubAgentCards can render
+                // a tree.  We only record when the from_agent is non-empty,
+                // letting unknown roots fall through as top-level nodes.
+                if (event.from_agent && event.to_agent) {
+                  parentAgentMapRef.current.set(String(event.to_agent), String(event.from_agent));
+                }
                 updateSubAgents((prev) => {
                   const exists = prev.find((s) => s.agentId === event.to_agent);
                   if (exists) return prev.map((s) => s.agentId === event.to_agent ? { ...s, status: "delegating", startTime: Date.now() } : s);
@@ -2393,11 +3289,133 @@ export function ChatView({
                     askUser: currentAsk,
                     errorInfo: currentError,
                     artifacts: currentArtifacts.length > 0 ? [...currentArtifacts] : null,
+                    attachments: currentAttachments.length > 0 ? [...currentAttachments] : null,
+                    sources: currentSources.length > 0 ? [...currentSources] : null,
+                    mcpCalls: currentMcpCalls.length > 0 ? [...currentMcpCalls] : null,
                     thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
+                    orgTimeline: currentOrgTimeline.length > 0 ? currentOrgTimeline.map(e => ({ ...e })) : null,
                     streaming: true,
                   }];
                 });
                 continue; // skip normal update below
+              case "endpoint_notice": {
+                // 渲染为系统气泡：thinking_degraded / vision_degraded
+                const reasonCode: string =
+                  (event as any).reason_code || (event as any).notice_type || "";
+                const endpointName: string = (event as any).endpoint || "";
+                let noticeText = "";
+                if (reasonCode === "thinking_degraded") {
+                  noticeText = endpointName
+                    ? `当前模型「${endpointName}」未返回思考过程，已自动降级为非思考模式继续回答。`
+                    : "当前模型未返回思考过程，已自动降级为非思考模式继续回答。";
+                } else if (reasonCode === "endpoint_failover") {
+                  const fromEndpoint = String((event as any).from_endpoint || "");
+                  noticeText = fromEndpoint && endpointName
+                    ? `所选模型「${fromEndpoint}」本轮请求失败，已切换到「${endpointName}」继续回答。`
+                    : "所选模型本轮请求失败，已自动切换到可用模型继续回答。";
+                } else if (reasonCode === "vision_degraded") {
+                  noticeText = endpointName
+                    ? `当前选中的模型「${endpointName}」不支持视觉，本轮的图片已被隐藏，仅根据文字内容回答。`
+                    : "当前选中的模型不支持视觉，本轮的图片已被隐藏，仅根据文字内容回答。";
+                } else {
+                  noticeText = "端点能力降级提示";
+                }
+                updateMessages((prev) => [
+                  ...prev,
+                  {
+                    id: genId(),
+                    role: "system" as const,
+                    content: noticeText,
+                    timestamp: Date.now(),
+                  },
+                ]);
+                continue;
+              }
+              case "task_checkpoint": {
+                // 任务节点检查点：在 cancelled / budget_paused / completed /
+                // user_cancelled / loop_terminated / max_iterations 时由后端 emit。
+                //
+                // 渲染策略（避免与 budget_warning / done / error 文案重复）：
+                //   - user_cancelled                 → "已停止 + 继续提示"
+                //   - loop_terminated / max_iterations → 失败原因卡片（P5.3）
+                //   - budget_paused / completed      → 静默（已被 budget_warning / done 覆盖）
+                //   - 其他未知 exit_reason            → 静默累积，未来时间线 UI 使用
+                const exitReason = String((event as any).exit_reason || "");
+                const summary = String((event as any).summary || "").trim();
+                const hint = String((event as any).next_step_hint || "").trim();
+                const renderSystemMessage = (lines: string[]) => {
+                  updateMessages((prev) => [
+                    ...prev,
+                    {
+                      id: genId(),
+                      role: "system" as const,
+                      content: lines.join("\n"),
+                      timestamp: Date.now(),
+                    },
+                  ]);
+                };
+                if (exitReason === "user_cancelled" || exitReason === "cancelled") {
+                  const lines = ["⏸️ 任务已停止"];
+                  if (summary) lines.push(`已完成：${summary}`);
+                  if (hint) lines.push(`继续提示：${hint}`);
+                  else lines.push("如需继续，回复\"继续\"即可让我接力。");
+                  renderSystemMessage(lines);
+                } else if (exitReason === "loop_terminated") {
+                  // P5.3 失败原因卡片：循环检测 / 工具预算 / token 异常等异常终止。
+                  // 与 ErrorCard 区分 — ErrorCard 处理 LLM 调用层错误，这里是
+                  // 任务级"为什么停下来"的归因。
+                  const lines = ["⚠️ 任务异常终止"];
+                  if (summary) lines.push(`原因：${summary}`);
+                  if (hint) lines.push(`建议：${hint}`);
+                  renderSystemMessage(lines);
+                } else if (exitReason === "max_iterations") {
+                  const lines = ["⚠️ 已达迭代上限"];
+                  if (summary) lines.push(`原因：${summary}`);
+                  if (hint) lines.push(`建议：${hint}`);
+                  renderSystemMessage(lines);
+                }
+                continue;
+              }
+              case "budget_warning": {
+                // 任务预算软提示：duration / tokens / iterations / tool_calls 维度
+                // 在 80% / 90% 触达时由后端发来，仅供 UI 展示，不影响任务运行。
+                // 后端已做去抖（每个 dim+level 仅 emit 一次），前端无需再过滤。
+                const dimension = String((event as any).dimension || "");
+                const level = String((event as any).level || "warning");
+                const ratio = Number((event as any).usage_ratio || 0);
+                const renewed = Boolean((event as any).renewed || false);
+                const pct = Math.round(ratio * 100);
+                let dimLabel = dimension;
+                if (dimension === "duration") dimLabel = "任务时长";
+                else if (dimension === "tokens") dimLabel = "Token 用量";
+                else if (dimension === "tool_calls") dimLabel = "工具调用次数";
+                else if (dimension === "iterations") dimLabel = "迭代次数";
+                else if (dimension === "cost_usd" || dimension === "cost") dimLabel = "成本";
+                let noticeText = "";
+                if (renewed) {
+                  noticeText =
+                    `${dimLabel}已超出预算（${pct}%），但任务仍在持续产出工具调用 / token，` +
+                    `系统已允许它继续推进。如需停止任务，可点击下方"停止"按钮。`;
+                } else if (level === "downgrade") {
+                  noticeText =
+                    `${dimLabel}已用至 ${pct}%，接近你设置的上限。任务仍在继续，之后可能会暂停等待你确认。` +
+                    `如需让任务自然结束，可主动让我"基于已有进展给出阶段性结论"。`;
+                } else {
+                  noticeText =
+                    `${dimLabel}已用至 ${pct}%。任务仍在继续，无需操作；` +
+                    `如已经获得足够信息，可直接告诉我"基于已有进展收尾"。`;
+                }
+                updateMessages((prev) => [
+                  ...prev,
+                  {
+                    id: genId(),
+                    role: "system" as const,
+                    content: noticeText,
+                    timestamp: Date.now(),
+                  },
+                ]);
+                continue;
+              }
               case "error":
                 currentError = {
                   message: event.message,
@@ -2407,12 +3425,38 @@ export function ChatView({
                 break;
               case "done":
                 gracefulDone = true;
+                // Crash diagnostics: backend signalled end-of-stream. Only metadata,
+                // never content. Use info level so it survives in production builds.
+                logger.info("Chat", "sse_done", {
+                  convId,
+                  iters: chainGroups.length,
+                  tools: currentToolCalls.length,
+                  artifacts: currentArtifacts.length,
+                  sources: currentSources.length,
+                  mcp: currentMcpCalls.length,
+                  contentLen: currentContent.length,
+                  thinkingLen: currentThinking.length,
+                  hasError: currentError !== null,
+                });
+                void logger.flush();
                 if (event.usage) {
-                  if (typeof event.usage.context_tokens === "number") setContextTokens(event.usage.context_tokens);
-                  if (typeof event.usage.context_limit === "number") setContextLimit(event.usage.context_limit);
-                  const { input_tokens, output_tokens, total_tokens } = event.usage;
-                  if (typeof input_tokens === "number" && typeof output_tokens === "number") {
-                    assistantMsg.usage = { input_tokens, output_tokens, total_tokens: total_tokens ?? input_tokens + output_tokens };
+                  // Fix-13：后端同时下发新旧字段，优先读取语义更清晰的新名字。
+                  const ctxTokens = event.usage.history_context_tokens ?? event.usage.context_tokens;
+                  const ctxLimit = event.usage.history_context_limit ?? event.usage.context_limit;
+                  if (typeof ctxTokens === "number") setContextTokens(ctxTokens);
+                  if (typeof ctxLimit === "number") setContextLimit(ctxLimit);
+                  const isEstimatedUsage = Boolean(event.usage.usage_estimated);
+                  const inTokens = isEstimatedUsage ? event.usage.input_tokens : (event.usage.billable_input_tokens ?? event.usage.input_tokens);
+                  const outTokens = isEstimatedUsage ? event.usage.output_tokens : (event.usage.billable_output_tokens ?? event.usage.output_tokens);
+                  const totalTokens = isEstimatedUsage ? event.usage.total_tokens : (event.usage.billable_total_tokens ?? event.usage.total_tokens);
+                  if (typeof inTokens === "number" && typeof outTokens === "number") {
+                    assistantMsg.usage = {
+                      input_tokens: inTokens,
+                      output_tokens: outTokens,
+                      total_tokens: totalTokens ?? inTokens + outTokens,
+                      usage_estimated: isEstimatedUsage,
+                      usage_source: event.usage.usage_source,
+                    };
                   }
                 }
                 if (currentPlan && currentPlan.status === "in_progress") {
@@ -2449,9 +3493,14 @@ export function ChatView({
                     askUser: currentAsk,
                     errorInfo: currentError,
                     artifacts: currentArtifacts.length > 0 ? [...currentArtifacts] : null,
+                    attachments: currentAttachments.length > 0 ? [...currentAttachments] : null,
+                    sources: currentSources.length > 0 ? [...currentSources] : null,
+                    mcpCalls: currentMcpCalls.length > 0 ? [...currentMcpCalls] : null,
                     thinkingChain: chainGroups.length > 0 ? chainGroups.map(g => ({ ...g })) : null,
+                    orgTimeline: currentOrgTimeline.length > 0 ? currentOrgTimeline.map(e => ({ ...e })) : null,
                     usage: assistantMsg.usage ?? m.usage,
                     streaming: event.type !== "done",
+                    streamStatus: event.type === "done" ? null : currentStreamStatus,
                   }
                 : m
             ));
@@ -2474,62 +3523,101 @@ export function ChatView({
         if (sctx.userStopped) {
           updateMessages((prev) => prev.map((m) =>
             m.id === assistantMsg.id
-              ? { ...m, content: m.content || "（已中止）", streaming: false }
+              ? { ...m, content: m.content || "（已中止）", streaming: false, streamStatus: null }
               : m
           ));
         } else {
           updateMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id ? { ...m, streaming: false } : m
+            m.id === assistantMsg.id ? { ...m, streaming: false, streamStatus: null } : m
           ));
           attemptRecovery(4000);
         }
       } else {
+        const emptyStream = !currentContent && !assistantMsg.askUser;
+        const canRecover = emptyStream && !!convId;
         updateMessages((prev) => prev.map((m) =>
           m.id === assistantMsg.id
             ? {
                 ...m,
-                content: m.content || (m.askUser ? "" : "⚠️ 未收到有效回复，请重试。"),
-                streaming: false,
+                content: canRecover ? "" : (m.content || (m.askUser ? "" : "未收到有效回复，请重试。")),
+                streaming: canRecover,
+                streamStatus: canRecover ? t("chat.recovering", "正在恢复回复...") : null,
               }
             : m
         ));
 
-        if (!gracefulDone && convId) {
-          // SSE 连接被中断（未收到 "done" 事件），后端可能仍在运行，启动持续轮询恢复
+        logger.info("Chat", "task_completed", {
+          convId,
+          gracefulDone,
+          durationMs: Date.now() - streamStartedAt,
+          contentLen: currentContent.length,
+          tools: currentToolCalls.length,
+          iters: chainGroups.length,
+          artifacts: currentArtifacts.length,
+        });
+        void logger.flush();
+
+        if (canRecover) {
+          attemptRecovery(2000);
+          const _fallbackMsgId = assistantMsg.id;
+          const _fallbackConvId = thisConvId;
+          const _fallbackStorageKey = STORAGE_KEY_MSGS_PREFIX + thisConvId;
+          setTimeout(() => {
+            setMessages((prev) => {
+              const isActive = activeConvIdRef.current === _fallbackConvId;
+              const base = isActive ? prev : loadMessagesFromStorage(_fallbackStorageKey);
+              const updated = base.map((m) => {
+                if (m.id !== _fallbackMsgId) return m;
+                if (m.content && !m.streaming) return m;
+                return { ...m, content: "未收到有效回复，请重试。", streaming: false, streamStatus: null };
+              });
+              const liveCtx = streamContexts.current.get(_fallbackConvId);
+              if (liveCtx) liveCtx.messages = updated;
+              try { saveMessagesToStorage(_fallbackStorageKey, updated); } catch { /* quota */ }
+              return isActive ? updated : prev;
+            });
+          }, 30_000);
+        } else if (!gracefulDone && convId) {
           attemptRecovery(3000);
-        } else if (gracefulDone) {
-          // SSE 正常完成，但若未交付任何有效响应，做一次性回填
-          const streamDeliveredPayload = !!(
-            currentContent.trim() || currentAsk || currentToolCalls.length > 0
-          );
-          if (!streamDeliveredPayload && convId) {
-            safeFetch(`${apiBase}/api/sessions/${encodeURIComponent(convId)}/history`)
-              .then((r) => r.json())
-              .then((data) => {
-                const rows = Array.isArray(data?.messages) ? data.messages : [];
-                const candidates = rows.filter((m: { role?: string; content?: string }) => m?.role === "assistant" && typeof m?.content === "string");
-                const newerThanUser = candidates.filter((m: { timestamp?: number }) => typeof m?.timestamp === "number" && m.timestamp >= userMsg.timestamp);
-                const lastAssistant = (newerThanUser.length > 0 ? newerThanUser : candidates).slice(-1)[0];
-                if (!lastAssistant?.content) return;
-                const backendLen = (lastAssistant.content as string).length;
-                setMessages((prev) => prev.map((m) => {
-                  if (m.id !== assistantMsg.id) return m;
-                  if (m.content && m.content.length >= backendLen) return m;
-                  const patched: ChatMessage = { ...m, content: lastAssistant.content };
-                  if ((!m.thinkingChain || m.thinkingChain.length === 0) && Array.isArray(lastAssistant.chain_summary) && lastAssistant.chain_summary.length > 0) {
-                    patched.thinkingChain = buildChainFromSummary(lastAssistant.chain_summary);
-                  }
-                  return patched;
-                }));
-              })
-              .catch(() => {});
-          }
+        } else if (gracefulDone && convId) {
+          // SSE 正常完成后也静默校验一次后端历史。桌面端恢复前台或
+          // fetch 流边界异常时，UI 可能已经显示了半截 Markdown 表格；
+          // 后端 session history 是最终落盘结果，用它补齐更完整的回答。
+          safeFetch(`${apiBase}/api/sessions/${encodeURIComponent(convId)}/history`)
+            .then((r) => r.json())
+            .then((data) => {
+              const rows = Array.isArray(data?.messages) ? data.messages : [];
+              if (!rows.length) return;
+              setMessages((prev) => {
+                const patchResult = patchMessagesWithBackendDetailed(prev, rows);
+                const patched = patchResult.messages;
+                const noop = !patchResult.changed;
+                const assistant = prev.find((m) => m.id === assistantMsg.id);
+                logger.info("Chat", "history_patch", {
+                  convId,
+                  rows: rows.length,
+                  applied: !noop,
+                  fallback: patchResult.stats.matchedByFallback,
+                  byId: patchResult.stats.matchedById,
+                  byHistoryIndex: patchResult.stats.matchedByHistoryIndex,
+                  patched: patchResult.stats.patched,
+                  localAssistantEmpty: Boolean(assistant && !assistant.content && !assistant.askUser),
+                });
+                if (noop) return prev;
+                const liveCtx = streamContexts.current.get(thisConvId);
+                if (liveCtx) liveCtx.messages = patched;
+                try { saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + thisConvId, patched); } catch { /* quota */ }
+                return patched;
+              });
+            })
+            .catch(() => {});
         }
       }
     } catch (e: unknown) {
+      sctx._hadError = true;
       if (sctx.userStopped) {
         updateMessages((prev) => prev.map((m) =>
-          m.id === assistantMsg.id ? { ...m, content: m.content || "（已中止）", streaming: false } : m
+          m.id === assistantMsg.id ? { ...m, content: m.content || "（已中止）", streaming: false, streamStatus: null } : m
         ));
       } else {
         const isAbortLike =
@@ -2539,7 +3627,7 @@ export function ChatView({
 
         if (isAbortLike) {
           updateMessages((prev) => prev.map((m) =>
-            m.id === assistantMsg.id ? { ...m, streaming: false } : m
+            m.id === assistantMsg.id ? { ...m, streaming: false, streamStatus: null } : m
           ));
         } else {
           const errMsg = e instanceof Error ? e.message : String(e);
@@ -2560,6 +3648,7 @@ export function ChatView({
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
       if (screenFlushRaf) { cancelAnimationFrame(screenFlushRaf); screenFlushRaf = 0; }
+      if (screenFlushTimer) { clearTimeout(screenFlushTimer); screenFlushTimer = null; }
       const ctx = streamContexts.current.get(thisConvId);
       if (ctx) {
         ctx.isStreaming = false;
@@ -2572,8 +3661,9 @@ export function ChatView({
           const doFetch = () => {
             safeFetch(`${apiBase}/api/agents/sub-tasks?conversation_id=${encodeURIComponent(thisConvId)}`)
               .then((r) => r.json())
-              .then((data: SubAgentTask[]) => {
-                if (!Array.isArray(data)) return;
+              .then((rawData: SubAgentTask[]) => {
+                if (!Array.isArray(rawData)) return;
+                const data = enrichTasksWithParents(rawData);
                 if (activeConvIdRef.current === thisConvId) setDisplaySubAgentTasks(data);
                 const allDone = data.length > 0 && data.every(
                   (t) => t.status === "completed" || t.status === "error" || t.status === "timeout" || t.status === "cancelled"
@@ -2590,7 +3680,7 @@ export function ChatView({
               })
               .catch(() => {});
           };
-          let finalPollingTimer: ReturnType<typeof setInterval> | null = setInterval(doFetch, 2000);
+          let finalPollingTimer: ReturnType<typeof setInterval> | null = setInterval(doFetch, 5000);
           doFetch();
           setTimeout(() => {
             if (finalPollingTimer) { clearInterval(finalPollingTimer); finalPollingTimer = null; }
@@ -2615,10 +3705,11 @@ export function ChatView({
       queryGuard.endQuery(guardHandle.generation);
       setStreamingTick(t => t + 1);
 
+      const finalStatus = sctx._hadError ? "error" : "completed";
       setConversations((prev) => {
         const updated = prev.map((c) =>
           c.id === thisConvId
-            ? { ...c, lastMessage: text.slice(0, 60), timestamp: Date.now(), messageCount: (c.messageCount || 0) + 2, status: "completed" as ConversationStatus }
+            ? { ...c, lastMessage: text.slice(0, 60), timestamp: Date.now(), messageCount: (c.messageCount || 0) + 2, status: finalStatus as ConversationStatus }
             : c
         );
         const conv = updated.find((c) => c.id === thisConvId);
@@ -2643,7 +3734,7 @@ export function ChatView({
         return updated;
       });
     }
-  }, [pendingAttachments, isCurrentConvStreaming, activeConvId, chatMode, selectedEndpoint, apiBase, slashCommands, thinkingMode, thinkingDepth, t, setInputValue]);
+  }, [pendingAttachments, isCurrentConvStreaming, activeConvId, chatMode, selectedEndpoint, selectedEndpointPolicy, apiBase, slashCommands, endpoints.length, thinkingMode, thinkingDepth, t, setInputValue]);
 
   // ── 处理用户回答 (ask_user) ──
   const handleAskAnswer = useCallback((msgId: string, answer: string) => {
@@ -2758,6 +3849,15 @@ export function ChatView({
   const closeLightbox = useCallback(() => setLightbox(null), []);
 
   const handleCancelTask = useCallback(() => {
+    if (orgCommandPendingRef.current && activeOrgCommandRef.current) {
+      const { orgId, commandId } = activeOrgCommandRef.current;
+      safeFetch(`${apiBaseRef.current}/api/orgs/${orgId}/commands/${commandId}/cancel`, {
+        method: "POST",
+      }).catch(() => {
+        notifyError("组织命令停止请求失败，请稍后重试");
+      });
+      return;
+    }
     safeFetch(`${apiBase}/api/chat/cancel`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2881,6 +3981,7 @@ export function ChatView({
         name: file.name,
         size: file.size,
         mimeType: file.type,
+        uploadStatus: file.type.startsWith("image/") || file.type.startsWith("video/") ? "uploaded" : "uploading",
         _uploadId: uploadId,
       };
       if (att.type === "video" && file.size > 7 * 1024 * 1024) {
@@ -2901,16 +4002,28 @@ export function ChatView({
       } else {
         setPendingAttachments((prev) => [...prev, att]);
         uploadFile(file, file.name)
-          .then((serverUrl) => {
+          .then((uploaded) => {
             setPendingAttachments((prev) =>
               prev.map((a) => a._uploadId === uploadId
-                ? { ...a, url: `${apiBaseRef.current}${serverUrl}` } : a)
+                ? {
+                  ...a,
+                  url: `${apiBaseRef.current}${uploaded.url}`,
+                  localPath: uploaded.localPath,
+                  uploadId: uploaded.uploadId,
+                  size: uploaded.size ?? a.size,
+                  mimeType: uploaded.mimeType ?? a.mimeType,
+                  uploadStatus: "uploaded",
+                  uploadError: undefined,
+                } : a)
             );
           })
-          .catch(() => {
+          .catch((err) => {
             notifyError(`文件上传失败: ${file.name}`);
             setPendingAttachments((prev) =>
-              prev.filter((a) => a._uploadId !== uploadId || a.url));
+              prev.map((a) => a._uploadId === uploadId
+                ? { ...a, uploadStatus: "failed", uploadError: String(err) }
+                : a)
+            );
           });
       }
     }
@@ -2967,8 +4080,25 @@ export function ChatView({
       gif: "image/gif", webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml",
       mp4: "video/mp4", webm: "video/webm", avi: "video/x-msvideo",
       mov: "video/quicktime", mkv: "video/x-matroska",
+      mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4",
+      aac: "audio/aac", flac: "audio/flac", ogg: "audio/ogg", opus: "audio/opus",
       pdf: "application/pdf", txt: "text/plain", md: "text/plain",
       json: "application/json", csv: "text/csv",
+    };
+
+    const FILE_MAX_SIZE = 50 * 1024 * 1024;
+
+    const dataUrlToBlob = (dataUrl: string, mimeType: string): Blob | null => {
+      try {
+        const commaIdx = dataUrl.indexOf(",");
+        const b64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mimeType });
+      } catch {
+        return null;
+      }
     };
 
     const handleDroppedPaths = (paths: string[]) => {
@@ -2977,39 +4107,96 @@ export function ChatView({
         const ext = (name.split(".").pop() || "").toLowerCase();
         const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(ext);
         const isVideo = ["mp4", "webm", "avi", "mov", "mkv"].includes(ext);
+        const isAudio = ["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "weba", "wma", "amr"].includes(ext);
         const mimeType = mimeMap[ext] || "application/octet-stream";
         readFileBase64(filePath)
           .then((dataUrl) => {
             if (cancelled) return;
+            const commaIdx = dataUrl.indexOf(",");
+            const base64Len = commaIdx >= 0 ? dataUrl.length - commaIdx - 1 : dataUrl.length;
+            const estimatedSize = base64Len * 3 / 4;
+            if (estimatedSize > FILE_MAX_SIZE) {
+              notifyError(`文件过大 (${(estimatedSize / 1024 / 1024).toFixed(1)}MB)，最大支持 50MB`);
+              return;
+            }
             if (isVideo) {
-              const commaIdx = dataUrl.indexOf(",");
-              const base64Len = commaIdx >= 0 ? dataUrl.length - commaIdx - 1 : dataUrl.length;
-              const estimatedSize = base64Len * 3 / 4;
               const VIDEO_MAX_SIZE = 7 * 1024 * 1024;
               if (estimatedSize > VIDEO_MAX_SIZE) {
                 notifyError(`视频文件过大 (${(estimatedSize / 1024 / 1024).toFixed(1)}MB)，最大支持 7MB（base64 编码后需 < 10MB）`);
                 return;
               }
             }
-            setPendingAttachments((prev) => [...prev, {
-              type: isImage ? "image" : isVideo ? "video" : "file",
+
+            // 图片 / 视频：保留 dataUrl，后端 multimodal 路径会直接消费（不会拼进文本 prompt）
+            if (isImage || isVideo) {
+              setPendingAttachments((prev) => [...prev, {
+                type: isImage ? "image" : "video",
+                name,
+                previewUrl: isImage ? dataUrl : undefined,
+                url: dataUrl,
+                size: estimatedSize,
+                mimeType,
+              }]);
+              return;
+            }
+
+            // 文档 / 其他文件：必须上传到后端拿短 URL，否则 base64 dataUrl 会被
+            // 拼进 LLM prompt 文本 → token 爆炸 + 被中间环节截断（→ "..."）
+            // → 模型反复说"找不到文件 / 内容被截断"。与 handleFileSelect 路径保持一致。
+            const blob = dataUrlToBlob(dataUrl, mimeType);
+            if (!blob) {
+              notifyError(`文件解码失败: ${name}`);
+              logger.error("Chat.Upload", "DragDrop dataUrl decode failed", { name });
+              return;
+            }
+            const uploadId = genId();
+            const isPdf = ext === "pdf" || mimeType === "application/pdf";
+            const att: ChatAttachment = {
+              type: isAudio ? "voice" : isPdf ? "document" : "file",
               name,
-              previewUrl: isImage ? dataUrl : undefined,
-              url: dataUrl,
+              size: estimatedSize,
               mimeType,
-            }]);
+              uploadStatus: "uploading",
+              _uploadId: uploadId,
+            };
+            setPendingAttachments((prev) => [...prev, att]);
+            uploadFile(blob, name)
+              .then((uploaded) => {
+                if (cancelled) return;
+                setPendingAttachments((prev) => prev.map((a) =>
+                  a._uploadId === uploadId
+                    ? {
+                      ...a,
+                      url: `${apiBaseRef.current}${uploaded.url}`,
+                      localPath: uploaded.localPath,
+                      uploadId: uploaded.uploadId,
+                      size: uploaded.size ?? a.size,
+                      mimeType: uploaded.mimeType ?? a.mimeType,
+                      uploadStatus: "uploaded",
+                      uploadError: undefined,
+                    }
+                    : a,
+                ));
+              })
+              .catch((err) => {
+                notifyError(`文件上传失败: ${name}`);
+                logger.error("Chat.Upload", "DragDrop uploadFile failed", { name, error: String(err) });
+                setPendingAttachments((prev) => prev.map((a) =>
+                  a._uploadId === uploadId ? { ...a, uploadStatus: "failed", uploadError: String(err) } : a));
+              });
           })
           .catch((err) => logger.error("Chat", "DragDrop read_file_base64 failed", { name, error: String(err) }));
       }
     };
 
     onDragDrop({
-      onEnter: () => { if (!cancelled) setDragOver(true); },
-      onOver: () => { if (!cancelled) setDragOver(true); },
+      onEnter: () => { if (!cancelled && !feedbackModalOpenRef.current) setDragOver(true); },
+      onOver: () => { if (!cancelled && !feedbackModalOpenRef.current) setDragOver(true); },
       onLeave: () => { if (!cancelled) setDragOver(false); },
       onDrop: (paths) => {
         if (cancelled) return;
         setDragOver(false);
+        if (feedbackModalOpenRef.current) return;
         handleDroppedPaths(paths);
       },
     }).then((unsub) => { unlisten = unsub; });
@@ -3052,18 +4239,28 @@ export function ChatView({
         const filename = `voice-${Date.now()}.${ext}`;
         const tempAtt: ChatAttachment = {
           type: "voice", name: filename, previewUrl: localPreview,
-          size: blob.size, mimeType: mimeType || "audio/webm", _uploadId: uploadId,
+          size: blob.size, mimeType: mimeType || "audio/webm", uploadStatus: "uploading", _uploadId: uploadId,
         };
         setPendingAttachments((prev) => [...prev, tempAtt]);
         uploadFile(blob, filename)
-          .then((serverUrl) => {
+          .then((uploaded) => {
             setPendingAttachments((prev) =>
-              prev.map((a) => a._uploadId === uploadId ? { ...a, url: `${apiBaseRef.current}${serverUrl}` } : a)
+              prev.map((a) => a._uploadId === uploadId ? {
+                ...a,
+                url: `${apiBaseRef.current}${uploaded.url}`,
+                localPath: uploaded.localPath,
+                uploadId: uploaded.uploadId,
+                size: uploaded.size ?? a.size,
+                mimeType: uploaded.mimeType ?? a.mimeType,
+                uploadStatus: "uploaded",
+                uploadError: undefined,
+              } : a)
             );
           })
-          .catch(() => {
+          .catch((err) => {
             notifyError(t("chat.voiceUploadFailed", "语音上传失败"));
-            setPendingAttachments((prev) => prev.filter((a) => a._uploadId !== uploadId || a.url));
+            setPendingAttachments((prev) => prev.map((a) =>
+              a._uploadId === uploadId ? { ...a, uploadStatus: "failed", uploadError: String(err) } : a));
           });
         stream.getTracks().forEach((t) => t.stop());
       };
@@ -3216,6 +4413,7 @@ export function ChatView({
       if (match) {
         setOrgMode(true);
         setSelectedOrgId(match.id);
+        setSelectedOrgNodeId(null);
       }
     }
 
@@ -3259,6 +4457,23 @@ export function ChatView({
     [filteredConversations]
   );
 
+  const quickStartItems = useMemo(() => [
+    { id: "research", icon: <IconBarChart size={20} />, text: t("chat.quickStart.research", "帮我做一份 Synapse 竞品分析") },
+    { id: "ppt", icon: <IconPlan size={20} />, text: t("chat.quickStart.ppt", "帮我生成一份项目汇报 PPT 大纲") },
+    { id: "search", icon: <IconGlobe size={20} />, text: t("chat.quickStart.search", "帮我搜索 Synapse 的最新动态") },
+    { id: "email", icon: <IconMail size={20} />, text: t("chat.quickStart.email", "帮我写一封商务邮件") },
+    { id: "summary", icon: <IconClipboard size={20} />, text: t("chat.quickStart.summary", "帮我总结一下今天的工作内容") },
+    { id: "translate", icon: <IconGlobe size={20} />, text: t("chat.quickStart.translate", "帮我把这段话翻译成英文") },
+  ], [i18n.language, t]);
+  const quickStartCardWidth = useMemo(() => {
+    const textUnits = Math.max(
+      ...quickStartItems.map((item) =>
+        Array.from(item.text).reduce((total, char) => total + (char.charCodeAt(0) <= 0xff ? 0.55 : 1), 0)
+      )
+    );
+    return `calc(${textUnits}em + 82px)`;
+  }, [quickStartItems]);
+
   // ── 未启动服务提示 ──
   if (!serviceRunning) {
     return (
@@ -3295,7 +4510,7 @@ export function ChatView({
         onContextMenu={(e) => { e.preventDefault(); (e.nativeEvent as any)._handled = true; setCtxMenu({ x: e.clientX, y: e.clientY, convId: conv.id }); }}
       >
         <div className="convItemIcon">
-          <span title={agentProfile?.name || ""} style={{ fontSize: 16 }}>{agentProfile?.icon || "💬"}</span>
+          <span title={agentProfile?.name || ""} style={{ fontSize: 16, display: "inline-flex", alignItems: "center" }}>{agentProfile?.icon || <IconMessageCircle size={16} />}</span>
         </div>
         <div className="convItemBody">
           {renamingId === conv.id ? (
@@ -3325,7 +4540,7 @@ export function ChatView({
         <div className="convItemRight">
           <span className="convItemTime">{timeAgo(conv.timestamp)}</span>
           {isConvBusyOnOtherDevice(conv.id)
-            ? <span className="convStatusDot" style={{ color: "var(--warning, #eab308)", fontSize: 10, whiteSpace: "nowrap" }} title={t("chat.busyOnOtherDevice")}>⏳</span>
+            ? <span className="convStatusDot" style={{ color: "var(--warning, #eab308)", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center" }} title={t("chat.busyOnOtherDevice")}><IconHourglass size={10} /></span>
             : statusIcon(conv.status)}
         </div>
       </div>
@@ -3437,7 +4652,7 @@ export function ChatView({
                       onMouseLeave={() => setOrbitTip(null)}
                     >
                       <span className="agentOrbitIcon">
-                        {ap?.icon || "💬"}
+                        {ap?.icon || <IconMessageCircle size={16} />}
                       </span>
                       {isRunning && <span className="agentOrbitPulse" />}
                     </button>
@@ -3458,7 +4673,7 @@ export function ChatView({
                     className={`subAgentChip ${sub.status === "delegating" ? "subAgentActive" : sub.status === "error" ? "subAgentError" : "subAgentDone"}`}
                     title={sp?.name || sub.agentId}
                   >
-                    <span className="subAgentChipIcon"><RenderIcon icon={sp?.icon || "🤖"} size={14} /></span>
+                    <span className="subAgentChipIcon">{sp?.icon ? <RenderIcon icon={sp.icon} size={14} /> : <IconBot size={14} />}</span>
                     <span className="subAgentChipName">{sp?.name || sub.agentId}</span>
                     {sub.status === "delegating" && <span className="subAgentSpinner" />}
                     {sub.status === "done" && <span className="subAgentCheck">✓</span>}
@@ -3546,7 +4761,7 @@ export function ChatView({
         {/* 离线横幅 */}
         {!serviceRunning && (
           <div className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-xs text-amber-600 dark:text-amber-400">
-            <span style={{ fontSize: 14 }}>⚠️</span>
+            <IconAlertCircle size={14} />
             {t("chat.offline", "后端服务未连接，部分功能暂不可用")}
           </div>
         )}
@@ -3574,26 +4789,22 @@ export function ChatView({
                 <div className="text-base font-semibold">{t("chat.emptyTitle")}</div>
                 <div className="mt-1 text-sm text-muted-foreground">{t("chat.emptyDesc")}</div>
               </div>
-              <div className="grid w-full max-w-[520px] grid-cols-1 gap-3 sm:grid-cols-2">
-                {[
-                  { id: "research", icon: "📊", text: t("chat.quickStart.research", "做一份 XX 领域的市场调研报告") },
-                  { id: "ppt", icon: "📝", text: t("chat.quickStart.ppt", "帮我做一个项目汇报 PPT 大纲") },
-                  { id: "search", icon: "🌐", text: t("chat.quickStart.search", "打开百度搜索 XX") },
-                  { id: "email", icon: "✉️", text: t("chat.quickStart.email", "帮我写一封商务邮件") },
-                ].map((item) => (
+              <div className="inline-grid max-w-full grid-cols-1 gap-3 sm:grid-cols-2">
+                {quickStartItems.map((item) => (
                   <button
                     key={item.id}
                     onClick={() => setInputValue(item.text)}
                     className="quickStartCard"
                     style={{
                       display: "flex", alignItems: "center", gap: 10,
+                      width: quickStartCardWidth, maxWidth: "100%",
                       padding: "14px 16px", borderRadius: 14,
                       border: "1px solid var(--line)", background: "var(--panel2)",
                       cursor: "pointer", textAlign: "left", fontSize: 13,
                       transition: "border-color 0.15s, background 0.15s",
                     }}
                   >
-                    <span style={{ fontSize: 20, flexShrink: 0 }}>{item.icon}</span>
+                    <span style={{ flexShrink: 0, display: "flex", alignItems: "center" }}>{item.icon}</span>
                     <span style={{ color: "var(--text)", lineHeight: 1.4 }}>{item.text}</span>
                   </button>
                 ))}
@@ -3610,6 +4821,17 @@ export function ChatView({
             apiBaseUrl={apiBaseUrl}
             mdModules={mdModules}
             isStreaming={isCurrentConvStreaming}
+            conversationId={activeConvId || undefined}
+            httpApiBase={() => apiBaseUrl}
+            hasMoreBefore={historyPage.hasMoreBefore}
+            loadingOlder={historyPage.loadingOlder}
+            onLoadOlder={loadOlderMessages}
+            onPlanStepAction={(action, stepIdx, description) => {
+              const msg = action === "skip"
+                ? `请跳过当前步骤（第 ${stepIdx + 1} 步：${description}），直接进入下一步。`
+                : `请重试这一步（第 ${stepIdx + 1} 步：${description}）。`;
+              setInputValue(msg);
+            }}
             onAtBottomChange={(atBottom) => { isMessageListAtBottomRef.current = atBottom; }}
             onAskAnswer={handleAskAnswer}
             onRetry={handleRegenerate}
@@ -3651,10 +4873,31 @@ export function ChatView({
           return activePlan ? <FloatingPlanBar plan={activePlan} /> : null;
         })()}
 
+        {/* Read-only protection banner */}
+        {deathSwitchActive && (
+          <div className="flex items-center gap-3 border-t border-red-500/30 bg-red-500/10 px-4 py-2.5 text-sm">
+            <span style={{ fontSize: 16 }}>&#x1F6D1;</span>
+            <span style={{ flex: 1, color: "var(--destructive, #ef4444)" }}>
+              Agent 当前处于只读保护状态，写入操作已暂时暂停
+            </span>
+            <button
+              onClick={() => {
+                safeFetch(`${apiBase}/api/config/security/death-switch/reset`, { method: "POST" })
+                  .then(() => {
+                    setDeathSwitchActive(false);
+                    setMessages((prev) => [...prev, { id: genId(), role: "system", content: "只读保护已解除，Agent 可以继续执行写入操作。", timestamp: Date.now() }]);
+                  })
+                  .catch(() => {});
+              }}
+              style={{ padding: "4px 12px", borderRadius: 6, border: "1px solid var(--destructive, #ef4444)", background: "var(--destructive, #ef4444)", color: "#fff", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}
+            >解除只读</button>
+          </div>
+        )}
+
         {/* 长闲置回归提示 (6.7) */}
         {idleReturnPrompt && (
           <div className="flex items-center gap-3 border-t border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm">
-            <span>⏰</span>
+            <IconClock size={16} />
             <span style={{ flex: 1 }}>{t("chat.idleReturnHint", "你已离开较长时间，当前会话上下文较长。建议使用 /clear 节省 token 或新建会话。")}</span>
             <button
               onClick={() => { setIdleReturnPrompt(false); newConversation(); }}
@@ -3723,59 +4966,6 @@ export function ChatView({
           </div>
         )}
 
-        {/* Org Flow Status Panel */}
-        {orgCommandPending && orgNodeStates.size > 0 && (
-          <div style={{
-            margin: "0 16px 8px", borderRadius: 12,
-            border: "1px solid var(--border, rgba(255,255,255,0.1))",
-            background: "var(--card, rgba(0,0,0,0.03))",
-            overflow: "hidden",
-            transition: "opacity 0.2s ease",
-            flexShrink: 0,
-          }}>
-            <button
-              onClick={() => setOrgFlowPanelOpen(p => !p)}
-              style={{
-                width: "100%", display: "flex", alignItems: "center", gap: 8,
-                padding: "8px 14px", border: "none", background: "transparent",
-                color: "var(--text)", cursor: "pointer", fontSize: 13, fontWeight: 600,
-              }}
-            >
-              <span>{orgFlowPanelOpen ? "▼" : "▶"}</span>
-              <span>{t("chat.orgFlowPanel", "组织协调状态")}</span>
-              <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.6 }}>
-                {orgNodeStates.size} {t("chat.orgNodes", "节点")}
-              </span>
-            </button>
-            {orgFlowPanelOpen && (
-              <div style={{ padding: "4px 14px 12px", display: "flex", flexWrap: "wrap", gap: 8, maxHeight: 120, overflowY: "auto" }}>
-                {Array.from(orgNodeStates.entries()).map(([nid, ns]) => {
-                  const color = ns.status === "busy" ? "#22c55e" : ns.status === "done" || ns.status === "idle" ? "#3b82f6" : ns.status === "error" ? "#ef4444" : ns.status === "timeout" ? "#f59e0b" : "#6b7280";
-                  const icon = ns.status === "busy" ? "🟢" : ns.status === "done" || ns.status === "idle" ? "🔵" : ns.status === "error" ? "🔴" : ns.status === "timeout" ? "🟡" : "⚪";
-                  return (
-                    <div key={nid} style={{
-                      display: "flex", alignItems: "center", gap: 6,
-                      padding: "4px 10px", borderRadius: 8, fontSize: 12,
-                      background: `${color}15`, border: `1px solid ${color}30`,
-                    }}>
-                      <span>{icon}</span>
-                      <span style={{ fontWeight: 600 }}>{nid}</span>
-                      {ns.task && <span style={{ opacity: 0.7, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ns.task}</span>}
-                    </div>
-                  );
-                })}
-                {orgDelegations.length > 0 && (
-                  <div style={{ width: "100%", marginTop: 4, fontSize: 11, opacity: 0.6 }}>
-                    {orgDelegations.slice(-5).map((d, i) => (
-                      <div key={i}>📋 {d.from} → {d.to}: {d.task.slice(0, 40)}</div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* IM channel alert banners */}
         {imChannelAlerts.filter((a) => a.status === "offline").map((a) => (
           <div key={a.channel} style={{
@@ -3785,7 +4975,7 @@ export function ChatView({
             background: "rgba(239,68,68,0.10)", color: "var(--text)",
             border: "1px solid rgba(239,68,68,0.25)",
           }}>
-            <span style={{ fontSize: 16 }}>🔌</span>
+            <IconPlug size={16} />
             <span style={{ flex: 1 }}>
               {t("chat.imChannelDisconnected", { channel: a.channel, defaultValue: `IM 通道 "${a.channel}" 已断开` })}
             </span>
@@ -3807,7 +4997,7 @@ export function ChatView({
             background: "rgba(34,197,94,0.10)", color: "var(--text)",
             border: "1px solid rgba(34,197,94,0.25)",
           }}>
-            <span style={{ fontSize: 14 }}>✅</span>
+            <IconCheckCircle size={14} />
             <span>{t("chat.imChannelReconnected", { channel: a.channel, defaultValue: `IM 通道 "${a.channel}" 已重连` })}</span>
           </div>
         ))}
@@ -3821,7 +5011,7 @@ export function ChatView({
             background: "rgba(234,179,8,0.12)", color: "var(--text)",
             border: "1px solid rgba(234,179,8,0.25)",
           }}>
-            <span style={{ fontSize: 16 }}>⏳</span>
+            <IconHourglass size={16} />
             <span style={{ flex: 1 }}>{t("chat.busyOnOtherDevice")}</span>
             <button
               onClick={newConversation}
@@ -3890,7 +5080,7 @@ export function ChatView({
                     onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(37,99,235,0.08)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = i === atAgentIdx ? "rgba(37,99,235,0.08)" : "transparent"; }}
                   >
-                    <span style={{ fontSize: 16 }}>{a.icon || "🤖"}</span>
+                    <span style={{ fontSize: 16, display: "inline-flex", alignItems: "center" }}>{a.icon || <IconBot size={16} />}</span>
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{a.name}</div>
                       {a.description && <div style={{ fontSize: 11, opacity: 0.5 }}>{a.description}</div>}
@@ -3995,25 +5185,53 @@ export function ChatView({
                 <div className="chatModelMenu">
                   <div
                     className={`chatModelMenuItem ${selectedEndpoint === "auto" ? "chatModelMenuItemActive" : ""}`}
-                    onClick={() => { setSelectedEndpoint("auto"); setModelMenuOpen(false); }}
+                    onClick={() => { setSelectedEndpoint("auto"); setSelectedEndpointPolicy("prefer"); setModelMenuOpen(false); }}
                   >
                     {t("chat.selectModel")}
                   </div>
                   {endpoints.map((ep) => {
                     const hs = ep.health?.status;
-                    const dot = hs === "healthy" ? "🟢" : hs === "degraded" ? "🟡" : hs === "unhealthy" ? "🔴" : "⚪";
+                    const dotColor = hs === "healthy" ? "#22c55e" : hs === "degraded" ? "#eab308" : hs === "unhealthy" ? "#ef4444" : "#9ca3af";
                     return (
                       <div
                         key={ep.name}
                         className={`chatModelMenuItem ${selectedEndpoint === ep.name ? "chatModelMenuItemActive" : ""}`}
                         onClick={() => { setSelectedEndpoint(ep.name); setModelMenuOpen(false); }}
                       >
-                        <span style={{ fontSize: 8, marginRight: 6, lineHeight: 1 }}>{dot}</span>
+                        <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: dotColor, marginRight: 6 }} />
+                        <span style={{ display: "inline-flex", alignItems: "center", marginRight: 6 }}>
+                          <ProviderIcon slug={ep.provider} size={14} title={ep.provider} />
+                        </span>
                         <span style={{ fontWeight: 600 }}>{ep.model}</span>
                         <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 6 }}>{ep.name}</span>
                       </div>
                     );
                   })}
+                  {selectedEndpoint !== "auto" && (
+                    <div className="px-3 py-2 border-t border-border/50 text-xs text-muted-foreground">
+                      <div className="mb-1.5 font-medium text-foreground">
+                        {selectedEndpointPolicy === "require"
+                          ? t("chat.modelPolicyStrict", "严格使用此模型")
+                          : t("chat.modelPolicyPrefer", "优先使用此模型")}
+                      </div>
+                      <button
+                        type="button"
+                        className="chatModelMenuItem"
+                        style={{ width: "100%", justifyContent: "flex-start", padding: "6px 8px" }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedEndpointPolicy((p) => (p === "require" ? "prefer" : "require"));
+                        }}
+                        title={selectedEndpointPolicy === "require"
+                          ? t("chat.modelPolicyStrictHint", "当前模型不可用时直接提示失败，不自动切换。")
+                          : t("chat.modelPolicyPreferHint", "当前模型不可用时允许自动切换到可用模型。")}
+                      >
+                        {selectedEndpointPolicy === "require"
+                          ? t("chat.switchToPreferModel", "改为不可用时自动切换")
+                          : t("chat.switchToStrictModel", "改为只用当前模型")}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               {agentProfiles.length > 0 && !orgMode && (
@@ -4039,7 +5257,7 @@ export function ChatView({
                           className={`chatModelMenuItem ${selectedAgent === "default" ? "chatModelMenuItemActive" : ""}`}
                           onClick={() => { setSelectedAgent("default"); setAgentMenuOpen(false); }}
                         >
-                          <span style={{ marginRight: 6 }}>🎯</span>
+                          <IconTarget size={14} style={{ marginRight: 6 }} />
                           <span style={{ fontWeight: 600 }}>{t("chat.agentDefault")}</span>
                         </div>
                       )}
@@ -4067,6 +5285,7 @@ export function ChatView({
                       if (orgMode) {
                         setOrgMode(false);
                         setSelectedOrgId(null);
+                        setSelectedOrgNodeId(null);
                         setOrgMenuOpen(false);
                       } else {
                         setOrgMenuOpen((v) => !v);
@@ -4095,6 +5314,7 @@ export function ChatView({
                           onClick={() => {
                             setOrgMode(true);
                             setSelectedOrgId(o.id);
+                            setSelectedOrgNodeId(null);
                             setOrgMenuOpen(false);
                           }}
                         >
@@ -4205,11 +5425,11 @@ export function ChatView({
                           className={`chatModeMenuItem ${chatMode === m.key ? (m.key === "ask" ? "chatModeMenuItemActiveAsk" : m.key === "plan" ? "chatModeMenuItemActive" : "chatModeMenuItemActiveAgent") : ""}`}
                           onClick={() => { setChatMode(m.key); setModeMenuOpen(false); }}
                         >
-                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            {m.icon}
-                            <span style={{ fontWeight: 600 }}>{m.label}</span>
-                          </span>
-                          <span style={{ fontSize: 10, opacity: 0.5 }}>{m.desc}</span>
+                          <span style={{ marginTop: 2, flexShrink: 0 }}>{m.icon}</span>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600 }}>{m.label}</div>
+                            <div style={{ fontSize: 11, opacity: 0.5, lineHeight: 1.3 }}>{m.desc}</div>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -4252,20 +5472,21 @@ export function ChatView({
                         onMouseEnter={() => setThinkingDepthTipOpen(true)}
                         onMouseLeave={() => setThinkingDepthTipOpen(false)}
                         onClick={() => {
-                          setThinkingDepth((d) => d === "low" ? "medium" : d === "medium" ? "high" : "low");
+                          setThinkingDepth((d) => d === "low" ? "medium" : d === "medium" ? "high" : d === "high" ? "max" : "low");
                         }}
                         className="chatInputIconBtn"
                       >
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ flexShrink: 0 }}>
-                          <rect x="1" y="9" width="3" height="4" rx="0.5" fill="currentColor" opacity={thinkingDepth === "low" || thinkingDepth === "medium" || thinkingDepth === "high" ? 1 : 0.25} />
-                          <rect x="5.5" y="5.5" width="3" height="7.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "medium" || thinkingDepth === "high" ? 1 : 0.25} />
-                          <rect x="10" y="2" width="3" height="11" rx="0.5" fill="currentColor" opacity={thinkingDepth === "high" ? 1 : 0.25} />
+                        <svg width="18" height="14" viewBox="0 0 18 14" fill="none" style={{ flexShrink: 0 }}>
+                          <rect x="1" y="9" width="3" height="4" rx="0.5" fill="currentColor" opacity={thinkingDepth === "low" || thinkingDepth === "medium" || thinkingDepth === "high" || thinkingDepth === "max" ? 1 : 0.25} />
+                          <rect x="5.5" y="5.5" width="3" height="7.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "medium" || thinkingDepth === "high" || thinkingDepth === "max" ? 1 : 0.25} />
+                          <rect x="10" y="2" width="3" height="11" rx="0.5" fill="currentColor" opacity={thinkingDepth === "high" || thinkingDepth === "max" ? 1 : 0.25} />
+                          <rect x="14.5" y="0.5" width="2.5" height="12.5" rx="0.5" fill="currentColor" opacity={thinkingDepth === "max" ? 1 : 0.25} />
                         </svg>
-                        <span style={{ fontSize: 10 }}>{{ low: t("chat.depthLow"), medium: t("chat.depthMedium"), high: t("chat.depthHigh") }[thinkingDepth]}</span>
+                        <span style={{ fontSize: 10 }}>{{ low: t("chat.depthLow"), medium: t("chat.depthMedium"), high: t("chat.depthHigh"), max: t("chat.depthMax") }[thinkingDepth]}</span>
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="top" className="text-xs" onPointerDownOutside={(e) => e.preventDefault()}>
-                      {{ low: t("chat.depthTipLow"), medium: t("chat.depthTipMedium"), high: t("chat.depthTipHigh") }[thinkingDepth]}
+                      {{ low: t("chat.depthTipLow"), medium: t("chat.depthTipMedium"), high: t("chat.depthTipHigh"), max: t("chat.depthTipMax") }[thinkingDepth]}
                       <span className="block text-[10px] opacity-60 mt-0.5">{t("chat.depthClickToSwitch")}</span>
                     </TooltipContent>
                   </Tooltip>
@@ -4319,13 +5540,11 @@ export function ChatView({
                   ) : (
                     <button
                       data-slot="stop"
-                      onClick={orgCommandPending ? undefined : handleCancelTask}
-                      className={`chatInputSendBtn ${orgCommandPending ? "" : "chatInputStopBtn"}`}
-                      title={orgCommandPending ? "组织处理中..." : t("chat.stopGeneration")}
-                      disabled={orgCommandPending}
-                      style={orgCommandPending ? { opacity: 0.5, cursor: "wait" } : undefined}
+                      onClick={handleCancelTask}
+                      className="chatInputSendBtn chatInputStopBtn"
+                      title={orgCommandPending ? "停止组织命令" : t("chat.stopGeneration")}
                     >
-                      {orgCommandPending ? <IconSend size={14} /> : <IconStop size={14} />}
+                      <IconStop size={14} />
                     </button>
                   )
                 ) : (
@@ -4471,6 +5690,78 @@ export function ChatView({
         />,
         document.body,
       )}
+
+      {/*
+        C18 Phase B：批量 resolve 横幅。仅当
+        (a) POLICIES.yaml ``confirmation.aggregation_window_seconds`` > 0
+        (b) 当前正显示一个 modal
+        (c) queue 还排着 ≥1 个 confirm
+        三者同时成立时显示。点击调用 ``/api/chat/security-confirm/batch``
+        一次性 resolve 当前 session 窗内全部 confirm（包含正在显示的）。
+      */}
+      {securityConfirm && securityAggWindow > 0 && securityQueueLen >= 1 && createPortal(
+        <div
+          role="region"
+          aria-label={t("security.batch.banner_label", "批量确认")}
+          style={{
+            position: "fixed",
+            top: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 10000,
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            padding: "10px 14px",
+            borderRadius: 10,
+            background: "#1f2937",
+            color: "#f9fafb",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+            fontSize: 13,
+            maxWidth: "min(90vw, 720px)",
+          }}
+        >
+          <span style={{ opacity: 0.85 }}>
+            {t(
+              "security.batch.queue_hint",
+              "本会话还有 {{count}} 个待确认操作（{{window}}s 窗内聚合）",
+              { count: securityQueueLen, window: securityAggWindow },
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => handleSecurityBatchResolve("allow_once")}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 6,
+              background: "#16a34a",
+              color: "#fff",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 600,
+            }}
+          >
+            {t("security.batch.allow_all", "全部允许 ({{n}})", { n: securityQueueLen + 1 })}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSecurityBatchResolve("deny")}
+            style={{
+              padding: "6px 12px",
+              borderRadius: 6,
+              background: "#dc2626",
+              color: "#fff",
+              border: "none",
+              cursor: "pointer",
+              fontWeight: 600,
+            }}
+          >
+            {t("security.batch.deny_all", "全部拒绝 ({{n}})", { n: securityQueueLen + 1 })}
+          </button>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
+

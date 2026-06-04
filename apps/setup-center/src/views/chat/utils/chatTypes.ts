@@ -10,7 +10,10 @@ import type {
   ChatAskQuestion,
   ChatAttachment,
   ChatArtifact,
+  ChatSource,
+  ChatMcpCall,
   ChatErrorInfo,
+  OrgTimelineEntry,
   ChatConversation,
   ChatDisplayMode,
   ConversationStatus,
@@ -31,7 +34,10 @@ export type {
   ChatAskQuestion,
   ChatAttachment,
   ChatArtifact,
+  ChatSource,
+  ChatMcpCall,
   ChatErrorInfo,
+  OrgTimelineEntry,
   ChatConversation,
   ChatDisplayMode,
   ConversationStatus,
@@ -48,8 +54,6 @@ export type MdModules = {
   ReactMarkdown: typeof import("react-markdown").default;
   remarkPlugins: import("react-markdown").Options["remarkPlugins"];
   rehypePlugins: import("react-markdown").Options["rehypePlugins"];
-  remarkGfm?: any;
-  rehypeRaw?: any;
 };
 
 /** Message queued for sequential sending */
@@ -62,17 +66,55 @@ export type QueuedMessage = {
 
 /** SSE stream event union — synced with Python synapse.events / src/streamEvents.ts */
 export type StreamEvent =
-  | { type: "heartbeat" }
+  | { type: "heartbeat"; ts?: number }
+  | { type: "org_command_started"; org_id: string; command_id: string; root_node_id?: string }
+  | { type: "org_progress"; org_id: string; command_id: string; event?: string; summary: string; node_id?: string; category?: string; label?: string; data?: Record<string, unknown> }
+  | { type: "org_command_done"; org_id: string; command_id: string; result?: Record<string, unknown>; error?: string }
   | { type: "iteration_start"; iteration: number }
   | { type: "context_compressed"; before_tokens: number; after_tokens: number }
   | { type: "thinking_start" }
   | { type: "thinking_delta"; content: string }
   | { type: "thinking_end"; duration_ms?: number; has_thinking?: boolean }
-  | { type: "chain_text"; content: string }
+  | { type: "chain_text"; content: string; icon?: string }
   | { type: "text_delta"; content: string }
-  | { type: "text_replace"; content: string }
+  | { type: "text_replace"; content: string; attachments?: ChatAttachment[] }
   | { type: "tool_call_start"; tool: string; tool_name?: string; args: Record<string, unknown>; id?: string; call_id?: string; protocol_version?: number }
+  // C23 P2-3: tool_executor 在执行任何工具前先批量发这个事件，
+  // 让前端能在敏感操作真正开始前给用户一个非阻塞 toast 提示。
+  // 后端 schema 见 src/synapse/core/tool_executor.py:_emit_tool_intent_previews
+  | { type: "tool_intent_preview"; tool_use_id?: string; tool_name?: string; params?: Record<string, unknown>; approval_class?: string; session_id?: string | null; batch_size?: number; batch_idx?: number; ts?: number }
   | { type: "tool_call_end"; tool: string; tool_name?: string; result: string; id?: string; call_id?: string; is_error?: boolean; skipped?: boolean; protocol_version?: number }
+  // Structured config hint side-channel — emitted alongside tool_call_end when
+  // a ToolConfigError was raised by a handler (e.g. web_search needs a key).
+  // Backend shape: src/synapse/core/reasoning_engine.py:_build_tool_end_events.
+  // Carries enough metadata for ConfigHintCard to render an actionable card
+  // and (optionally) deep-link into the matching settings panel via
+  // dispatchExpandPanel({ panelId: actions[i].panel_id }).
+  | {
+      type: "config_hint";
+      tool_use_id: string;
+      scope: string;
+      error_code:
+        | "missing_credential"
+        | "auth_failed"
+        | "rate_limited"
+        | "network_unreachable"
+        | "content_filter"
+        | "unknown";
+      title: string;
+      message?: string;
+      actions?: Array<{
+        kind?: string;
+        label?: string;
+        view_id?: string;
+        panel_id?: string;
+        url?: string;
+        env_key?: string;
+        [k: string]: unknown;
+      }>;
+    }
+  | { type: "source_used"; tool_name?: string; tool_use_id?: string; requested_url: string; final_url: string; hostname?: string; redirected?: boolean; from_cache?: boolean; status?: string; hint?: string; protocol_version?: number }
+  | { type: "mcp_call"; tool_use_id?: string; server: string; tool: string; status?: "ok" | "error" | string; auto_connected?: boolean; reconnected?: boolean; error?: string; protocol_version?: number }
   | { type: "todo_created"; plan: ChatTodo; restored?: boolean }
   | { type: "todo_step_updated"; stepId?: string; step_id?: string; stepIdx?: number; status: string; protocol_version?: number }
   | { type: "todo_completed" }
@@ -84,10 +126,55 @@ export type StreamEvent =
   | { type: "agent_handoff"; from_agent: string; to_agent: string; reason?: string }
   | { type: "sub_agent_state"; agent_id?: string; agentId?: string; session_id?: string; sessionId?: string; status?: string; reason?: string; protocol_version?: number }
   | { type: "artifact"; artifact_type: string; file_url: string; path: string; name: string; caption: string; size?: number }
-  | { type: "security_confirm"; tool: string; tool_name?: string; args: Record<string, unknown>; id?: string; call_id?: string; confirm_id?: string; reason: string; risk_level: string; needs_sandbox: boolean; protocol_version?: number }
+  | { type: "security_confirm"; tool: string; tool_name?: string; args: Record<string, unknown>; id?: string; call_id?: string; confirm_id?: string; reason: string; risk_level: string; needs_sandbox: boolean; protocol_version?: number; timeout_seconds?: number; default_on_timeout?: string; approval_class?: string | null; policy_version?: number; channel?: string; delegate_chain?: string[]; root_user_id?: string | null; decision_chain?: Array<{ name: string; action: string; note: string }> }
+  | { type: "death_switch"; active: boolean; reason?: string }
   | { type: "ui_preference"; theme?: string; language?: string }
+  | { type: "endpoint_notice"; reason_code?: string; notice_type?: string; endpoint?: string }
+  | { type: "budget_warning"; dimension?: string; level?: string; usage_ratio?: number; renewed?: boolean; message?: string }
+  | { type: "budget_exceeded"; message?: string }
+  | {
+      type: "task_checkpoint";
+      checkpoint_id: string;
+      task_id: string;
+      conversation_id: string;
+      iteration: number;
+      created_at: number;
+      summary: string;
+      next_step_hint: string;
+      exit_reason: string;
+      artifacts: string[];
+      messages_offset: number;
+      protocol_version?: number;
+    }
   | { type: "error"; message: string }
-  | { type: "done"; reason?: string; usage?: { input_tokens: number; output_tokens: number; total_tokens?: number; context_tokens?: number; context_limit?: number } };
+  | { type: "done"; reason?: string; usage?: {
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens?: number;
+      context_tokens?: number;
+      context_limit?: number;
+      history_context_tokens?: number;
+      history_context_limit?: number;
+      billable_input_tokens?: number;
+      billable_output_tokens?: number;
+      billable_total_tokens?: number;
+      usage_estimated?: boolean;
+      usage_source?: string;
+      // ContextPressure 快照：来自 ReasoningEngine.calculate_context_pressure，
+      // 给"上下文健康度" UI 用。所有字段都是 token 数。
+      context_pressure?: {
+        messages_tokens: number;
+        system_tokens: number;
+        tools_tokens: number;
+        soft_limit: number;
+        hard_limit: number;
+        trigger_tokens: number;
+        max_tokens: number;
+        context_safe: boolean;
+        input_tokens?: number;
+        output_tokens?: number;
+      };
+    } };
 
 /** Sub-agent delegation entry for handoff display */
 export type SubAgentEntry = {
@@ -114,6 +201,10 @@ export type SubAgentTask = {
   tokens_used?: number;
   current_tool_summary?: string;
   queue_count?: number;
+  // P5.1: agent_id of the agent that delegated this task (root tasks omit it).
+  // Inferred client-side from agent_handoff / delegate_to_agent / delegate_parallel
+  // events — the backend protocol stays untouched.
+  parent_agent_id?: string;
 };
 
 /** Per-session streaming context (supports concurrent streams across conversations) */
@@ -127,6 +218,7 @@ export type StreamContext = {
   subAgentTasks: SubAgentTask[];
   isDelegating: boolean;
   pollingTimer: ReturnType<typeof setInterval> | null;
+  _hadError: boolean;
 };
 
 /** Agent profile for agent selector */
@@ -139,4 +231,5 @@ export type AgentProfile = {
   name_i18n?: Record<string, string>;
   description_i18n?: Record<string, string>;
   preferred_endpoint?: string | null;
+  endpoint_policy?: "prefer" | "require";
 };

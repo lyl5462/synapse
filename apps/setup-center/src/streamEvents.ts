@@ -27,12 +27,19 @@ export const StreamEventType = {
   // ── Tool execution ──
   TOOL_CALL_START: "tool_call_start",
   TOOL_CALL_END: "tool_call_end",
+  SOURCE_USED: "source_used",
+  MCP_CALL: "mcp_call",
 
   // ── Context management ──
   CONTEXT_COMPRESSED: "context_compressed",
 
+  // ── Resource budget (soft warning + hard limit) ──
+  BUDGET_WARNING: "budget_warning",
+  BUDGET_EXCEEDED: "budget_exceeded",
+
   // ── Security / Interaction ──
   SECURITY_CONFIRM: "security_confirm",
+  DEATH_SWITCH: "death_switch",
   ASK_USER: "ask_user",
 
   // ── Todo / Plan ──
@@ -42,15 +49,23 @@ export const StreamEventType = {
   TODO_CANCELLED: "todo_cancelled",
   PLAN_READY_FOR_APPROVAL: "plan_ready_for_approval",
 
+  // ── Task continuity (checkpoint for resume / timeline) ──
+  TASK_CHECKPOINT: "task_checkpoint",
+
   // ── Agent orchestration ──
   AGENT_HANDOFF: "agent_handoff",
   AGENT_SWITCH: "agent_switch",
   USER_INSERT: "user_insert",
   SUB_AGENT_STATE: "sub_agent_state",
 
+  // ── Pending Approvals (C12 §14.5) ──
+  PENDING_APPROVAL_CREATED: "pending_approval_created",
+  PENDING_APPROVAL_RESOLVED: "pending_approval_resolved",
+
   // ── UI enrichment (injected by API layer) ──
   ARTIFACT: "artifact",
   UI_PREFERENCE: "ui_preference",
+  ENDPOINT_NOTICE: "endpoint_notice",
 } as const;
 
 export type StreamEventTypeValue =

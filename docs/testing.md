@@ -157,7 +157,7 @@ pytest tests/legacy/ -v -k "not TestVectorStore"
 ### 带覆盖率
 
 ```bash
-pytest tests/ -v --cov=src/synapse --cov-report=html
+pytest tests/ -v --cov=src/openakita --cov-report=html
 ```
 
 ---
@@ -244,3 +244,4 @@ pytest tests/component/test_context_manager.py -v -s
 # 调试模式
 LOG_LEVEL=DEBUG pytest tests/integration/test_api_chat.py -v -s
 ```
+

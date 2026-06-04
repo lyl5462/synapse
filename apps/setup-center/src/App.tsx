@@ -1,11 +1,13 @@
-import { createContext, useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
+import { createContext, useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense, startTransition } from "react";
 import { useTranslation } from "react-i18next";
-import { invoke, listen, IS_TAURI, IS_WEB, IS_CAPACITOR, IS_LOCAL_WEB, getAppVersion, onWsEvent, reconnectWsNow, logger, registerGlobalShortcut } from "./platform";
+import { invoke, listen, IS_TAURI, IS_WEB, IS_CAPACITOR, IS_LOCAL_WEB, getAppVersion, onWsEvent, reconnectWsNow, setWsApiBaseUrl, logger, registerGlobalShortcut } from "./platform";
 import { getActiveServer, getActiveServerId } from "./platform/servers";
 import { checkAuth, installFetchInterceptor, AUTH_EXPIRED_EVENT, isPasswordUserSet, clearAccessToken, setTauriRemoteMode, isTauriRemoteMode } from "./platform/auth";
 import { LoginView } from "./views/LoginView";
+import { SetupView } from "./views/SetupView";
 import { ServerManagerView } from "./views/ServerManagerView";
 import { ChatView } from "./views/ChatView";
+import type { LinkDiagnostic } from "./components/LinkDiagnosticsPanel";
 
 // Lazy-loaded views — keeps first-screen bundle small (4.7 Code Splitting)
 const SkillManager = lazy(() => import("./views/SkillManager").then(m => ({ default: m.SkillManager })));
@@ -13,6 +15,7 @@ const IMView = lazy(() => import("./views/IMView").then(m => ({ default: m.IMVie
 const TokenStatsView = lazy(() => import("./views/TokenStatsView").then(m => ({ default: m.TokenStatsView })));
 const MCPView = lazy(() => import("./views/MCPView").then(m => ({ default: m.MCPView })));
 const PluginManagerView = lazy(() => import("./views/PluginManagerView"));
+const PluginAppHost = lazy(() => import("./views/PluginAppHost"));
 const SchedulerView = lazy(() => import("./views/SchedulerView").then(m => ({ default: m.SchedulerView })));
 const MemoryView = lazy(() => import("./views/MemoryView").then(m => ({ default: m.MemoryView })));
 const IdentityView = lazy(() => import("./views/IdentityView").then(m => ({ default: m.IdentityView })));
@@ -23,6 +26,7 @@ const PixelOfficeView = lazy(() => import("./views/PixelOfficeView").then(m => (
 const AgentStoreView = lazy(() => import("./views/AgentStoreView").then(m => ({ default: m.AgentStoreView })));
 const SkillStoreView = lazy(() => import("./views/SkillStoreView").then(m => ({ default: m.SkillStoreView })));
 const SecurityView = lazy(() => import("./views/SecurityView"));
+const PendingApprovalsView = lazy(() => import("./views/PendingApprovalsView").then(m => ({ default: m.PendingApprovalsView })));
 const PetView = lazy(() => import("./views/PetView").then(m => ({ default: m.PetView })));
 const WorkbenchPlaceholderView = lazy(() =>
   import("./views/workbench/WorkbenchPlaceholderView").then((m) => ({ default: m.WorkbenchPlaceholderView })),
@@ -39,11 +43,13 @@ const OrderManagementView = lazy(() =>
   import("./views/rd-manage/OrderManagementView").then((m) => ({ default: m.OrderManagementView })),
 );
 
-import { FeedbackModal } from "./views/FeedbackModal";
+import { FeedbackModal, type FeedbackPrefill } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
 import { AgentSystemView } from "./views/AgentSystemView";
+import { MyFeedbackView } from "./views/MyFeedbackView";
 import { LLMView } from "./views/LLMView";
 import { StatusView } from "./views/StatusView";
+import { RuntimeEnvironmentDialog, type RuntimeDiagnostics } from "./components/RuntimeEnvironmentPanel";
 import type {
   EndpointSummary as EndpointSummaryType,
   PlatformInfo, WorkspaceSummary, ProviderInfo,
@@ -95,6 +101,7 @@ import { CliManager } from "./components/CliManager";
 import { WebPasswordManager } from "./components/WebPasswordManager";
 import { FieldText, FieldBool, FieldSelect, FieldCombo, FieldSlider, TelegramPairingCodeHint } from "./components/EnvFields";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { DegradedBanner } from "./components/DegradedBanner";
 import { ModalOverlay } from "./components/ModalOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -104,7 +111,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { toast } from "sonner";
 import { useVersionCheck } from "./hooks/useVersionCheck";
 import { useEnvManager } from "./hooks/useEnvManager";
+import { useExpandPanel } from "./hooks/useExpandPanel";
 import { AdvancedView } from "./views/AdvancedView";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import WebSearchProviderPanel from "./components/WebSearchProviderPanel";
 import { OnboardingCoreAgentPanel } from "./views/OnboardingCoreAgentPanel";
 import { OnboardingWhaleSkillsPanel } from "./views/OnboardingWhaleSkillsPanel";
 
@@ -121,6 +131,7 @@ const THEME_I18N_KEYS: Record<Theme, string> = {
  *  Startup/one-shot probes keep their own shorter timeouts.
  *  5s accommodates slow devices where the event loop may be busy. */
 const HEALTH_POLL_TIMEOUT_MS = 5_000;
+const DEFAULT_LOCAL_API_BASE = "http://127.0.0.1:18900";
 
 interface EnvFieldCtx {
   envDraft: EnvMap;
@@ -142,6 +153,9 @@ const _HASH_TO_VIEW: Record<string, ViewId> = {
   "agent-manager": "agent_manager", "agent-store": "agent_store",
   "skill-store": "skill_store", "wizard": "wizard", "docs": "docs",
   "security": "security",
+  "pending-approvals": "pending_approvals",
+  "plugins": "plugins",
+  "my_feedback": "my_feedback",
   "workbench-products": "workbench_products",
   "workbench-tickets": "workbench_tickets",
   "workbench-meeting": "workbench_meeting",
@@ -166,12 +180,19 @@ function _parseHashRoute(hash: string): { view: ViewId; stepId?: StepId } | null
     const step = path.slice(7);
     if (_HASH_TO_STEP[step]) return { view: "wizard", stepId: _HASH_TO_STEP[step] as StepId };
   }
+  if (path.startsWith("app/")) {
+    const pluginId = path.slice(4);
+    if (pluginId) return { view: `plugin_app:${pluginId}` as ViewId };
+  }
   return null;
 }
 
 function _viewToHash(view: string, stepId?: string): string {
   if (view === "wizard" && stepId) {
     return `#/config/${stepId}`;
+  }
+  if (view.startsWith("plugin_app:")) {
+    return `#/app/${view.slice("plugin_app:".length)}`;
   }
   return _VIEW_TO_HASH[view] ? `#/${_VIEW_TO_HASH[view]}` : "";
 }
@@ -196,8 +217,19 @@ export function App() {
   const [needServerConfig, setNeedServerConfig] = useState(
     () => IS_CAPACITOR && !getActiveServer(),
   );
+  // Setup gate: backend middleware sends 428 when no web-access password is configured
+  // and the caller is not a trusted local connection.
+  const [setupRequired, setSetupRequired] = useState(false);
   // Tauri remote auth: when Tauri desktop connects to a remote backend that requires login
   const [tauriRemoteLoginUrl, setTauriRemoteLoginUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onSetupRequired = () => setSetupRequired(true);
+    window.addEventListener("synapse:setup-required", onSetupRequired);
+    return () => {
+      window.removeEventListener("synapse:setup-required", onSetupRequired);
+    };
+  }, []);
 
   useEffect(() => {
     if (!needsRemoteAuth) {
@@ -218,19 +250,40 @@ export function App() {
       setAuthChecking(false);
       return;
     }
-    checkAuth(IS_CAPACITOR ? (getActiveServer()?.url || "") : "").then((ok) => {
-      if (ok) {
-        installFetchInterceptor();
-        if (!isPasswordUserSet() && !localStorage.getItem("synapse_pw_banner_dismissed")) {
-          setShowPwBanner(true);
+    const apiBase = IS_CAPACITOR ? (getActiveServer()?.url || "") : "";
+    let cancelled = false;
+    fetch(`${apiBase}/api/auth/setup-status`, {
+      method: "GET",
+      credentials: "include",
+      signal: AbortSignal.timeout(IS_CAPACITOR ? 5_000 : 8_000),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((status) => {
+        if (cancelled) return;
+        if (status && status.setup_required === true) {
+          setSetupRequired(true);
+          setAuthChecking(false);
+          return;
         }
-      }
-      setWebAuthed(ok);
-      setAuthChecking(false);
-    });
+        checkAuth(apiBase).then((ok) => {
+          if (cancelled) return;
+          if (ok) {
+            installFetchInterceptor();
+            if (!isPasswordUserSet() && !localStorage.getItem("synapse_pw_banner_dismissed")) {
+              setShowPwBanner(true);
+            }
+          }
+          setWebAuthed(ok);
+          setAuthChecking(false);
+        });
+      });
     const onExpired = () => setWebAuthed(false);
     window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
-    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
 
@@ -344,15 +397,24 @@ export function App() {
   const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth <= 768);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [bugReportOpen, setBugReportOpen] = useState(false);
+  const [feedbackPrefill, setFeedbackPrefill] = useState<FeedbackPrefill | null>(null);
+  const [feedbackRefreshKey, setFeedbackRefreshKey] = useState(0);
+  const [unreadFeedbackCount, setUnreadFeedbackCount] = useState(0);
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
   const [disabledViews, setDisabledViews] = useState<string[]>([]);
   const [multiAgentEnabled, setMultiAgentEnabled] = useState(false);
   const [storeVisible, setStoreVisible] = useState(() => localStorage.getItem("synapse_storeVisible") === "true");
+  const transitionToView = useCallback((nextView: ViewId) => {
+    startTransition(() => {
+      setView(nextView);
+    });
+  }, []);
   // ── Hash-based deep link routing ──
   useEffect(() => {
     const onHashChange = () => {
       const parsed = _parseHashRoute(window.location.hash);
       if (parsed) {
-        setView(parsed.view);
+        transitionToView(parsed.view);
         if (parsed.stepId) setStepId(parsed.stepId);
       }
     };
@@ -368,7 +430,7 @@ export function App() {
       window.removeEventListener("hashchange", onHashChange);
       window.removeEventListener("message", onMessage);
     };
-  }, []);
+  }, [transitionToView]);
 
   // ── Data mode: "local" (Tauri commands) or "remote" (HTTP API) ──
   // Web mode always starts in "remote" since the backend is already running
@@ -376,7 +438,7 @@ export function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(() =>
     IS_CAPACITOR ? (getActiveServer()?.url || "")
     : IS_WEB ? ""
-    : (localStorage.getItem("synapse_apiBaseUrl") || "http://127.0.0.1:18900"),
+    : (localStorage.getItem("synapse_apiBaseUrl") || DEFAULT_LOCAL_API_BASE),
   );
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
   const [connectAddress, setConnectAddress] = useState("");
@@ -393,10 +455,29 @@ export function App() {
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, [apiBaseUrl]);
 
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    setWsApiBaseUrl(dataMode === "remote" ? apiBaseUrl : DEFAULT_LOCAL_API_BASE);
+    reconnectWsNow();
+  }, [apiBaseUrl, dataMode]);
+
   const [stepId, setStepId] = useState<StepId>(() => {
     const parsed = _parseHashRoute(window.location.hash);
     return parsed?.stepId || "llm";
   });
+  const navigateToView = useCallback((nextView: ViewId, nextStepId?: StepId) => {
+    const newHash = _viewToHash(nextView, nextStepId);
+    startTransition(() => {
+      setView(nextView);
+      if (nextStepId) setStepId(nextStepId);
+      if (isMobile) setMobileSidebarOpen(false);
+    });
+    if (newHash) {
+      if (window.location.hash !== newHash) window.location.hash = newHash;
+    } else if (window.location.hash) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, [isMobile]);
   const currentStepIdxRaw = useMemo(() => steps.findIndex((s) => s.id === stepId), [steps, stepId]);
   const currentStepIdx = currentStepIdxRaw < 0 ? 0 : currentStepIdxRaw;
 
@@ -760,6 +841,9 @@ export function App() {
   const [pypiVersions, setPypiVersions] = useState<string[]>([]);
   const [pypiVersionsLoading, setPypiVersionsLoading] = useState(false);
   const [selectedPypiVersion, setSelectedPypiVersion] = useState<string>(""); // "" = 推荐同版本
+  const [runtimeDiag, setRuntimeDiag] = useState<RuntimeDiagnostics | null>(null);
+  const [runtimeDiagChecking, setRuntimeDiagChecking] = useState(false);
+  const [runtimeDialogOpen, setRuntimeDialogOpen] = useState(false);
 
   // providers & models
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -782,7 +866,18 @@ export function App() {
   const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
   const [autoUpdateEnabled, setAutoUpdateEnabled] = useState<boolean | null>(null);
   // autoStartBackend 已合并到"开机自启"：--background 模式自动拉起后端，无需独立开关
-  const [serviceStatus, setServiceStatus] = useState<{ running: boolean; pid: number | null; pidFile: string; port?: number } | null>(null);
+  const [serviceStatus, setServiceStatus] = useState<{
+    running: boolean;
+    pid: number | null;
+    pidFile: string;
+    port?: number;
+    lastLinkDiagnostic?: LinkDiagnostic | null;
+  } | null>(null);
+  const backendBootPhase = useMemo((): "unknown" | "starting" | "running" | "stopped" | "error" => {
+    if (serviceStatus?.running) return "running";
+    if (serviceStatus === null) return IS_TAURI ? "starting" : "unknown";
+    return "stopped";
+  }, [serviceStatus]);
   // 心跳状态机: "alive" | "suspect" | "degraded" | "dead"
   const [heartbeatState, setHeartbeatState] = useState<"alive" | "suspect" | "degraded" | "dead">("dead");
   const heartbeatStateRef = useRef<"alive" | "suspect" | "degraded" | "dead">("dead");
@@ -818,6 +913,7 @@ export function App() {
     shouldUseHttpApi,
     httpApiBase,
   });
+  const webSearchPanelRef = useExpandPanel("web-search");
 
   const envFieldCtx = useMemo<EnvFieldCtx>(() => ({
     envDraft, setEnvDraft, secretShown, setSecretShown, busy, t,
@@ -1832,6 +1928,64 @@ export function App() {
   }, [serviceStatus?.running, dataMode, apiBaseUrl]);
 
   useEffect(() => { fetchDisabledViews(); }, [fetchDisabledViews]);
+
+  const refreshRuntimeDiagnostics = useCallback(async () => {
+    if (!shouldUseHttpApi()) return;
+    setRuntimeDiagChecking(true);
+    try {
+      const res = await safeFetch(`${httpApiBase()}/api/diagnostics`, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) setRuntimeDiag(await res.json());
+    } catch (e) {
+      logger.warn("runtime diagnostics failed", String(e));
+    } finally {
+      setRuntimeDiagChecking(false);
+    }
+  }, [serviceStatus?.running, dataMode, apiBaseUrl]);
+
+  useEffect(() => {
+    if ((view === "status" || (view === "wizard" && stepId === "advanced")) && serviceStatus?.running) {
+      void refreshRuntimeDiagnostics();
+    }
+  }, [view, stepId, serviceStatus?.running, refreshRuntimeDiagnostics]);
+
+  useEffect(() => {
+    if (runtimeDialogOpen && serviceStatus?.running) {
+      void refreshRuntimeDiagnostics();
+    }
+  }, [runtimeDialogOpen, serviceStatus?.running, refreshRuntimeDiagnostics]);
+
+  useEffect(() => {
+    if (!serviceStatus?.running) return;
+    const poll = async () => {
+      try {
+        const res = await safeFetch(`${httpApiBase()}/api/feedback-unread-count`, { signal: AbortSignal.timeout(5000) });
+        const data = await res.json();
+        setUnreadFeedbackCount(data.unread_count ?? 0);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const timer = setInterval(poll, 5 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [serviceStatus?.running, dataMode, apiBaseUrl]);
+
+  useEffect(() => {
+    if (!serviceStatus?.running) { setPendingApprovalsCount(0); return; }
+    const poll = async () => {
+      try {
+        const res = await safeFetch(`${httpApiBase()}/api/pending_approvals/stats`, { signal: AbortSignal.timeout(5000) });
+        const data = await res.json();
+        setPendingApprovalsCount(data.pending ?? 0);
+      } catch { /* ignore */ }
+    };
+    poll();
+    const timer = setInterval(poll, 60_000);
+    const unsub = IS_WEB ? onWsEvent((event) => {
+      if (event === "pending_approval_created" || event === "pending_approval_resolved") poll();
+    }) : undefined;
+    return () => { clearInterval(timer); unsub?.(); };
+  }, [serviceStatus?.running, dataMode, apiBaseUrl]);
 
   const fetchAgentMode = useCallback(async () => {
     if (!shouldUseHttpApi()) return;
@@ -3087,7 +3241,9 @@ export function App() {
         doStopService={doStopService}
         waitForServiceDown={waitForServiceDown}
         doStartLocalService={doStartLocalService}
-        setView={setView}
+        backendBootPhase={backendBootPhase}
+        onOpenRuntimeEnvironment={() => setRuntimeDialogOpen(true)}
+        setView={navigateToView}
       />
     );
   }
@@ -3192,6 +3348,7 @@ export function App() {
       "DESKTOP_CLICK_DELAY", "DESKTOP_TYPE_INTERVAL", "DESKTOP_MOVE_DURATION",
       "DESKTOP_FAILSAFE", "DESKTOP_PAUSE",
       "WHISPER_MODEL", "WHISPER_LANGUAGE", "GITHUB_TOKEN",
+      "WEB_SEARCH_PROVIDER", "BOCHA_API_KEY", "TAVILY_API_KEY", "JINA_API_KEY", "SEARXNG_BASE_URL",
     ];
 
     const list = skillsDetail || [];
@@ -3406,7 +3563,29 @@ export function App() {
             </div>
           </details>
 
-          {/* ── Skills toggle (moved below, no longer here) ── */}
+          {/* ── Web Search Provider ── */}
+          <details
+            ref={webSearchPanelRef}
+            data-panel-id="web-search"
+            className="group/wsearch rounded-lg border border-border mt-2"
+          >
+            <summary className="cursor-pointer flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
+              <ChevronRight className="size-4 shrink-0 transition-transform group-open/wsearch:rotate-90 text-muted-foreground" />
+              {t("toolsWebSearch.sectionTitle", "网页搜索源（Web Search Source）")}
+            </summary>
+            <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-border">
+              <WebSearchProviderPanel
+                envDraft={envDraft}
+                onEnvChange={setEnvDraft}
+                onSaveEnv={async () => {
+                  const keys = ["WEB_SEARCH_PROVIDER", "BOCHA_API_KEY", "TAVILY_API_KEY", "JINA_API_KEY", "SEARXNG_BASE_URL"];
+                  await saveEnvKeys(keys);
+                }}
+                busy={busy}
+                apiBaseUrl={apiBaseUrl}
+              />
+            </div>
+          </details>
 
         </div>
 
@@ -3444,10 +3623,12 @@ export function App() {
         desktopVersion={desktopVersion}
         shouldUseHttpApi={shouldUseHttpApi}
         httpApiBase={httpApiBase}
+        backendBootPhase={backendBootPhase}
+        onOpenRuntimeEnvironment={() => setRuntimeDialogOpen(true)}
         askConfirm={askConfirm}
         refreshAll={refreshAll}
         restartService={restartService}
-        setView={setView}
+        setView={navigateToView}
       />
     );
   }
@@ -5947,7 +6128,6 @@ export function App() {
         <AgentDashboardView
           apiBaseUrl={apiBaseUrl}
           visible={view === "dashboard"}
-          multiAgentEnabled={multiAgentEnabled}
         />
       );
     }
@@ -5993,9 +6173,45 @@ export function App() {
     }
     if (view === "security") {
       return (
-        <SecurityView
-          apiBaseUrl={apiBaseUrl}
+        <ErrorBoundary>
+          <SecurityView
+            apiBaseUrl={apiBaseUrl}
+            serviceRunning={serviceStatus?.running ?? false}
+          />
+        </ErrorBoundary>
+      );
+    }
+    if (view === "pending_approvals") {
+      return (
+        <ErrorBoundary>
+          <PendingApprovalsView
+            apiBaseUrl={apiBaseUrl}
+            serviceRunning={serviceStatus?.running ?? false}
+          />
+        </ErrorBoundary>
+      );
+    }
+    if (view.startsWith("plugin_app:")) {
+      const pluginId = view.slice("plugin_app:".length);
+      return (
+        <PluginAppHost
+          key={pluginId}
+          pluginId={pluginId}
+          apiBase={httpApiBase()}
+          onViewChange={(v) => navigateToView(v)}
+        />
+      );
+    }
+    if (view === "my_feedback") {
+      return (
+        <MyFeedbackView
+          apiBaseUrl={httpApiBase()}
           serviceRunning={serviceStatus?.running ?? false}
+          refreshTrigger={feedbackRefreshKey}
+          onOpenFeedbackModal={(prefill) => {
+            setFeedbackPrefill(prefill ?? null);
+            setBugReportOpen(true);
+          }}
         />
       );
     }
@@ -6114,6 +6330,20 @@ export function App() {
     />;
   }
 
+  if (setupRequired) {
+    return (
+      <SetupView
+        apiBaseUrl={IS_CAPACITOR ? apiBaseUrl : ""}
+        onSetupSuccess={() => {
+          installFetchInterceptor();
+          webInitDone.current = false;
+          setSetupRequired(false);
+          setWebAuthed(true);
+        }}
+      />
+    );
+  }
+
   // ── Web / Capacitor auth gate: show login page if not authenticated ──
   if (needsRemoteAuth && !webAuthed) {
     if (authChecking) {
@@ -6158,6 +6388,7 @@ export function App() {
   return (
     <EnvFieldContext.Provider value={envFieldCtx}>
     <div className={`appShell ${sidebarCollapsed ? "appShellCollapsed" : ""}${isMobile ? " appShellMobile" : ""}`} style={previewMode ? { paddingTop: IS_CAPACITOR ? "calc(32px + env(safe-area-inset-top))" : 32 } : undefined}>
+      <DegradedBanner apiBase={httpApiBase()} />
       {previewMode && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
@@ -6188,16 +6419,7 @@ export function App() {
         collapsed={isMobile ? false : sidebarCollapsed}
         onToggleCollapsed={() => { if (!isMobile) setSidebarCollapsed((v) => !v); }}
         view={view}
-        onViewChange={(v) => {
-          setView(v);
-          setMobileSidebarOpen(false);
-          const newHash = _viewToHash(v);
-          if (newHash) {
-            window.location.hash = newHash;
-          } else if (window.location.hash) {
-            history.replaceState(null, "", window.location.pathname + window.location.search);
-          }
-        }}
+        onViewChange={(v) => navigateToView(v)}
         mobileOpen={mobileSidebarOpen}
         configExpanded={configExpanded}
         onToggleConfig={() => {
@@ -6219,6 +6441,9 @@ export function App() {
         onBugReport={() => setBugReportOpen(true)}
         onRefreshStatus={async () => { await refreshStatus(undefined, undefined, true); }}
         isWeb={IS_WEB}
+        httpApiBase={httpApiBase()}
+        unreadFeedbackCount={unreadFeedbackCount}
+        pendingApprovalsCount={pendingApprovalsCount}
       />
 
       <main className="main">
@@ -6551,6 +6776,24 @@ export function App() {
         )}
 
         <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
+        <RuntimeEnvironmentDialog
+          open={runtimeDialogOpen}
+          onOpenChange={setRuntimeDialogOpen}
+          serviceStatus={serviceStatus}
+          backendBootPhase={backendBootPhase}
+          installProgress={installProgress}
+          info={info}
+          runtimeDiag={runtimeDiag}
+          runtimeDiagChecking={runtimeDiagChecking}
+          venvStatus={venvStatus}
+          indexUrl={indexUrl}
+          installLiveLog={installLiveLog}
+          busy={busy}
+          currentWorkspaceId={currentWorkspaceId}
+          refreshRuntimeDiagnostics={refreshRuntimeDiagnostics}
+          doStopService={doStopService}
+          doStartLocalService={doStartLocalService}
+        />
         <Toaster position="top-right" richColors closeButton />
 
         {view === "wizard" ? (() => {
@@ -6578,8 +6821,15 @@ export function App() {
       {/* Feedback Modal (Bug Report + Feature Request) */}
       <FeedbackModal
         open={bugReportOpen}
-        onClose={() => setBugReportOpen(false)}
+        onClose={() => { setBugReportOpen(false); setFeedbackPrefill(null); }}
         apiBase={httpApiBase()}
+        prefill={feedbackPrefill}
+        onNavigateToMyFeedback={() => {
+          setFeedbackRefreshKey((key) => key + 1);
+          navigateToView("my_feedback");
+        }}
+        serviceRunning={serviceStatus?.running ?? false}
+        currentWorkspaceId={currentWorkspaceId}
       />
     </div>
     </EnvFieldContext.Provider>

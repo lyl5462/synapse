@@ -147,7 +147,7 @@ CDN 错误响应会读取 `x-error-message` 响应头获取详细错误信息。
   "msg": {
     "from_user_id": "",
     "to_user_id": "wxid_xxx",
-    "client_id": "synapse-wechat-xxxx",
+    "client_id": "openakita-wechat-xxxx",
     "message_type": 2,
     "message_state": 2,
     "item_list": [{ "type": 1, "text_item": { "text": "回复文本" } }],

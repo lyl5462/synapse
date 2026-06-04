@@ -27,16 +27,16 @@ gh auth login
 
 ### 3. 配置 OSS 凭证
 
-创建文件 `~/.synapse/feedback.env`：
+创建文件 `~/.openakita/feedback.env`：
 
 ```ini
 OSS_ENDPOINT=https://oss-cn-hangzhou.aliyuncs.com
-OSS_BUCKET=synapse-feedback
+OSS_BUCKET=openakita-feedback
 OSS_ACCESS_KEY_ID=__填入你的AccessKeyId__
 OSS_ACCESS_KEY_SECRET=__填入你的AccessKeySecret__
 ```
 
-> 凭证来自阿里云 RAM 用户，需拥有 `synapse-feedback` Bucket 的读写权限。
+> 凭证来自阿里云 RAM 用户，需拥有 `openakita-feedback` Bucket 的读写权限。
 
 ---
 
@@ -60,7 +60,7 @@ OSS_ACCESS_KEY_SECRET=__填入你的AccessKeySecret__
 ### 第一步：获取 Issue 信息
 
 ```bash
-gh issue view <issue_number> -R synapse/synapse
+gh issue view <issue_number> -R openakita/openakita
 ```
 
 从 Issue body 中提取关键信息：
@@ -69,7 +69,7 @@ gh issue view <issue_number> -R synapse/synapse
 |------|------|------|
 | Report ID | `0e9483116018` | 12 位十六进制，用于定位 OSS 文件 |
 | Type | `bug` / `feature` | 反馈类型 |
-| System Info | `OS: Windows 10 AMD64 \| Python: 3.11.9 \| Synapse: 1.26.1` | 用户环境 |
+| System Info | `OS: Windows 10 AMD64 \| Python: 3.11.9 \| OpenAkita: 1.26.1` | 用户环境 |
 | Description | 用户原文 | 问题描述 |
 
 ### 第二步：下载诊断包
@@ -102,15 +102,15 @@ ZIP 内部结构：
 ├── metadata.json          # 报告元数据（report_id, type, title, description, system_info）
 ├── images/                # 用户截图
 ├── logs/
-│   ├── synapse.log      # 主日志（最后 1MB）
+│   ├── openakita.log      # 主日志（最后 1MB）
 │   └── error.log          # 错误日志（如果有）
 └── llm_debug/             # 最近 50 条 LLM 调用调试记录（JSON）
 ```
 
 **分析优先级：**
 
-1. **`metadata.json`** — 了解用户描述、系统环境、Synapse 版本
-2. **`logs/synapse.log`** — 搜索 `ERROR`、`CRITICAL`、`Traceback`，关注时间线
+1. **`metadata.json`** — 了解用户描述、系统环境、OpenAkita 版本
+2. **`logs/openakita.log`** — 搜索 `ERROR`、`CRITICAL`、`Traceback`，关注时间线
 3. **`logs/error.log`** — 集中查看错误堆栈（如果存在）
 4. **`llm_debug/`** — 按时间戳排序，检查 API Key 有效性、模型名、状态码、超时
 5. **`images/`** — 用户截图可能直接展示 UI 错误
@@ -131,19 +131,19 @@ Bug 修复并合并/发版后，依次执行以下操作。
 
 ```bash
 # 已修复
-gh issue edit <issue_number> -R synapse/synapse --remove-label "status:open" --add-label "status:resolved"
+gh issue edit <issue_number> -R openakita/openakita --remove-label "status:open" --add-label "status:resolved"
 
 # 不会修复
-gh issue edit <issue_number> -R synapse/synapse --remove-label "status:open" --add-label "status:wontfix"
+gh issue edit <issue_number> -R openakita/openakita --remove-label "status:open" --add-label "status:wontfix"
 
 # 需要更多信息
-gh issue edit <issue_number> -R synapse/synapse --remove-label "status:open" --add-label "status:need-info"
+gh issue edit <issue_number> -R openakita/openakita --remove-label "status:open" --add-label "status:need-info"
 ```
 
 ### 2. 添加处理结论评论
 
 ```bash
-gh issue comment <issue_number> -R synapse/synapse --body "修复说明..."
+gh issue comment <issue_number> -R openakita/openakita --body "修复说明..."
 ```
 
 评论模板：
@@ -163,10 +163,10 @@ _此问题已在 v1.25.12 中修复，请升级后验证。_
 ### 3. 关闭 Issue
 
 ```bash
-gh issue close <issue_number> -R synapse/synapse --reason completed
+gh issue close <issue_number> -R openakita/openakita --reason completed
 
 # 如果是 wontfix
-gh issue close <issue_number> -R synapse/synapse --reason "not planned"
+gh issue close <issue_number> -R openakita/openakita --reason "not planned"
 ```
 
 ### 4. 清理 OSS 诊断包（可选）
@@ -208,10 +208,10 @@ python scripts/feedback.py cleanup --days 90 --yes
 
 ```bash
 # 列出所有 status:open 的反馈 Issue
-gh issue list -R synapse/synapse --label "status:open" --label "source:feedback"
+gh issue list -R openakita/openakita --label "status:open" --label "source:feedback"
 
 # 列出需要更多信息的 Issue
-gh issue list -R synapse/synapse --label "status:need-info"
+gh issue list -R openakita/openakita --label "status:need-info"
 ```
 
 ### OSS 报告统计
@@ -226,7 +226,7 @@ python scripts/feedback.py stats --days 30
 ## OSS 存储结构
 
 ```
-synapse-feedback/                    # Bucket
+openakita-feedback/                    # Bucket
 └── feedback/
     └── {YYYY-MM-DD}/                  # UTC 日期
         └── {report_id}/
@@ -245,7 +245,7 @@ synapse-feedback/                    # Bucket
 
 ### 收到 Issue 链接时
 
-1. `gh issue view <number> -R synapse/synapse --json title,body,labels` 获取内容
+1. `gh issue view <number> -R openakita/openakita --json title,body,labels` 获取内容
 2. 从 body 中用正则提取 Report ID（`Report ID:` 后的 12 位 hex）
 3. `python scripts/feedback.py download <report_id> --output ./feedback-downloads` 下载
 4. 解压后用 Read 工具逐一分析 `metadata.json`、`logs/`、`llm_debug/`、`images/`
@@ -255,13 +255,13 @@ synapse-feedback/                    # Bucket
 
 依次执行：
 
-1. 更新标签：`gh issue edit <number> -R synapse/synapse --remove-label "status:open" --add-label "status:resolved"`
-2. 添加结论评论：`gh issue comment <number> -R synapse/synapse --body "..."`
-3. 关闭 Issue：`gh issue close <number> -R synapse/synapse --reason completed`
+1. 更新标签：`gh issue edit <number> -R openakita/openakita --remove-label "status:open" --add-label "status:resolved"`
+2. 添加结论评论：`gh issue comment <number> -R openakita/openakita --body "..."`
+3. 关闭 Issue：`gh issue close <number> -R openakita/openakita --reason completed`
 4. 如用户要求清理 OSS：`python scripts/feedback.py delete <report_id> --yes`
 5. 清理本地文件：删除 `feedback-downloads/<report_id>*`
 
 ### 用户说"定期清理"时
 
 1. `python scripts/feedback.py cleanup --days 90` 清理过期 OSS 数据
-2. `gh issue list -R synapse/synapse --label "status:open" --label "source:feedback"` 查看未处理 Issue
+2. `gh issue list -R openakita/openakita --label "status:open" --label "source:feedback"` 查看未处理 Issue

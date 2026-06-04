@@ -1,4 +1,4 @@
-// useExpandPanel — listen for `openakita:expand-panel` CustomEvents and bring
+// useExpandPanel — listen for `synapse:expand-panel` CustomEvents and bring
 // the matching <details> element into focus.
 //
 // Why a custom event + global listener instead of prop drilling?
@@ -9,8 +9,8 @@
 //
 // Lifecycle:
 //   1. App.tsx mounts a ref via this hook on the <details> it wants to expand.
-//   2. ConfigHintCard dispatches `openakita:navigate-view` to switch to the
-//      settings view, then `openakita:expand-panel` after a short delay so the
+//   2. ConfigHintCard dispatches `synapse:navigate-view` to switch to the
+//      settings view, then `synapse:expand-panel` after a short delay so the
 //      view has a chance to mount.
 //   3. This hook receives the event, opens <details>, scrolls into view, and
 //      adds a ``data-expand-flash`` attribute that styles.css fades over 1.4s.
@@ -29,7 +29,7 @@ const FLASH_TIMEOUT_MS = 1400;
 
 /**
  * Returns a ref to attach to a ``<details>`` element. When a global
- * ``openakita:expand-panel`` event fires with ``detail.anchor === targetAnchor``,
+ * ``synapse:expand-panel`` event fires with ``detail.anchor === targetAnchor``,
  * the panel opens, scrolls into view, and briefly highlights itself.
  *
  * @example
@@ -67,9 +67,9 @@ export function useExpandPanel(targetAnchor: string) {
       }, FLASH_TIMEOUT_MS);
     };
 
-    window.addEventListener("openakita:expand-panel", handler as EventListener);
+    window.addEventListener("synapse:expand-panel", handler as EventListener);
     return () => {
-      window.removeEventListener("openakita:expand-panel", handler as EventListener);
+      window.removeEventListener("synapse:expand-panel", handler as EventListener);
     };
   }, [targetAnchor]);
 
@@ -85,6 +85,6 @@ export function useExpandPanel(targetAnchor: string) {
 export function dispatchExpandPanel(anchor: string, scrollTo?: string): void {
   const detail: ExpandPanelDetail = { anchor, ...(scrollTo ? { scrollTo } : {}) };
   window.dispatchEvent(
-    new CustomEvent<ExpandPanelDetail>("openakita:expand-panel", { detail }),
+    new CustomEvent<ExpandPanelDetail>("synapse:expand-panel", { detail }),
   );
 }

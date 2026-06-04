@@ -163,16 +163,16 @@ Gateway 回复时 `outgoing_meta = dict(original.metadata)` 完整复制，
 
 ### 差异点
 
-| 维度 | Synapse | AstrBot | 影响 |
+| 维度 | OpenAkita | AstrBot | 影响 |
 |------|-----------|---------|------|
 | **线程模型** | `start_forever()` 在新线程事件循环中运行 | `client.start()` 通过 `run_in_executor` 运行 | 等价，但 AstrBot 使用 `shutdown_event` 优雅退出 |
-| **Token 获取** | 双 token（新旧 API 各一个） | 优先 SDK 内置 `get_access_token`，失败回退手动获取 | Synapse 更稳妥 |
-| **ID 前缀处理** | 未处理 `$:LWCP_v1:$` 前缀 | `_id_to_sid()` 去除前缀 | **Synapse 缺失** |
-| **私聊 userId** | `senderStaffId \|\| senderId`，缓存在 `_conversation_users` | `sender_staff_id` 持久化到 KV 存储 | Synapse 重启后丢失映射 |
+| **Token 获取** | 双 token（新旧 API 各一个） | 优先 SDK 内置 `get_access_token`，失败回退手动获取 | OpenAkita 更稳妥 |
+| **ID 前缀处理** | 未处理 `$:LWCP_v1:$` 前缀 | `_id_to_sid()` 去除前缀 | **OpenAkita 缺失** |
+| **私聊 userId** | `senderStaffId \|\| senderId`，缓存在 `_conversation_users` | `sender_staff_id` 持久化到 KV 存储 | OpenAkita 重启后丢失映射 |
 | **content 来源** | 直接从 `raw_data["content"]` | 通过 `message.extensions["content"]` | **可能导致 audio/file 解析失败** |
-| **视频发送** | 未实现 `sampleVideo` 发送 | 完整实现（含封面提取、格式转换） | **Synapse 缺失** |
-| **语音格式** | 直接发送，无格式转换 | OGG(Opus) 优先，AMR 回退 | Synapse 可能发送不兼容格式 |
-| **Webhook 回复** | 有完整 Webhook 优先回复 | 无 Webhook 回复，全走 OpenAPI | Synapse 更快 |
+| **视频发送** | 未实现 `sampleVideo` 发送 | 完整实现（含封面提取、格式转换） | **OpenAkita 缺失** |
+| **语音格式** | 直接发送，无格式转换 | OGG(Opus) 优先，AMR 回退 | OpenAkita 可能发送不兼容格式 |
+| **Webhook 回复** | 有完整 Webhook 优先回复 | 无 Webhook 回复，全走 OpenAPI | OpenAkita 更快 |
 | **流式回复** | 未实现 | 缓冲后一次性发送 | 低优先级 |
 | **At 处理** | 未从 text.content 中去除 @文本 | 在群聊消息处理时追加 At 组件 | 群聊回复中可能包含多余 @文本 |
 | **robotCode** | 一律用 `app_key` | 一律用 `client_id` | 一致（通常相同），但部分场景可能不同 |
@@ -231,7 +231,12 @@ Gateway 回复时 `outgoing_meta = dict(original.metadata)` 完整复制，
 
 ## 六、已发现问题与修复建议
 
-### 问题 1（高）：senderId 前缀 `$:LWCP_v1:$` 未处理
+### 问题 1（高）：senderId 前缀 `$:LWCP_v1:$` 未处理 — ✅ 已修复
+
+**修复**: 新增 `_normalize_dingtalk_id()` 静态方法，对 `$:LWCP` 前缀的加密 ID 返回空串；
+`_handle_stream_message` 优先 `senderStaffId`，次选 `_normalize_dingtalk_id(senderId)`，仅有加密 ID 时记录 warning；
+`UnifiedMessage.user_id` 在没有可用 senderId 时回退为 `dd_anon_<conversation>` 而非污染缓存。
+
 
 **现象**: `senderId` 可能以 `$:LWCP_v1:$` 开头，这是钉钉加密格式。直接存入 `_conversation_users` 后，用于 `oToMessages/batchSend` 的 `userIds` 时会导致 "staffId.notExisted"。
 
@@ -248,7 +253,11 @@ sender_id = raw_data.get("senderStaffId") or raw_data.get("senderId", "")
 
 **引入风险**: 低。仅影响 ID 清理，不改变主流程。
 
-### 问题 2（高）：audio/file 的 content 解析来源可能不一致
+### 问题 2（高）：audio/file 的 content 解析来源可能不一致 — ✅ 已修复
+
+**修复**: 新增 `_extract_content_dict()` 静态方法，统一处理 `raw_data["content"]`（dict 或 JSON 字符串）
+并在为空时回退到 `raw_data["extensions"]["content"]`；audio / video / file 三个分支全部改用该方法，逻辑去重。
+
 
 **现象**: 钉钉 SDK 的 `ChatbotMessage` 可能将 audio/file 的 content 放在 `extensions["content"]` 而非顶层 `raw_data["content"]`。
 
@@ -272,7 +281,12 @@ if not audio_content or not isinstance(audio_content, dict):
 
 **引入风险**: 低。增加 fallback 不影响已有解析路径。
 
-### 问题 3（中）：SessionWebhook 缓存无过期清理
+### 问题 3（中）：SessionWebhook 缓存无过期清理 — ✅ 已修复
+
+**修复**: `_session_webhooks` 由 `dict[str, str]` 改为 `OrderedDict[str, tuple[str, int]]`，
+保存 `sessionWebhookExpiredTime`（缺省按 2h 估算）；新增 `_save_webhook()` / `_get_valid_webhook()` 辅助方法，
+读取时惰性删除过期项并 LRU 触底淘汰，最大容量 500。三处使用点（写入 + 两处读取）已统一。
+
 
 **现象**: `_session_webhooks` 会持续增长，且过期的 webhook（1 小时有效期）永远不会被清理。使用过期 webhook 发送会失败，虽有 OpenAPI 降级，但浪费一次请求。
 
@@ -743,7 +757,7 @@ Gateway: _on_message()
 | 连接/注册超时检测 | 当前看门狗机制已覆盖 |
 | 指数退避重连 (自定义) | 看门狗已有指数退避 |
 | 长任务文本降级通知 | 已有 thinking card，暂不需要 |
-| SessionWebhook 废弃 | Synapse 的 Webhook 优先策略是合理的性能优化 |
+| SessionWebhook 废弃 | OpenAkita 的 Webhook 优先策略是合理的性能优化 |
 
 ---
 

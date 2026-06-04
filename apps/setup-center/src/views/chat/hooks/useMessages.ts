@@ -2,9 +2,7 @@ import { useReducer, useCallback, useRef, useEffect } from "react";
 import type { ChatMessage, ChatConversation, ChainSummaryItem, ChatArtifact } from "../utils/chatTypes";
 import {
   loadMessagesFromStorage,
-  STORAGE_KEY_ACTIVE,
-  STORAGE_KEY_MSGS_PREFIX,
-  STORAGE_KEY_CONVS,
+  getWorkspaceStorageKeys,
 } from "../utils/chatHelpers";
 
 // ── Message Actions ──
@@ -99,6 +97,10 @@ function conversationReducer(state: ChatConversation[], action: ConversationActi
           timestamp: Math.max(local.timestamp || 0, b.timestamp || 0),
           messageCount: Math.max(local.messageCount || 0, b.messageCount || 0),
           agentProfileId: b.agentProfileId || local.agentProfileId,
+          endpointId: b.endpointId || local.endpointId,
+          orgMode: b.orgMode ?? local.orgMode,
+          orgId: b.orgId || local.orgId,
+          orgNodeId: b.orgNodeId || local.orgNodeId,
         };
       });
       const backendIds = new Set(action.backendConvs.map(c => c.id));
@@ -114,12 +116,13 @@ function conversationReducer(state: ChatConversation[], action: ConversationActi
 
 // ── Hooks ──
 
-export function useMessageReducer() {
+export function useMessageReducer(workspaceId?: string | null) {
   const [messages, dispatch] = useReducer(messageReducer, [], () => {
     try {
-      const convId = localStorage.getItem(STORAGE_KEY_ACTIVE);
+      const { ACTIVE, MSGS_PREFIX } = getWorkspaceStorageKeys(workspaceId);
+      const convId = localStorage.getItem(ACTIVE);
       if (!convId) return [];
-      return loadMessagesFromStorage(STORAGE_KEY_MSGS_PREFIX + convId);
+      return loadMessagesFromStorage(MSGS_PREFIX + convId);
     } catch { return []; }
   });
 
@@ -129,10 +132,11 @@ export function useMessageReducer() {
   return { messages, dispatch, messagesRef };
 }
 
-export function useConversationReducer() {
+export function useConversationReducer(workspaceId?: string | null) {
   const [conversations, dispatch] = useReducer(conversationReducer, [], () => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY_CONVS);
+      const { CONVS } = getWorkspaceStorageKeys(workspaceId);
+      const raw = localStorage.getItem(CONVS);
       return raw ? JSON.parse(raw) : [];
     } catch { return []; }
   });
@@ -142,3 +146,4 @@ export function useConversationReducer() {
 
   return { conversations, dispatch, conversationsRef };
 }
+

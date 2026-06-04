@@ -1,4 +1,4 @@
-# Synapse 部署文档 (中文版)
+# OpenAkita 部署文档 (中文版)
 
 [English Version](./deploy_en.md)
 
@@ -68,19 +68,19 @@ python -m venv venv
 source venv/bin/activate  # Linux/macOS
 # 或 .\venv\Scripts\activate  # Windows
 
-# 2. 安装 Synapse（核心版）
-pip install synapse
+# 2. 安装 OpenAkita（核心版）
+pip install openakita
 
 # 3. 安装可选功能
-pip install synapse[feishu]     # + 飞书支持
-pip install synapse[windows]    # + Windows 桌面自动化
-pip install synapse[all]       # 安装所有可选功能（跨平台安全，Windows-only 依赖会自动跳过）
+pip install openakita[feishu]     # + 飞书支持
+pip install openakita[windows]    # + Windows 桌面自动化
+pip install openakita[all]       # 安装所有可选功能（跨平台安全，Windows-only 依赖会自动跳过）
 
 # 4. 运行初始化向导
-synapse init
+openakita init
 
 # 5. 启动
-synapse
+openakita
 ```
 
 ### 方式二：一键部署脚本
@@ -95,29 +95,29 @@ synapse
 **Linux/macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/synapse/synapse/main/scripts/quickstart.sh | bash
+curl -fsSL https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/synapse/synapse/main/scripts/quickstart.ps1 | iex
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 | iex
 ```
 
 如需安装 extras / 使用镜像，建议先下载脚本再带参数运行：
 
 ```bash
-curl -fsSL -o quickstart.sh https://raw.githubusercontent.com/synapse/synapse/main/scripts/quickstart.sh
+curl -fsSL -o quickstart.sh https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.sh
 bash quickstart.sh --extras all --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/synapse/synapse/main/scripts/quickstart.ps1 -OutFile quickstart.ps1
+irm https://raw.githubusercontent.com/openakita/openakita/main/scripts/quickstart.ps1 -OutFile quickstart.ps1
 .\quickstart.ps1 -Extras all -IndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-> 说明：脚本会把工作目录默认放在 `~/.synapse/app`（Windows：`%USERPROFILE%\.synapse\app`），
-> 并创建独立虚拟环境 `~/.synapse/venv`，避免污染系统 Python。
+> 说明：脚本会把工作目录默认放在 `~/.openakita/app`（Windows：`%USERPROFILE%\.openakita\app`），
+> 并创建独立虚拟环境 `~/.openakita/venv`，避免污染系统 Python。
 
 #### 方式二-B：一键部署（源码）
 
@@ -125,16 +125,16 @@ irm https://raw.githubusercontent.com/synapse/synapse/main/scripts/quickstart.ps
 
 **Linux/macOS:**
 ```bash
-git clone https://github.com/synapse/synapse.git
-cd synapse
+git clone https://github.com/openakita/openakita.git
+cd openakita
 chmod +x scripts/deploy.sh
 ./scripts/deploy.sh
 ```
 
 **Windows (PowerShell):**
 ```powershell
-git clone https://github.com/synapse/synapse.git
-cd synapse
+git clone https://github.com/openakita/openakita.git
+cd openakita
 .\scripts\deploy.ps1
 ```
 
@@ -153,8 +153,8 @@ cd synapse
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/synapse/synapse.git
-cd synapse
+git clone https://github.com/openakita/openakita.git
+cd openakita
 
 # 2. 创建虚拟环境
 python -m venv venv
@@ -179,10 +179,10 @@ cp data/llm_endpoints.json.example data/llm_endpoints.json
 # 编辑 data/llm_endpoints.json 配置 LLM 端点
 
 # 8. 运行初始化向导（或手动配置）
-synapse init
+openakita init
 
 # 9. 启动
-synapse
+openakita
 ```
 
 ---
@@ -240,7 +240,6 @@ ANTHROPIC_API_KEY=sk-your-api-key-here
 | `SILICONFLOW_API_KEY` | | - | SiliconFlow API Key |
 | `LLM_ENDPOINTS_CONFIG` | | `data/llm_endpoints.json` | LLM 端点配置文件路径 |
 | **Agent 配置** | | | |
-| `AGENT_NAME` | | `Synapse` | Agent 名称 |
 | `MAX_ITERATIONS` | | `100` | Ralph 循环最大迭代 |
 | `AUTO_CONFIRM` | | `false` | 自动确认危险操作 |
 | `DATABASE_PATH` | | `data/agent.db` | 数据库路径 |
@@ -280,13 +279,13 @@ ANTHROPIC_API_KEY=sk-your-api-key-here
 
 ### 大模型端点配置 (llm_endpoints.json)
 
-这是 Synapse 的**核心配置文件**，支持多端点、自动故障切换、能力路由。
+这是 OpenAkita 的**核心配置文件**，支持多端点、自动故障切换、能力路由。
 
 #### 配置方式
 
 **方式 A：交互式向导（推荐）**
 ```bash
-python -m synapse.llm.setup.cli
+python -m openakita.llm.setup.cli
 ```
 
 向导支持：
@@ -473,16 +472,16 @@ cp data/llm_endpoints.json.example data/llm_endpoints.json
 
 ### IM 通道配置
 
-Synapse 支持 5 大 IM 平台，统一通过 `.env` 启用：
+OpenAkita 支持 5 大 IM 平台，统一通过 `.env` 启用：
 
 | 平台 | 状态 | 协议 | 额外依赖 |
 |------|------|------|---------|
 | Telegram | ✅ 稳定 | Bot API | 已内置 |
-| 飞书 | ✅ 稳定 | WebSocket | `pip install synapse[feishu]` |
+| 飞书 | ✅ 稳定 | WebSocket | `pip install openakita[feishu]` |
 | 企业微信 | ✅ 稳定 | HTTP API | 无 |
 | 钉钉 | ✅ 稳定 | HTTP API | 无 |
-| QQ 官方机器人 | ✅ 稳定 | QQ 开放平台 API | `pip install synapse[qqbot]` |
-| OneBot | ✅ 稳定 | OneBot WS | 需 OneBot 服务 + `pip install synapse[onebot]` |
+| QQ 官方机器人 | ✅ 稳定 | QQ 开放平台 API | `pip install openakita[qqbot]` |
+| OneBot | ✅ 稳定 | OneBot WS | 需 OneBot 服务 + `pip install openakita[onebot]` |
 
 #### Telegram
 
@@ -556,10 +555,10 @@ IM 通道有两种运行模式：
 
 ```bash
 # 模式 1: CLI + IM（交互模式下同时运行 IM 通道）
-synapse
+openakita
 
 # 模式 2: 纯 IM 服务（后台服务，不启动 CLI）
-synapse serve
+openakita serve
 ```
 
 ### 身份配置 (identity/)
@@ -581,7 +580,7 @@ cp identity/MEMORY.md.example identity/MEMORY.md
 | `USER.md` | 用户画像 | ✅ Agent 自动学习 |
 | `MEMORY.md` | 核心记忆 | ✅ 每日自动整理 |
 
-> 运行 `synapse init` 会自动创建这些文件。
+> 运行 `openakita init` 会自动创建这些文件。
 
 ### 记忆系统配置
 
@@ -604,31 +603,31 @@ EMBEDDING_DEVICE=cpu                                # 有 GPU 可设为 cuda
 ### 交互模式（开发/测试）
 
 ```bash
-synapse           # 交互式 CLI（同时运行 IM 通道）
-python -m synapse # 同上
+openakita           # 交互式 CLI（同时运行 IM 通道）
+python -m openakita # 同上
 ```
 
 ### 服务模式（生产部署）
 
 ```bash
-synapse serve     # 纯 IM 服务，无 CLI 交互
+openakita serve     # 纯 IM 服务，无 CLI 交互
 ```
 
 ### 单次任务
 
 ```bash
-synapse run "帮我分析当前目录的代码结构"
+openakita run "帮我分析当前目录的代码结构"
 ```
 
 ### 其他命令
 
 ```bash
-synapse init              # 运行配置向导
-synapse status            # 显示 Agent 状态
-synapse selfcheck         # 运行自检
-synapse compile           # 编译 identity 文件（降低 token 消耗）
-synapse prompt-debug      # 显示 prompt 调试信息
-synapse --version         # 显示版本
+openakita init              # 运行配置向导
+openakita status            # 显示 Agent 状态
+openakita selfcheck         # 运行自检
+openakita compile           # 编译 identity 文件（降低 token 消耗）
+openakita prompt-debug      # 显示 prompt 调试信息
+openakita --version         # 显示版本
 ```
 
 ---
@@ -673,11 +672,11 @@ git push origin v1.2.2
 
 ```bash
 # 从 PyPI 安装
-pip install synapse
+pip install openakita
 
 # 验证
-synapse --version
-python -c "import synapse; print(synapse.__version__)"
+openakita --version
+python -c "import openakita; print(openakita.__version__)"
 ```
 
 ---
@@ -686,19 +685,19 @@ python -c "import synapse; print(synapse.__version__)"
 
 ### 使用 systemd (Linux 推荐)
 
-创建服务文件 `/etc/systemd/system/synapse.service`：
+创建服务文件 `/etc/systemd/system/openakita.service`：
 
 ```ini
 [Unit]
-Description=Synapse AI Agent Service
+Description=OpenAkita AI Agent Service
 After=network.target
 
 [Service]
 Type=simple
 User=your-user
-WorkingDirectory=/path/to/synapse
-Environment="PATH=/path/to/synapse/venv/bin"
-ExecStart=/path/to/synapse/venv/bin/synapse serve
+WorkingDirectory=/path/to/openakita
+Environment="PATH=/path/to/openakita/venv/bin"
+ExecStart=/path/to/openakita/venv/bin/openakita serve
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -710,12 +709,12 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable synapse
-sudo systemctl start synapse
-sudo systemctl status synapse
+sudo systemctl enable openakita
+sudo systemctl start openakita
+sudo systemctl status openakita
 
 # 查看日志
-journalctl -u synapse -f
+journalctl -u openakita -f
 ```
 
 ### 使用 Docker
@@ -738,25 +737,25 @@ COPY . .
 # 安装 Playwright
 RUN playwright install chromium && playwright install-deps chromium
 
-CMD ["synapse", "serve"]
+CMD ["openakita", "serve"]
 ```
 
 ```bash
-docker build -t synapse .
+docker build -t openakita .
 docker run -d \
-  --name synapse \
+  --name openakita \
   -v $(pwd)/.env:/app/.env \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/identity:/app/identity \
-  synapse
+  openakita
 ```
 
 ### 使用 nohup（简单后台运行）
 
 ```bash
 source venv/bin/activate
-nohup synapse serve > logs/serve.log 2>&1 &
-echo $! > synapse.pid
+nohup openakita serve > logs/serve.log 2>&1 &
+echo $! > openakita.pid
 ```
 
 ---
@@ -783,7 +782,7 @@ python --version
 
 ```bash
 # 使用国内镜像
-pip install synapse -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install openakita -i https://pypi.tuna.tsinghua.edu.cn/simple
 # 或配置永久镜像
 pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
@@ -822,7 +821,7 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 ```bash
 # 使用交互式工具测试
-python -m synapse.llm.setup.cli
+python -m openakita.llm.setup.cli
 # 选择 "4. 测试端点" 即可验证连通性
 ```
 
@@ -834,10 +833,10 @@ python -m synapse.llm.setup.cli
 
 ```bash
 # 1. 移除 DMG 文件的隔离属性（下载后、打开前执行）
-xattr -cr ~/Downloads/Synapse.Desktop_*_aarch64.dmg
+xattr -cr ~/Downloads/OpenAkita.Desktop_*_aarch64.dmg
 
 # 2. 将 app 拖入 Applications 后，对 app 再执行一次
-xattr -cr /Applications/Synapse\ Desktop.app
+xattr -cr /Applications/OpenAkita\ Desktop.app
 ```
 
 > **说明：** 两条命令都执行最保险，核心是第 2 条。执行后即可正常打开应用。
@@ -851,10 +850,10 @@ xattr -cr /Applications/Synapse\ Desktop.app
 
 ```bash
 # PyPI 安装
-pip install --upgrade synapse
+pip install --upgrade openakita
 
 # 源码安装
-cd synapse
+cd openakita
 git pull
 pip install -e ".[all]"
 ```
@@ -863,12 +862,12 @@ pip install -e ".[all]"
 
 ```bash
 # 停止服务
-sudo systemctl stop synapse
-sudo systemctl disable synapse
-sudo rm /etc/systemd/system/synapse.service
+sudo systemctl stop openakita
+sudo systemctl disable openakita
+sudo rm /etc/systemd/system/openakita.service
 
 # 卸载包
-pip uninstall synapse
+pip uninstall openakita
 
 # 删除数据（慎重）
 rm -rf data/ identity/ logs/
@@ -879,7 +878,7 @@ rm -rf data/ identity/ logs/
 ## 技术支持
 
 - 文档：查看 `docs/` 目录下的详细文档
-- 问题：提交 [GitHub Issue](https://github.com/synapse/synapse/issues)
+- 问题：提交 [GitHub Issue](https://github.com/openakita/openakita/issues)
 - 社区：加入 Telegram 群组
 
 ---

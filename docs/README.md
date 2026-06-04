@@ -1,6 +1,6 @@
-# Synapse Documentation
+# OpenAkita Documentation
 
-Welcome to the Synapse documentation.
+Welcome to the OpenAkita documentation.
 
 ## Quick Links
 
@@ -33,6 +33,7 @@ Welcome to the Synapse documentation.
 | Resource | Location |
 |----------|----------|
 | [Deployment Guide](deploy.md) | Production deployment |
+| [Memory Migration v4](memory_migration_v4.md) | v1.27 → v1.28 memory schema upgrade & rollback guide |
 | [Contributing](../CONTRIBUTING.md) | How to contribute |
 | [Changelog](../CHANGELOG.md) | Version history |
 | [Security](../SECURITY.md) | Security policy |
@@ -66,3 +67,4 @@ Found an error or want to improve the documentation?
 3. Submit a pull request
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for details.
+

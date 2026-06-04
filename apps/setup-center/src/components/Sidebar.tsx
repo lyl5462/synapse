@@ -1,6 +1,6 @@
 import { Fragment, useState, useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import type { StepId, Step, ViewId } from "../types";
+import type { StepId, Step, ViewId, PluginUIApp } from "../types";
 import {
   IconChat, IconIM, IconSkills, IconStatus, IconConfig,
   IconChevronDown, IconChevronRight, IconGlobe,
@@ -34,6 +34,9 @@ export type SidebarProps = {
   onRefreshStatus: () => Promise<void>;
   isWeb?: boolean;
   mobileOpen?: boolean;
+  httpApiBase?: string;
+  unreadFeedbackCount?: number;
+  pendingApprovalsCount?: number;
 };
 
 const stepIcons: Partial<Record<StepId, React.ReactNode>> = {
@@ -49,7 +52,7 @@ function StepDot({ stepId: sid }: { stepId: StepId }) {
   return <div className="stepDot">{stepIcons[sid]}</div>;
 }
 
-type NavGroupId = "capabilities" | "workbench" | "monitor" | "multiAgent" | "store";
+type NavGroupId = "capabilities" | "workbench" | "apps" | "monitor" | "multiAgent" | "store";
 const GROUP_ICON_SIZE = 16;
 
 const BETA_SUP = <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup>;
@@ -95,13 +98,28 @@ export function Sidebar({
   multiAgentEnabled,
   storeVisible,
   desktopVersion, backendVersion, serviceRunning,
-  onBugReport, onRefreshStatus, isWeb, mobileOpen,
+  onBugReport, onRefreshStatus, isWeb, mobileOpen, httpApiBase,
+  unreadFeedbackCount, pendingApprovalsCount,
 }: SidebarProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const lang = i18n.language;
+  const pickAppTitle = (app: PluginUIApp): string => {
+    const dict = app.title_i18n;
+    if (dict && typeof dict === "object") {
+      if (dict[lang]) return dict[lang];
+      const base = lang.split("-")[0];
+      if (base && dict[base]) return dict[base];
+      if (dict.en) return dict.en;
+      const first = Object.values(dict).find(v => typeof v === "string" && v);
+      if (first) return first;
+    }
+    return app.title;
+  };
 
   const [expandedGroups, setExpandedGroups] = useState<Record<NavGroupId, boolean>>({
     capabilities: false,
     workbench: false,
+    apps: false,
     monitor: false,
     multiAgent: false,
     store: false,
@@ -110,6 +128,57 @@ export function Sidebar({
   const toggleGroup = useCallback((id: NavGroupId) => {
     setExpandedGroups(prev => ({ ...prev, [id]: !prev[id] }));
   }, []);
+
+  const [pluginApps, setPluginApps] = useState<PluginUIApp[]>([]);
+
+  useEffect(() => {
+    if (!httpApiBase || !serviceRunning) { setPluginApps([]); return; }
+    let cancelled = false;
+    const retryDelays = [2_000, 8_000, 20_000, 60_000, 120_000];
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+
+    const clearTimers = () => {
+      timers.forEach(timer => clearTimeout(timer));
+      timers.clear();
+    };
+
+    const scheduleRetry = (attempt: number) => {
+      const delay = retryDelays[attempt];
+      if (delay == null) return false;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        void refetch(attempt + 1);
+      }, delay);
+      timers.add(timer);
+      return true;
+    };
+
+    const refetch = async (attempt = 0) => {
+      try {
+        const r = await fetch(`${httpApiBase}/api/plugins/ui-apps`);
+        const data = r.ok ? await r.json() : [];
+        if (cancelled) return;
+        const apps = Array.isArray(data) ? data : [];
+        setPluginApps(apps);
+        if (apps.length === 0) scheduleRetry(attempt);
+      } catch {
+        if (cancelled) return;
+        if (!scheduleRetry(attempt)) setPluginApps([]);
+      }
+    };
+
+    refetch();
+    const onChanged = () => {
+      clearTimers();
+      void refetch();
+    };
+    window.addEventListener("synapse:plugin-apps-changed", onChanged);
+    return () => {
+      cancelled = true;
+      clearTimers();
+      window.removeEventListener("synapse:plugin-apps-changed", onChanged);
+    };
+  }, [httpApiBase, serviceRunning]);
 
   const capViews: ViewId[] = ["skills", "mcp", "plugins", "memory", "scheduler"];
   const wbViews: ViewId[] = [
@@ -120,7 +189,7 @@ export function Sidebar({
     "workbench_sandbox",
     "workbench_team",
   ];
-  const monViews: ViewId[] = ["token_stats", "security"];
+  const monViews: ViewId[] = ["token_stats", "security", "pending_approvals"];
   const maViews: ViewId[] = ["dashboard", "org_editor", "pixel_office", "agent_manager"];
   const stViews: ViewId[] = ["agent_store", "skill_store"];
 
@@ -134,6 +203,7 @@ export function Sidebar({
         : monViews.includes(v) ? "monitor"
         : maViews.includes(v) ? "multiAgent"
         : stViews.includes(v) ? "store"
+        : (typeof v === "string" && v.startsWith("plugin_app:")) ? "apps"
         : null;
     const g = groupOf(view);
     if (g) setExpandedGroups(prev => ({ ...prev, [g]: true }));
@@ -141,6 +211,7 @@ export function Sidebar({
 
   const capExpanded = expandedGroups.capabilities;
   const wbExpanded = expandedGroups.workbench;
+  const appsExpanded = expandedGroups.apps;
   const monExpanded = expandedGroups.monitor;
   const maExpanded = expandedGroups.multiAgent;
   const stExpanded = expandedGroups.store;
@@ -231,6 +302,38 @@ export function Sidebar({
           </div>
         )}
 
+        {/* ── Group: Apps (Plugin UI) ── */}
+        {pluginApps.length > 0 && (
+          <>
+            <NavGroupHeader collapsed={collapsed} icon={<IconLayoutGrid size={GROUP_ICON_SIZE} />} label={t("sidebar.groupApps", "Apps")} expanded={appsExpanded} onToggle={() => toggleGroup("apps")} />
+            {(collapsed || appsExpanded) && (
+              <div className="navGroupItems">
+                {pluginApps.map(app => {
+                  const appViewId: ViewId = `plugin_app:${app.id}`;
+                  const appTitle = pickAppTitle(app);
+                  return (
+                    <div
+                      key={app.id}
+                      className={`navItem ${view === appViewId ? "navItemActive" : ""}`}
+                      onClick={() => onViewChange(appViewId)}
+                      role="button"
+                      tabIndex={0}
+                      title={appTitle}
+                    >
+                      {app.icon_url ? (
+                        <img src={`${httpApiBase}${app.icon_url}`} alt="" style={{ width: 16, height: 16, borderRadius: 2 }} />
+                      ) : (
+                        <IconLayoutGrid size={16} />
+                      )}
+                      {!collapsed && <span>{appTitle}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
         {/* ── Group: Monitor ── */}
         <NavGroupHeader collapsed={collapsed} icon={<IconRadar size={GROUP_ICON_SIZE} />} label={t("sidebar.groupMonitor")} expanded={monExpanded} onToggle={() => toggleGroup("monitor")} />
         {(collapsed || monExpanded) && (
@@ -240,6 +343,17 @@ export function Sidebar({
             </div>
             <div className={`navItem ${view === "security" ? "navItemActive" : ""}`} onClick={() => onViewChange("security")} role="button" tabIndex={0} title={t("sidebar.security")}>
               <IconShield size={16} /> {!collapsed && <span>{t("sidebar.security")}</span>}
+            </div>
+            <div className={`navItem ${view === "pending_approvals" ? "navItemActive" : ""}`} onClick={() => onViewChange("pending_approvals")} role="button" tabIndex={0} title={t("sidebar.pendingApprovals")} style={{ position: "relative" }}>
+              <IconFingerprint size={16} /> {!collapsed && <span>{t("sidebar.pendingApprovals")}</span>}
+              {(pendingApprovalsCount ?? 0) > 0 && (
+                <span style={{
+                  position: "absolute", top: 4, left: collapsed ? 22 : undefined, right: collapsed ? undefined : 8,
+                  minWidth: 16, height: 16, borderRadius: 8,
+                  background: "#ef4444", color: "#fff", fontSize: 10, fontWeight: 600,
+                  display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px",
+                }}>{pendingApprovalsCount}</span>
+              )}
             </div>
           </div>
         )}
@@ -354,16 +468,35 @@ export function Sidebar({
               synapse.ai
             </span>
             {serviceRunning && (
-              <span
-                onClick={onBugReport}
-                title={t("feedback.trigger")}
-                style={{ cursor: "pointer", opacity: 1, color: "var(--accent, #5B8DEF)", display: "inline-flex", alignItems: "center", gap: 2 }}
-                onMouseEnter={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".feedbackText"); if (s) s.style.textDecoration = "underline"; }}
-                onMouseLeave={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".feedbackText"); if (s) s.style.textDecoration = "none"; }}
-              >
-                <IconBug size={12} />
-                <span className="feedbackText" style={{ fontSize: 11 }}>{t("feedback.trigger")}</span>
-              </span>
+              <>
+                <span
+                  onClick={onBugReport}
+                  title={t("feedback.trigger")}
+                  style={{ cursor: "pointer", opacity: 1, color: "var(--accent, #5B8DEF)", display: "inline-flex", alignItems: "center", gap: 2 }}
+                  onMouseEnter={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".feedbackText"); if (s) s.style.textDecoration = "underline"; }}
+                  onMouseLeave={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".feedbackText"); if (s) s.style.textDecoration = "none"; }}
+                >
+                  <IconBug size={12} />
+                  <span className="feedbackText" style={{ fontSize: 11 }}>{t("feedback.trigger")}</span>
+                </span>
+                <span
+                  onClick={() => onViewChange("my_feedback")}
+                  title={t("sidebar.myFeedback")}
+                  style={{ cursor: "pointer", opacity: 1, color: view === "my_feedback" ? "var(--fg)" : "var(--accent, #5B8DEF)", display: "inline-flex", alignItems: "center", gap: 2, position: "relative" }}
+                  onMouseEnter={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".myFeedbackText"); if (s) s.style.textDecoration = "underline"; }}
+                  onMouseLeave={(e) => { const s = e.currentTarget.querySelector<HTMLElement>(".myFeedbackText"); if (s) s.style.textDecoration = "none"; }}
+                >
+                  <IconBug size={12} />
+                  <span className="myFeedbackText" style={{ fontSize: 11 }}>{t("sidebar.myFeedback")}</span>
+                  {(unreadFeedbackCount ?? 0) > 0 && (
+                    <span style={{
+                      position: "absolute", top: -4, right: -6,
+                      width: 7, height: 7, borderRadius: "50%",
+                      background: "#ef4444",
+                    }} />
+                  )}
+                </span>
+              </>
             )}
             <span
               onClick={() => onViewChange("docs")}
@@ -411,13 +544,29 @@ export function Sidebar({
               <IconGlobe size={14} />
             </span>
             {serviceRunning && (
-              <span
-                onClick={onBugReport}
-                title={t("feedback.trigger")}
-                style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex", cursor: "pointer" }}
-              >
-                <IconBug size={14} />
-              </span>
+              <>
+                <span
+                  onClick={onBugReport}
+                  title={t("feedback.trigger")}
+                  style={{ color: "var(--accent, #5B8DEF)", opacity: 0.5, display: "flex", cursor: "pointer" }}
+                >
+                  <IconBug size={14} />
+                </span>
+                <span
+                  onClick={() => onViewChange("my_feedback")}
+                  title={t("sidebar.myFeedback")}
+                  style={{ color: view === "my_feedback" ? "var(--fg)" : "var(--accent, #5B8DEF)", opacity: view === "my_feedback" ? 1 : 0.5, display: "flex", cursor: "pointer", position: "relative" }}
+                >
+                  <IconBug size={14} />
+                  {(unreadFeedbackCount ?? 0) > 0 && (
+                    <span style={{
+                      position: "absolute", top: -2, right: -2,
+                      width: 6, height: 6, borderRadius: "50%",
+                      background: "#ef4444",
+                    }} />
+                  )}
+                </span>
+              </>
             )}
           </div>
           <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>

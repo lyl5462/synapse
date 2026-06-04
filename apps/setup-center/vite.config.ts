@@ -45,15 +45,39 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      react: path.resolve(__dirname, "./node_modules/react"),
+      "react-dom": path.resolve(__dirname, "./node_modules/react-dom"),
+      "react-i18next": path.resolve(__dirname, "./node_modules/react-i18next"),
       "@shared/providers.json": path.resolve(
         __dirname,
         "../../src/synapse/llm/registries/providers.json",
       ),
     },
-    dedupe: ["three"],
+    // Force a single instance of React + react-dom across the dep graph.
+    // Without this, lazy-loaded views (e.g. PluginManagerView / OrgEditorView) can end up
+    // calling react-i18next's useTranslation() against a different React copy
+    // than the host renderer, causing "Cannot read properties of null
+    // (reading 'useContext')" at hook-dispatch time.
+    dedupe: ["react", "react-dom", "react-i18next", "@xyflow/react", "zustand", "radix-ui", "three"],
   },
   optimizeDeps: {
     include: [
+      // Pre-bundle React + the i18n chain together at server start so they
+      // share a single optimized chunk hash. Otherwise Vite may discover
+      // react-i18next on first plugin-page navigation and generate a
+      // mismatched React reference.
+      "react",
+      "react-dom",
+      "react-dom/client",
+      "react/jsx-runtime",
+      "react/jsx-dev-runtime",
+      "react-i18next",
+      "i18next",
+      "i18next-browser-languagedetector",
+      "@xyflow/react",
+      "zustand",
+      "zustand/traditional",
+      "radix-ui",
       "react-force-graph-3d",
       "3d-force-graph",
       "three-forcegraph",
@@ -66,12 +90,9 @@ export default defineConfig({
     ? { outDir: "dist-web" }
     : undefined,
   server: {
+    host: "127.0.0.1",
     port: 5173,
     strictPort: true,
-    // Tauri cargo 会写入 target/；Windows 上正在运行的 .exe 被 fs.watch 会 EBUSY
-    watch: {
-      ignored: ["**/src-tauri/target/**"],
-    },
     ...(isWebBuild
       ? {
           proxy: {

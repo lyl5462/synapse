@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <!-- ═══ Hardened Runtime (非 App Sandbox 模式) ═══
-         Synapse 作为 AI Agent 桌面终端，需要：
+         OpenAkita 作为 AI Agent 桌面终端，需要：
          - 启动 Python 后端进程 (PyInstaller 打包)
          - 执行用户 shell 命令
          - 读写用户文件系统任意位置
@@ -33,3 +33,4 @@
     <!-- <true/> -->
 </dict>
 </plist>
+

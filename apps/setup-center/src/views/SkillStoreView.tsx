@@ -80,7 +80,10 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
     const key = skillUniqueKey(skill);
     setInstallingSet(prev => { const next = new Set(prev); next.add(key); return next; });
     try {
-      const resp = await safeFetch(`${apiBaseUrl}/api/hub/skills/${skill.id}/install`, { method: "POST" });
+      const resp = await safeFetch(`${apiBaseUrl}/api/hub/skills/${skill.id}/install`, {
+        method: "POST",
+        signal: AbortSignal.timeout(180_000),
+      });
       const data = await resp.json();
       toast.success(t("skillStore.installSuccess", { name: data.skill_name || skill.name }));
       safeFetch(`${apiBaseUrl}/api/skills/reload`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
@@ -139,7 +142,7 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
 
       {error && (
         <div className="card" style={{ textAlign: "center", padding: "24px 16px" }}>
-          <p style={{ color: "var(--error, #dc2626)", marginBottom: 8 }}>{t("skillStore.connectFail")}</p>
+          <p style={{ color: "var(--error, #dc2626)", marginBottom: 8 }}>{error || t("skillStore.connectFail")}</p>
           <p style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
             {t("skillStore.offlineHint")}
           </p>
@@ -148,8 +151,8 @@ export function SkillStoreView({ apiBaseUrl, visible }: SkillStoreViewProps) {
       )}
 
       {!loading && !error && skills.length === 0 && (
-        <div className="card" style={{ textAlign: "center", padding: 40 }}>
-          <p style={{ color: "var(--muted)", fontSize: 15 }}>{t("skillStore.empty")}</p>
+        <div className="card" style={{ textAlign: "center", padding: 28 }}>
+          <p style={{ color: "var(--muted)", fontSize: 13 }}>{t("skillStore.empty")}</p>
         </div>
       )}
 
