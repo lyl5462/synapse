@@ -7860,9 +7860,12 @@ class Agent:
         logger.info(
             f"[CancellableLLM] 发起可取消 LLM 调用, cancel_event.is_set={cancel_event.is_set()}"
         )
+        _scene = str(getattr(self, "_execute_task_usage_scene", "") or "").strip()
+        _operation_type = _scene if _scene and _scene != "unknown" else "chat"
         _tt = set_tracking_context(
             TokenTrackingContext(
-                operation_type="chat",
+                operation_type=_operation_type[:200],
+                operation_detail=_scene[:500] if _operation_type != "chat" else "",
                 session_id=kwargs.get("conversation_id", ""),
                 channel="cli",
             )
@@ -9155,13 +9158,18 @@ class Agent:
         _, _final = parse_intent_tag(_final)
         return _final or "操作完成"
 
-    async def execute_task_from_message(self, message: str) -> TaskResult:
+    async def execute_task_from_message(
+        self,
+        message: str,
+        usage_scene: str = "unknown",
+    ) -> TaskResult:
         """从消息创建并执行任务"""
         task = Task(
             id=str(uuid.uuid4())[:8],
             description=message,
             session_id=getattr(self, "_current_session_id", None),  # 关联当前会话
             priority=1,
+            usage_scene=usage_scene,
         )
         return await self.execute_task(task)
 
@@ -9373,6 +9381,8 @@ class Agent:
             else asyncio.Event()
         )
 
+        self._execute_task_usage_scene = str(getattr(task, "usage_scene", "") or "unknown")
+
         def _fail_task(error: str) -> TaskResult:
             """Finish task execution with a stable TaskResult failure contract."""
             duration = time.time() - start_time
@@ -9477,6 +9487,13 @@ class Agent:
                         )
 
                     # 调用 Brain（可被 cancel_event 中断）
+                    if getattr(self, "_org_context", False):
+                        try:
+                            from synapse.rd_meeting.agent_activity import mark_llm_call_start
+
+                            mark_llm_call_start(self)
+                        except Exception as _mark_exc:
+                            logger.debug("mark_llm_call_start failed: %s", _mark_exc)
                     response = await self._cancellable_llm_call(
                         _cancel_event,
                         max_tokens=self.brain.max_tokens,
@@ -9488,6 +9505,24 @@ class Agent:
 
                     # 成功调用，重置重试计数
                     task_monitor.reset_retry_count()
+
+                    if getattr(self, "_org_context", False):
+                        _usage = getattr(response, "usage", None)
+                        if _usage is not None:
+                            try:
+                                from synapse.rd_meeting.agent_activity import (
+                                    try_record_llm_usage_from_agent,
+                                )
+
+                                try_record_llm_usage_from_agent(
+                                    self,
+                                    input_tokens=int(getattr(_usage, "input_tokens", 0) or 0),
+                                    output_tokens=int(getattr(_usage, "output_tokens", 0) or 0),
+                                    usage_scene=str(task.usage_scene or ""),
+                                    model=str(current_model or ""),
+                                )
+                            except Exception as _usage_exc:
+                                logger.debug("meeting llm usage record failed: %s", _usage_exc)
 
                 except UserCancelledError:
                     logger.info(
@@ -9854,6 +9889,8 @@ class Agent:
             # 清理 per-conversation override，避免影响后续任务/会话
             with contextlib.suppress(Exception):
                 self.brain.restore_default_model(conversation_id=conversation_id)
+            with contextlib.suppress(Exception):
+                del self._execute_task_usage_scene
 
         # === 完成任务监控 ===
         metrics = task_monitor.complete(

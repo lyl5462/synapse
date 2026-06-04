@@ -693,6 +693,18 @@ def create_app(
         except Exception as e:
             logger.debug(f"[Startup] Compiler health check skipped: {e}")
 
+        try:
+            from synapse.rd_meeting.room_stop import mark_active_rooms_stopped_on_server_restart
+
+            n = await asyncio.to_thread(mark_active_rooms_stopped_on_server_restart)
+            if n:
+                logger.warning(
+                    "[Startup] Marked %s in-flight meeting room(s) as stopped (server restart)",
+                    n,
+                )
+        except Exception as e:
+            logger.warning("[Startup] mark meeting rooms stopped after restart failed: %s", e)
+
     @app.on_event("shutdown")
     async def _shutdown_org_runtime():
         if hasattr(app.state, "org_runtime") and app.state.org_runtime:
