@@ -848,7 +848,13 @@ export type ProductKnowledgeGenerateBody = {
 };
 
 /** Synapse GET /api/config/endpoints（非 errorcode 封装） */
-export type LlmEndpointCatalogItem = { name: string; model?: string };
+export type LlmEndpointCatalogItem = {
+  name: string;
+  model?: string;
+  /** 越小越优先，与 data/llm_endpoints.json 一致 */
+  priority?: number;
+  enabled?: boolean;
+};
 
 export async function fetchLlmEndpointsCatalog(
   synapseApiBase: string,
@@ -870,7 +876,11 @@ export async function fetchLlmEndpointsCatalog(
       const o = e as Record<string, unknown>;
       const name = String(o?.name ?? "").trim();
       const model = o?.model != null ? String(o.model) : undefined;
-      return { name, model };
+      const priorityRaw = o?.priority;
+      const priority =
+        priorityRaw != null && Number.isFinite(Number(priorityRaw)) ? Number(priorityRaw) : undefined;
+      const enabled = o?.enabled !== false;
+      return { name, model, priority, enabled };
     })
     .filter((row) => row.name.length > 0);
 }

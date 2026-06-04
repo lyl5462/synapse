@@ -3,7 +3,10 @@
  * — 类型标签来自 rd-sop/constants.ts；开启状态来自 meeting-room-config
  */
 import { ALL_NODES, NODE_TYPE_LABEL, type NodeType } from './constants';
-import type { MeetingRoomNodeOverride } from '../api/meetingRoomService';
+import type {
+  MeetingRoomConfigPayload,
+  MeetingRoomNodeOverride,
+} from '../api/meetingRoomService';
 
 /** 流水线节点在 UI 上的状态（会议室与工单看板对齐） */
 export type SopPipelineNodeState =
@@ -83,6 +86,91 @@ export function getSopNodeTypeInfo(type: NodeType): SopNodeTypePresentation {
 /** 已跳过节点卡片样式（与 styles.css 中 rd-meeting-node-card--skipped 配套） */
 export const SOP_NODE_SKIPPED_CARD_CLASS = 'rd-meeting-node-card--skipped';
 export const SOP_NODE_SKIPPED_CARD_SELECTED_CLASS = 'rd-meeting-node-card--skipped-selected';
+
+export type LlmEndpointCatalogRow = {
+  name: string;
+  model?: string;
+  priority?: number;
+  enabled?: boolean;
+};
+
+/** 与后端 LLMClient 一致：未指定端点时取启用项中 priority 最小者 */
+export function pickDefaultLlmEndpointFromCatalog(
+  catalog: readonly LlmEndpointCatalogRow[],
+): LlmEndpointCatalogRow | undefined {
+  const enabled = catalog.filter((row) => row.enabled !== false);
+  const pool = enabled.length > 0 ? enabled : [...catalog];
+  if (!pool.length) return undefined;
+  return [...pool].sort((a, b) => {
+    const pa = Number.isFinite(a.priority) ? (a.priority as number) : 999;
+    const pb = Number.isFinite(b.priority) ? (b.priority as number) : 999;
+    if (pa !== pb) return pa - pb;
+    return a.name.localeCompare(b.name);
+  })[0];
+}
+
+/** 会议室 host_llm_endpoint_key：`default` 表示自动路由，非目录中的端点名 */
+export function resolveLlmEndpointFromCatalog(
+  endpointKey: string,
+  catalog: readonly LlmEndpointCatalogRow[],
+): LlmEndpointCatalogRow | undefined {
+  const key = (endpointKey || 'default').trim() || 'default';
+  if (key === 'default') return pickDefaultLlmEndpointFromCatalog(catalog);
+  return catalog.find((row) => row.name === key);
+}
+
+/** 系统节点不展示 LLM 模型；其余节点（含人工/协同）均走主控小鲸绑定端点 */
+export function sopNodeShowsLlmMetrics(nodeType: NodeType): boolean {
+  return nodeType !== 'system';
+}
+
+/** 流水线节点卡片「模型」：主控绑定端点在目录中的 model 字段（与会议室配置一致） */
+export function resolveSopNodeModelDisplay(
+  nodeType: NodeType,
+  nodeId: string,
+  config: Pick<MeetingRoomConfigPayload, 'host_llm_endpoint_key' | 'bindings'> | null | undefined,
+  catalog: readonly LlmEndpointCatalogRow[],
+): string {
+  if (nodeType === 'system') return '系统';
+  const binding = config?.bindings?.find((b) => b.node_id === nodeId);
+  const hostKey =
+    (binding?.host_llm_endpoint_key || config?.host_llm_endpoint_key || 'default').trim() ||
+    'default';
+  const ep = resolveLlmEndpointFromCatalog(hostKey, catalog);
+  const model = (ep?.model || '').trim();
+  if (model) return model;
+  if (ep?.name) return ep.name;
+  return hostKey === 'default' ? '—' : hostKey;
+}
+
+export type SopNodeRuntimeMetrics = {
+  deal_seconds: number;
+  tokens: number;
+};
+
+export type SopNodeReviewMetricsSlice = {
+  node_token_total: number;
+  node_duration_seconds: number;
+};
+
+/**
+ * 与 MeetingNodeDetailPanel 一致：优先 node-review（activity 汇总），其次 meeting-summary。
+ */
+export function pickSopNodePipelineMetrics(
+  review: SopNodeReviewMetricsSlice | undefined,
+  summary: SopNodeRuntimeMetrics | undefined,
+  hasMeetingSummary: boolean,
+): SopNodeRuntimeMetrics | null {
+  if (review) {
+    return {
+      tokens: review.node_token_total,
+      deal_seconds: review.node_duration_seconds,
+    };
+  }
+  if (!hasMeetingSummary) return null;
+  if (!summary) return { deal_seconds: 0, tokens: 0 };
+  return summary;
+}
 
 export function resolveSopPipelineNodeState(
   input: SopPipelineStateInput,

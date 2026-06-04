@@ -34,7 +34,6 @@ import {
   Loader2,
   AlertCircle,
   Search,
-  Banknote,
   RefreshCw,
   ExternalLink,
   SkipForward,
@@ -54,12 +53,19 @@ import {
   fetchMeetingSummary,
   fetchMeetingRoomConfig,
   fetchMeetingRoomLive,
+  fetchNodeReview,
   openMeetingRoom,
   type MeetingRoomArchiveEntry,
+  type MeetingRoomConfigPayload,
   type MeetingSummaryPayload,
+  type NodeReviewMetrics,
 } from '../../api/meetingRoomService';
 import { setMeetingRoomFocus } from '../../rd-meeting/focus';
-import { getProdInfo } from '@/api/rdUnifiedService';
+import {
+  fetchLlmEndpointsCatalog,
+  getProdInfo,
+  type LlmEndpointCatalogItem,
+} from '@/api/rdUnifiedService';
 import type { ProdInfoWireItem, ProdProcessDataPayload } from '@/api/rdUnifiedService';
 import { IS_TAURI } from '@/platform';
 import { ProductDetail } from '@/components/product/ProductDetail';
@@ -90,7 +96,10 @@ import {
 import {
   buildDisabledSopNodeIds,
   getSopNodeTypeInfo,
+  pickSopNodePipelineMetrics,
+  resolveSopNodeModelDisplay,
   resolveSopPipelineNodeState,
+  sopNodeShowsLlmMetrics,
   SOP_NODE_SKIPPED_CARD_CLASS,
   type SopPipelineRunStatus,
 } from '../../rd-sop/nodePresentation';
@@ -601,7 +610,20 @@ export const OrderManagement: React.FC<{
   const [meetingSummaryErr, setMeetingSummaryErr] = useState<string | null>(null);
   const [roomScopeIndex, setRoomScopeIndex] = useState<Map<string, string>>(new Map());
   const [disabledSopNodeIds, setDisabledSopNodeIds] = useState<Set<string>>(() => new Set());
+  const [meetingRoomConfig, setMeetingRoomConfig] = useState<MeetingRoomConfigPayload | null>(null);
   const [runtimeSkippedNodeIds, setRuntimeSkippedNodeIds] = useState<string[]>([]);
+  const [llmEndpointCatalog, setLlmEndpointCatalog] = useState<LlmEndpointCatalogItem[]>(
+    [],
+  );
+  const [nodeReviewMetricsById, setNodeReviewMetricsById] = useState<
+    Map<string, NodeReviewMetrics>
+  >(() => new Map());
+  const [nodeReviewLoading, setNodeReviewLoading] = useState(false);
+
+  const pipelineNodeIds = useMemo(
+    () => ALL_NODES.filter((n) => n.id !== 'pending').map((n) => n.id),
+    [],
+  );
 
   const [collapsedStages, setCollapsedStages] = useState<Record<number, boolean>>({});
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -752,12 +774,27 @@ export const OrderManagement: React.FC<{
     const base = (synapseApiBase || '').trim();
     if (!base) return;
     let cancelled = false;
-    void fetchMeetingRoomConfig(base)
-      .then((cfg) => {
-        if (!cancelled) setDisabledSopNodeIds(buildDisabledSopNodeIds(cfg.node_overrides));
+    void Promise.all([
+      fetchMeetingRoomConfig(base),
+      fetchLlmEndpointsCatalog(base).catch((e: unknown) => {
+        console.warn('[OrderManagement] fetchLlmEndpointsCatalog failed:', e);
+        return [] as LlmEndpointCatalogItem[];
+      }),
+    ])
+      .then(([cfg, catalog]) => {
+        if (!cancelled) {
+          setMeetingRoomConfig(cfg);
+          setDisabledSopNodeIds(buildDisabledSopNodeIds(cfg.node_overrides));
+          setLlmEndpointCatalog(catalog);
+        }
       })
-      .catch(() => {
-        if (!cancelled) setDisabledSopNodeIds(new Set());
+      .catch((e: unknown) => {
+        console.warn('[OrderManagement] meeting room config load failed:', e);
+        if (!cancelled) {
+          setMeetingRoomConfig(null);
+          setDisabledSopNodeIds(new Set());
+          setLlmEndpointCatalog([]);
+        }
       });
     return () => {
       cancelled = true;
@@ -771,6 +808,32 @@ export const OrderManagement: React.FC<{
     }
     return m;
   }, [meetingSummary]);
+
+  const refreshNodeReviewMetrics = useCallback(
+    async (roomId: string, nodeIds: string[]) => {
+      const base = (synapseApiBase || '').trim();
+      if (!base || !roomId || !nodeIds.length) return;
+      const results = await Promise.all(
+        nodeIds.map(async (nodeId) => {
+          if (nodeId === 'solution_review') return null;
+          try {
+            const payload = await fetchNodeReview(base, roomId, { nodeId });
+            return { nodeId, metrics: payload.metrics };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      setNodeReviewMetricsById((prev) => {
+        const next = new Map(prev);
+        for (const row of results) {
+          if (row) next.set(row.nodeId, row.metrics);
+        }
+        return next;
+      });
+    },
+    [synapseApiBase],
+  );
 
   const meetingArchiveByNodeId = useMemo(() => {
     const m = new Map<string, MeetingRoomArchiveEntry['files']>();
@@ -1024,6 +1087,55 @@ export const OrderManagement: React.FC<{
       cancelled = true;
     };
   }, [synapseApiBase, activeMeetingRoomId, displayTicket?.currentNode]);
+
+  useEffect(() => {
+    const roomId = activeMeetingRoomId;
+    if (!roomId) {
+      setNodeReviewMetricsById(new Map());
+      return;
+    }
+    let cancelled = false;
+    setNodeReviewLoading(true);
+    void refreshNodeReviewMetrics(roomId, pipelineNodeIds).finally(() => {
+      if (!cancelled) setNodeReviewLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMeetingRoomId, pipelineNodeIds, refreshNodeReviewMetrics]);
+
+  useEffect(() => {
+    if (!sopMeetingScope?.scopeId) return;
+    if (displayTicket?.status !== 'processing') return;
+    const base = (synapseApiBase || '').trim();
+    if (!base) return;
+    let cancelled = false;
+    const poll = () => {
+      void fetchMeetingSummary(synapseApiBase, sopMeetingScope.scopeType, sopMeetingScope.scopeId)
+        .then((data) => {
+          if (!cancelled) setMeetingSummary(data);
+        })
+        .catch(() => {});
+      const roomId = activeMeetingRoomId;
+      const focusId = displayTicket?.currentNode;
+      if (roomId && focusId) {
+        void refreshNodeReviewMetrics(roomId, [focusId]);
+      }
+    };
+    const timer = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    sopMeetingScope?.scopeId,
+    sopMeetingScope?.scopeType,
+    displayTicket?.status,
+    displayTicket?.currentNode,
+    synapseApiBase,
+    activeMeetingRoomId,
+    refreshNodeReviewMetrics,
+  ]);
 
   // Simulate real-time token consumption for processing tickets
   useEffect(() => {
@@ -2059,24 +2171,34 @@ export const OrderManagement: React.FC<{
                         // Group AI nodes highly compressed (-mr-12 for horizontal overlapping), separate human intervention/wait nodes heavily (mr-32)
                         const marginClass = nIdx === stage.nodes.length - 1 ? 'mr-16' : (isHuman || isNextHuman ? 'mr-32' : '-mr-12');
                         
-                        const nodeHash = node.id.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-                        const liveMetrics = meetingNodeMetricsById.get(node.id);
-                        const useLiveMetrics =
-                          liveMetrics != null &&
-                          (state === 'completed' || state === 'processing') &&
-                          (liveMetrics.deal_seconds > 0 || liveMetrics.tokens > 0);
-                        const timeStr = useLiveMetrics
-                          ? formatDurationSeconds(liveMetrics.deal_seconds, t)
-                          : isHuman
-                            ? `${(nodeHash % 4) + 1}h ${nodeHash % 60}m`
-                            : `${((nodeHash % 50) / 10 + 0.5).toFixed(1)}s`;
-                        const modelStr = isHuman ? '人工处理' : ['Claude-3.5', 'GPT-4o', 'Gemini-1.5'][nodeHash % 3];
+                        const hasMeetingSummary = Boolean(meetingSummary);
+                        const runtimeMetrics = pickSopNodePipelineMetrics(
+                          nodeReviewMetricsById.get(node.id),
+                          meetingNodeMetricsById.get(node.id),
+                          hasMeetingSummary,
+                        );
+                        const metricsLoading =
+                          nodeReviewLoading && !nodeReviewMetricsById.has(node.id);
+                        const modelStr = resolveSopNodeModelDisplay(
+                          node.type,
+                          node.id,
+                          meetingRoomConfig,
+                          llmEndpointCatalog,
+                        );
+                        const timeStr =
+                          runtimeMetrics != null
+                            ? formatDurationSeconds(runtimeMetrics.deal_seconds, t)
+                            : metricsLoading || meetingSummaryLoading
+                              ? '…'
+                              : '—';
                         const tokenStr =
-                          useLiveMetrics && !isHuman
-                            ? formatTokenCount(liveMetrics.tokens)
-                            : isHuman
-                              ? '--'
-                              : `${((nodeHash % 50 + 10) / 10).toFixed(1)}k`;
+                          runtimeMetrics != null
+                            ? formatTokenCount(runtimeMetrics.tokens)
+                            : metricsLoading || meetingSummaryLoading
+                              ? '…'
+                              : '—';
+                        const showNodeMetricsRow =
+                          !isSkipped && sopNodeShowsLlmMetrics(node.type);
                         
                         let cardClass = "min-h-[9rem] h-auto border-border bg-card/60 text-muted-foreground";
                         let iconClass = "text-muted-foreground";
@@ -2124,140 +2246,34 @@ export const OrderManagement: React.FC<{
                               </div>
                             );
                           }
-                          // Calculate duration in minutes (mock based on nodeHash)
-                          const durationMinutes = isHuman ? (nodeHash % 60) + 30 : (nodeHash % 15) + 2;
-                          
-                          // Determine number of points (max 10, min 1 per minute)
-                          const numPoints = Math.min(10, durationMinutes);
-                          const interval = durationMinutes / numPoints;
-                          
-                          // Generate monotonically increasing token data
-                          const totalTokensMock = (nodeHash % 50 + 10) * 1000;
-                          const tokenData = Array.from({ length: numPoints }).map((_, i) => {
-                            const timeMark = Math.round((i + 1) * interval);
-                            // Use a curve that grows faster at the end to make it look realistic
-                            const progress = (i + 1) / numPoints;
-                            const tokensAtPoint = Math.round(totalTokensMock * Math.pow(progress, 1.5));
-                            return { 
-                              time: `${timeMark}m`, 
-                              tokens: tokensAtPoint 
-                            };
-                          });
-                          
-                          const maxTokens = Math.max(...tokenData.map(d => d.tokens), 1);
-                          const totalTokens = tokenData[tokenData.length - 1]?.tokens || 0;
-                          
-                          // Mock pricing
-                          const pricingMap: Record<string, number> = {
-                            'Claude-3.5': 0.003, // $0.003 per 1k tokens
-                            'GPT-4o': 0.005,
-                            'Gemini-1.5': 0.0015
-                          };
-                          const pricePer1k = pricingMap[modelStr] || 0.002;
-                          const totalCost = (totalTokens / 1000) * pricePer1k;
-
-                          // SVG Line Chart coordinates
-                          const chartWidth = 280;
-                          const chartHeight = 60;
-                          const points = tokenData.map((d, i) => {
-                            const x = (i / (Math.max(1, tokenData.length - 1))) * chartWidth;
-                            const y = chartHeight - (d.tokens / maxTokens) * chartHeight;
-                            return `${x},${y}`;
-                          }).join(' ');
-
                           return (
-                            <div className="w-80 p-2">
-                              <div className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1.5">
-                                <TerminalSquare className="w-3.5 h-3.5" /> 节点微览
-                              </div>
-                              <div className="bg-black/40 rounded p-3 text-[10px] font-mono text-green-400 h-36 overflow-y-auto custom-scrollbar relative">
-                                <div>&gt; [INFO] Initializing node environment...</div>
-                                <div>&gt; [INFO] Loading dependencies for {node.name}...</div>
-                                <div>&gt; [INFO] Executing {node.name}...</div>
-                                {state === 'completed' && (
-                                  <>
-                                    <div>&gt; [INFO] Processing data chunks...</div>
-                                    <div>&gt; [INFO] Validating output format...</div>
-                                    <div>&gt; [SUCCESS] Output generated successfully.</div>
-                                    <div className="text-blue-400 mt-1">&gt; [METRICS] Time: {timeStr}, Tokens: {tokenStr}</div>
-                                  </>
-                                )}
-                                {state === 'processing' && (
-                                  <>
-                                    <div>&gt; [RUNNING] Analyzing data structure...</div>
-                                    <div>&gt; [RUNNING] Generating abstract syntax tree...</div>
-                                    <div className="animate-pulse text-amber-400 mt-1">&gt; [RUNNING] Awaiting model response...</div>
-                                  </>
-                                )}
-                                {state === 'error' && (
-                                  <>
-                                    <div>&gt; [RUNNING] Analyzing data...</div>
-                                    <div className="text-red-400 mt-1">&gt; [ERROR] Execution failed at line 42.</div>
-                                    <div className="text-red-400">&gt; [ERROR] Timeout waiting for model response.</div>
-                                  </>
-                                )}
-                                {state === 'awaiting_human' && (
-                                  <>
-                                    <div>&gt; [RUNNING] Analyzing data...</div>
-                                    <div className="text-amber-400 mt-1">&gt; [WARN] Ambiguous requirements detected.</div>
-                                    <div className="text-amber-400">&gt; [WARN] Waiting for human clarification.</div>
-                                  </>
-                                )}
-                              </div>
-                              {!isHuman && (
-                                <div className="mt-4">
-                                  <div className="flex items-center justify-between text-[10px] mb-2">
-                                    <span className="text-muted-foreground flex items-center gap-1">
-                                      <TrendingUp className="w-3 h-3"/> Token 消耗总量趋势
-                                    </span>
-                                    <div className="flex items-center gap-3">
-                                      <span className="text-amber-500 flex items-center gap-1" title="当前总消耗">
-                                        <Coins className="w-3 h-3"/>
-                                        {totalTokens >= 1000 ? (totalTokens/1000).toFixed(1) + 'k' : totalTokens}
-                                      </span>
-                                      <span className="text-emerald-500 flex items-center gap-1" title={`模型定价: $${pricePer1k}/1k tk`}>
-                                        <Banknote className="w-3 h-3"/>
-                                        {totalCost.toFixed(4)} 元
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <div className="relative w-full h-[60px] mt-2 text-primary">
-                                    <svg width="100%" height="100%" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
-                                      <defs>
-                                        <linearGradient id="lineGradient" x1="0" y1="0" x2="0" y2="1">
-                                          <stop offset="0%" stopColor="currentColor" stopOpacity="0.3" />
-                                          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
-                                        </linearGradient>
-                                      </defs>
-                                      <polygon 
-                                        points={`0,${chartHeight} ${points} ${chartWidth},${chartHeight}`} 
-                                        fill="url(#lineGradient)" 
-                                      />
-                                      <polyline 
-                                        points={points} 
-                                        fill="none" 
-                                        stroke="currentColor" 
-                                        strokeWidth="2" 
-                                        strokeLinecap="round" 
-                                        strokeLinejoin="round" 
-                                      />
-                                      {tokenData.map((d, i) => {
-                                        const x = (i / (Math.max(1, tokenData.length - 1))) * chartWidth;
-                                        const y = chartHeight - (d.tokens / maxTokens) * chartHeight;
-                                        return (
-                                          <circle key={i} cx={x} cy={y} r="3" fill="#0f172a" stroke="currentColor" strokeWidth="1.5" />
-                                        );
-                                      })}
-                                    </svg>
-                                  </div>
+                            <div className="w-72 p-3 text-xs">
+                              <div className="mb-2 font-medium text-foreground">{node.name}</div>
+                              <dl className="space-y-1.5 text-muted-foreground">
+                                <div className="flex justify-between gap-3">
+                                  <dt>模型</dt>
+                                  <dd className="font-mono text-foreground/90">{modelStr}</dd>
                                 </div>
-                              )}
+                                <div className="flex justify-between gap-3">
+                                  <dt>耗时</dt>
+                                  <dd className="font-mono text-foreground/90">{timeStr}</dd>
+                                </div>
+                                <div className="flex justify-between gap-3">
+                                  <dt>Token</dt>
+                                  <dd className="font-mono text-amber-500/90">{tokenStr}</dd>
+                                </div>
+                              </dl>
+                              {!activeMeetingRoomId && !meetingSummaryLoading ? (
+                                <p className="mt-2 text-[10px] text-muted-foreground/80">
+                                  开会后将与节点处理详情一致，从 activity 汇总指标。
+                                </p>
+                              ) : null}
                             </div>
                           );
                         };
 
                         return (
-                          <div id={`node-${node.id}`} key={node.id} className={`relative flex h-full min-h-0 w-56 flex-col items-center justify-center self-stretch ${marginClass}`}>
+                          <div id={`node-${node.id}`} key={node.id} className={`relative flex h-full min-h-0 w-[17.5rem] flex-col items-center justify-center self-stretch ${marginClass}`}>
                             {/* Stem connecting card to central bus */}
                             <div className={`absolute left-1/2 w-0.5 -translate-x-1/2 ${lineClass} z-0 ${
                               isTop ? 'bottom-[calc(50%+3px)] h-[37px]' : 'top-[calc(50%+3px)] h-[37px]'
@@ -2321,26 +2337,25 @@ export const OrderManagement: React.FC<{
                                 </h4>
                                 <p className="line-clamp-3 min-h-[2.75rem] text-[11px] leading-relaxed opacity-80">{node.desc}</p>
                                 
-                                {state === 'completed' && (
-                                  <div className="mt-2 flex w-full items-center justify-between gap-2 border-t border-border/60 pt-2 font-mono text-[10px] text-muted-foreground">
-                                    {!isHuman && (
-                                      <div className="flex items-center gap-1 opacity-80" title="执行模型">
-                                        <Cpu className="h-3 w-3 text-primary/70" />
-                                        <span>{modelStr}</span>
-                                      </div>
-                                    )}
-                                    <div className="ml-auto flex items-center gap-1 opacity-80" title="节点耗时">
-                                      <Clock className="h-3 w-3 text-muted-foreground" />
-                                      <span>{timeStr}</span>
-                                    </div>
-                                    {!isHuman && (
-                                      <div className="flex items-center gap-1 opacity-80" title="Token消耗">
-                                        <Coins className="h-3 w-3 text-amber-500/80" />
-                                        <span>{tokenStr}</span>
-                                      </div>
-                                    )}
+                                {showNodeMetricsRow ? (
+                                  <div
+                                    className="mt-2 flex w-full items-center gap-2 border-t border-border/60 pt-2 font-mono text-[9px] leading-none text-muted-foreground"
+                                    title={`模型 ${modelStr} · 耗时 ${timeStr} · Token ${tokenStr}`}
+                                  >
+                                    <span className="flex min-w-0 flex-1 items-center gap-1 truncate opacity-90">
+                                      <Cpu className="h-3 w-3 shrink-0 text-primary/70" />
+                                      <span className="truncate text-foreground/85">{modelStr}</span>
+                                    </span>
+                                    <span className="inline-flex shrink-0 items-center gap-0.5 opacity-85">
+                                      <Clock className="h-3 w-3" />
+                                      {timeStr}
+                                    </span>
+                                    <span className="inline-flex shrink-0 items-center gap-0.5 text-amber-500/90">
+                                      <Coins className="h-3 w-3" />
+                                      {tokenStr}
+                                    </span>
                                   </div>
-                                )}
+                                ) : null}
                               </motion.div>
                             </Popover>
                           </div>
