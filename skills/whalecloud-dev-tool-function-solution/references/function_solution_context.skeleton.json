@@ -1,0 +1,33 @@
+{
+  "REQUIREMENT_NAME": "[待补充]",
+  "DEMAND_DESC": "[待补充]",
+  "scope_overview": "[待补充]",
+  "tech_stack_constraints": "[待补充]",
+  "data_flow_diagram": "[待补充]",
+  "function_stats": "[待补充]",
+  "code_confirm_rate": "[待补充]",
+  "PROD": "[待补充]",
+  "STATUS": "draft",
+  "repos": [],
+  "terms": [],
+  "data_structures": [],
+  "db_changes": [],
+  "message_contracts": [],
+  "enums": [],
+  "modules": [],
+  "cross_module_calls": [],
+  "interface_summary": [],
+  "tech_constraints": [],
+  "risk_mitigations": [],
+  "boundary_constraints": [],
+  "performance_impacts": [],
+  "functional_impacts": [],
+  "config_changes": [],
+  "upgrade_risks": [],
+  "security_impacts": [],
+  "compatibility_impacts": [],
+  "ui_ue": [],
+  "acceptance_mapping": [],
+  "code_confirmations": [],
+  "pending_items": []
+}

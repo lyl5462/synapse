@@ -37,6 +37,14 @@
 | `STATUS` | 如 `draft` / `confirmed` |
 | 与模板标题相关的名称字段 | 如 `REQUIREMENT_NAME`、`PROD` 等，由调用方传入 |
 
+## 函数级方案（`函数级方案.md`）
+
+- `CONTEXT_JSON` 为**内联 JSON 字符串**或 **`.json` 文件路径**（与其它模板相同）。
+- 使用结构化字段（列表 + 标量），**禁止** `DOCUMENT_BODY`；骨架见 `whalecloud-dev-tool-function-solution/references/function_solution_context.skeleton.json`。
+- **必须**运行 `fill_function_solution.py` 填充模板（填充前 `validate_context` 校验契约），**禁止**手填 `{{VAR}}` / `{{#each}}`；脚本仅写 `.tmp` 草稿，交付物须 `read_file` + `write_file`（见 doc-generate Step 3a）。
+- 可选预检：`python .../fill_function_solution.py --validate-only <context.json>`
+- 验收：无 `{{` 残留；保留模板全部固定标题（`## 1. 方案内容` … `## 2. 附录`、`### 1.7 模块改造方案` 等）及表格列名。
+
 ## 输出
 
 - 填充完成后得到纯 Markdown 字符串，不含 Handlebars 未解析残留（不应出现 `{{#each` 等）。
