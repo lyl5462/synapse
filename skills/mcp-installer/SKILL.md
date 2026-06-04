@@ -300,7 +300,7 @@ add_mcp_server(
 | 问题 | 可能原因 | 解决方法 |
 |------|---------|---------|
 | 命令未找到 | 未安装或不在 PATH | 安装对应运行时（Node.js/Python） |
-| 连接超时 | 服务器启动慢或卡死 | 增大 `MCP_CONNECT_TIMEOUT`（默认 30s） |
+| 连接超时 | 服务器启动慢或卡死 | 增大 `MCP_CONNECT_TIMEOUT`（默认 60s） |
 | HTTP 连接失败 | URL 错误或服务未启动 | 确认 URL 正确且服务已运行 |
 | 工具为空 | 连接未成功 | 先确保 `connect_mcp_server` 成功 |
 | 权限错误 | API Key 缺失或无效 | 检查 `env` 中的凭证配置 |
@@ -312,3 +312,4 @@ add_mcp_server(
 - **断开**: `disconnect_mcp_server("name")`
 - **删除**: `remove_mcp_server("name")`（仅 `data/mcp/servers/` 中的配置）
 - **重新加载全部**: `reload_mcp_servers`
+

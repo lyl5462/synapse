@@ -486,7 +486,7 @@ Please add steps to your TodoList, if you have such a thing, to make sure you do
 
 ## Synapse-Specific Instructions
 
-Only follow this section when running in a Synapse environment (env `SYNAPSE=1`).
+Only follow this section when running in an Synapse environment (env `SYNAPSE=1`).
 
 ### Quick Initialization
 
@@ -515,7 +515,7 @@ i18n:
     description: "技能功能的中文描述"
 ```
 
-The `interface` block follows the standard openai.yaml schema (display_name, short_description, default_prompt, icon_small, icon_large, brand_color). The `i18n` block is Synapse-specific — it provides localized names and descriptions shown to Chinese-speaking users in the UI. When `init_skill.py` runs in a Synapse environment, it auto-generates the `i18n` section with TODO placeholders.
+The `interface` block follows the standard openai.yaml schema (display_name, short_description, default_prompt, icon_small, icon_large, brand_color). The `i18n` block is Synapse-specific — it provides localized names and descriptions shown to Chinese-speaking users in the UI. When `init_skill.py` runs in an Synapse environment, it auto-generates the `i18n` section with TODO placeholders.
 
 When creating or updating a skill, always fill in both `interface` and `i18n` fields.
 
@@ -537,3 +537,4 @@ Synapse keeps additional reference files not present in the upstream skill-creat
 Consult these when designing skills that involve sequential workflows or need strict output formats.
 
 Good luck!
+

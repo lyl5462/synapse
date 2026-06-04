@@ -1,9 +1,9 @@
 [project]
 name = "synapse"
-version = "1.27.9"
+version = "1.27.17"
 description = "全能自进化AI Agent - 基于Ralph Wiggum模式，永不放弃"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.11"
 authors = [
     { name = "Synapse", email = "zacon365@gmail.com" }
@@ -12,7 +12,7 @@ keywords = ["ai", "agent", "claude", "autonomous", "self-evolving"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -53,10 +53,11 @@ dependencies = [
     "pyyaml>=6.0.1",
 
     # Utilities
-    "filelock>=3.13.0",
     "python-dotenv>=1.0.0",
     "tenacity>=8.2.3",
     "simplejson>=3.19.2",
+    # C17: cross-process audit / scheduler / event_store locking.
+    "filelock>=3.13.0",
 
     # HTTP API (serve mode + Desktop Terminal)
     "fastapi>=0.110.0",
@@ -70,12 +71,15 @@ dependencies = [
 
     # Image processing
     "Pillow>=10.0.0",
+
+    # HTML parsing for media-strategy plugin sources
+    "beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]
 # 飞书 IM 通道
 feishu = [
-    "lark-oapi>=1.4.0",
+    "lark-oapi>=1.6.2",         # 2026 上游版本，含消息/事件/卡片 API 更新
     "qrcode>=8.0",
 ]
 
@@ -86,31 +90,51 @@ dingtalk = [
 
 # 企业微信 IM 通道
 wework = [
-    "aiohttp>=3.11.0",
-    "pycryptodome>=3.19.0",
+    "aiohttp>=3.13.0",          # 多个 CVE 修复 + 性能改进
+    "pycryptodome>=3.23.0",     # ARM64 wheel + AES-GCM 性能 + 安全更新
 ]
 
 # 企业微信 WebSocket 长连接通道
 wework_ws = [
-    "websockets>=15.0.1",
-    "cryptography>=46.0.5",
+    "websockets>=15.0,<16.0",   # 兼容 lark-oapi(<16) 且保留 additional_headers API
+    "cryptography>=46.0.7",     # 补丁级安全更新
 ]
 
 # OneBot 协议通道 (NapCat/Lagrange 等)
 onebot = [
-    "websockets>=15.0.1",
+    "websockets>=15.0,<16.0",
 ]
 
 # QQ 官方机器人
+# 注意：QQ 官方 API 已支持 silk/wav/mp3/flac 直接上传（2024+），
+# 发送语音不再需要 pilk 编码。如需接收/转写用户发送的 SILK 语音
+# （由 src/synapse/channels/media/audio_utils.py 处理），请额外
+# `pip install pilk` 或安装 voice extra。
 qqbot = [
-    "websockets>=15.0.1",       # QQ Gateway WebSocket 连接
-    "aiohttp>=3.11.0",          # Webhook 模式 HTTP 回调服务器
-    "pilk>=0.2.1",              # SILK 语音编解码（QQ 语音格式）
+    "websockets>=15.0,<16.0",   # QQ Gateway WebSocket 连接；需兼容 lark-oapi(<16)
+    "aiohttp>=3.13.0",          # Webhook 模式 HTTP 回调服务器
 ]
 
 # 微信个人号 (iLink Bot API)
 wechat = [
-    "pycryptodome>=3.19.0",
+    "pycryptodome>=3.23.0",
+]
+
+# 语音接收/转写支持（QQ + 微信用户发来的 SILK v3 语音 → WAV）
+# 仅在需要语音转写功能时安装；不影响发送侧（QQ send_voice 已不依赖 pilk）。
+voice = [
+    "pilk>=0.2.1",
+]
+
+# 一等公民插件依赖的最小 SDK 版本
+# (plugins/tongyi-image / plugins/seedance-video — 它们 import
+# `from openakita_plugin_sdk import PluginBase, PluginAPI, ...` 等核心类)。
+# Monorepo 开发时 src/synapse/plugins/sdk_loader.py 会兜底注入本地源码;
+# 这里是给 pip-install 场景显式声明的最低版本。
+# Note: 0.7.0 主动收缩了 SDK API surface (移除了 contrib 子包),
+# 旧版本 0.3.x–0.6.x 上的 contrib 调用都已迁出 (见 CHANGELOG)。
+plugins = [
+    "synapse-plugin-sdk>=0.7.0",
 ]
 
 # Windows 桌面自动化
@@ -122,22 +146,40 @@ windows = [
     "psutil>=5.9.0",
 ]
 
-# 全部可选依赖（core + 所有 IM 通道 + 桌面自动化）
+# 桌面运行时依赖（Tauri Setup Center 默认安装到 app-venv）
+# 包含运行 OpenAkita 桌面后端所必需的默认能力：
+#   - 桌面交互所需进程/剪贴板工具
+#   - Windows 平台自动化（仅在 Windows 上生效，靠 marker 控制）
+# 不强制拉所有 IM 通道依赖；channel deps 由 Tauri runtime manager / channel
+# bootstrap 在 agent-venv / app-venv 按需安装。
+desktop = [
+    "synapse-plugin-sdk>=0.7.0",
+    "websockets>=15.0,<16.0",
+    "psutil>=5.9.0",
+    "pyperclip>=1.8.2",
+    "mss>=9.0.0; platform_system == 'Windows'",
+    "pyautogui>=0.9.54; platform_system == 'Windows'",
+    "pywinauto>=0.6.8; platform_system == 'Windows'",
+]
+
+# 全部可选依赖（core + 所有 IM 通道 + 桌面自动化 + 插件 SDK）
 all = [
     # -- IM 通道 --
-    "lark-oapi>=1.4.0",
+    "lark-oapi>=1.6.2",
     "dingtalk-stream>=0.24.3",
-    "aiohttp>=3.11.0",
-    "pycryptodome>=3.19.0",
-    "websockets>=15.0.1",
-    "cryptography>=46.0.5",
-    "pilk>=0.2.1",
+    "aiohttp>=3.13.0",
+    "pycryptodome>=3.23.0",
+    "websockets>=15.0,<16.0",
+    "cryptography>=46.0.7",
+    "pilk>=0.2.1",  # 语音接收/转写（QQ/微信 SILK 解码），发送不再需要
     # -- 桌面自动化 --
     "mss>=9.0.0",
     "pyautogui>=0.9.54",
     "pywinauto>=0.6.8; platform_system == 'Windows'",
     "pyperclip>=1.8.2",
     "psutil>=5.9.0",
+    # -- AI 媒体插件脚手架（保持与 [project.optional-dependencies].plugins 同步）--
+    "synapse-plugin-sdk>=0.7.0",
 ]
 
 # 开发依赖
@@ -230,6 +272,37 @@ packages = ["src/synapse"]
 "skills/superpowers-workflow" = "synapse/builtin_skills/external/superpowers-workflow"
 "skills/superpowers-writing-plans" = "synapse/builtin_skills/external/superpowers-writing-plans"
 "skills/superpowers-writing-skills" = "synapse/builtin_skills/external/superpowers-writing-skills"
+# Identity templates: shipped as bundled examples so the setup wizard can
+# seed the user-customizable identity/*.md files on first install. The
+# wizard's `_resolve_identity_template` looks up these paths under the
+# installed `synapse` package directory when no repo checkout is on the
+# Python path (i.e. for `pip install synapse` users). Without this
+# block, wheel-installed users would fall through to the prompt builder's
+# 5-line `_STATIC_FALLBACKS["identity_core"]` template instead of the
+# full SOUL.md / AGENT.md / persona library shipped with the project.
+#
+# User-customizable runtime state (SOUL.md, AGENT.md, USER.md, MEMORY.md,
+# identity/runtime/**, identity/personas/user_custom.md) is intentionally
+# NOT packaged: those files are gitignored and live in the user's project
+# directory; the wizard copies these *.example/*.template files there on
+# first run.
+"identity/SOUL.md.example" = "synapse/identity/SOUL.md.example"
+"identity/AGENT.md.example" = "synapse/identity/AGENT.md.example"
+"identity/USER.md.example" = "synapse/identity/USER.md.example"
+"identity/MEMORY.md.example" = "synapse/identity/MEMORY.md.example"
+"identity/POLICIES.yaml" = "synapse/identity/POLICIES.yaml"
+"identity/CREDITS.md" = "synapse/identity/CREDITS.md"
+"identity/SYSTEM_TASKS.yaml.template" = "synapse/identity/SYSTEM_TASKS.yaml.template"
+"identity/personas/boyfriend.md" = "synapse/identity/personas/boyfriend.md"
+"identity/personas/business.md" = "synapse/identity/personas/business.md"
+"identity/personas/butler.md" = "synapse/identity/personas/butler.md"
+"identity/personas/default.md" = "synapse/identity/personas/default.md"
+"identity/personas/family.md" = "synapse/identity/personas/family.md"
+"identity/personas/girlfriend.md" = "synapse/identity/personas/girlfriend.md"
+"identity/personas/jarvis.md" = "synapse/identity/personas/jarvis.md"
+"identity/personas/tech_expert.md" = "synapse/identity/personas/tech_expert.md"
+"identity/personas/user_custom.md.example" = "synapse/identity/personas/user_custom.md.example"
+"identity/prompts/policies.md" = "synapse/identity/prompts/policies.md"
 
 [tool.ruff]
 line-length = 100
@@ -278,4 +351,11 @@ disable_error_code = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "--ignore=tests/legacy/test_refactoring.py --ignore=tests/test_refactoring.py"
+# Skip perf tests by default; CI calls them explicitly with ``-m perf``
+# or ``-m "perf or not perf"``. See tests/perf/test_policy_v2_perf.py
+# (C22 P3-3) for rationale.
+addopts = "--ignore=tests/legacy/test_refactoring.py --ignore=tests/test_refactoring.py -m 'not perf'"
+markers = [
+    "perf: SLO / performance baseline tests; deselected by default. Run with `pytest -m perf` or override via `--override-ini=addopts=`.",
+    "integration: tests that require external services or local system dependencies",
+]

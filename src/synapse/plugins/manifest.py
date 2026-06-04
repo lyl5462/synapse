@@ -53,6 +53,8 @@ ADVANCED_PERMISSIONS = frozenset(
         "vector.access",
         "settings.read",
         "llm.register",
+        "assets.publish",
+        "assets.consume",
     }
 )
 

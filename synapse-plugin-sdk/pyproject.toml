@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-plugin-sdk"
-version = "0.2.0"
-description = "SDK for building Synapse plugins — protocols, base classes, and testing helpers"
+version = "0.7.0"
+description = "SDK for building Synapse plugins — protocols, base classes, testing helpers"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

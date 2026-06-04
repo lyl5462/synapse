@@ -14,6 +14,8 @@
   <a href="https://synapse.ai/download"><img src="https://img.shields.io/badge/📥_下载-Desktop_App-blue?style=for-the-badge" alt="Download" height="28" /></a>
   &nbsp;
   <a href="https://discord.gg/vFwxNVNH"><img src="https://img.shields.io/badge/💬_Discord-加入社区-5865F2?style=for-the-badge" alt="Discord" height="28" /></a>
+  &nbsp;
+  <a href="README.md"><img src="https://img.shields.io/badge/🌍_English-README-gray?style=for-the-badge" alt="English" height="28" /></a>
 </p>
 
 <p align="center">
@@ -666,6 +668,8 @@ Synapse 对国内用户做了全面优化：
 ## 许可证
 
 Apache License 2.0 — 详见 [LICENSE](LICENSE)
+
+`Synaspe` 名称、Logo、图标、截图和其他品牌资产不在 AGPL-3.0-only 授权范围内。品牌使用规则详见 [TRADEMARK.md](TRADEMARK.md)。
 
 第三方许可证详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
