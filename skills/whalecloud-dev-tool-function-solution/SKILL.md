@@ -1,7 +1,7 @@
 ---
 name: whalecloud-dev-tool-function-solution
 description: "函数级方案技能 - 将上游模块级改造需求下钻到函数级别，输出结构化伪代码与数据设计，严格依赖产品知识体系事实确认函数存在性和签名一致性；交付物通过 whalecloud-dev-tool-doc-generate 落盘为 函数级方案.md。"
-label: 模块功能功能技能
+label: 函数级方案技能
 ---
 
 # 函数级方案技能
