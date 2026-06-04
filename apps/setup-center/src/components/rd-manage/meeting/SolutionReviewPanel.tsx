@@ -5,16 +5,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
-  Collapse,
   Input,
   Progress,
-  Table,
   Tag,
   Tooltip,
   Typography,
   message,
 } from 'antd';
-import type { TableColumnsType } from 'antd';
 import {
   ArrowRight,
   CheckCircle2,
@@ -24,26 +21,25 @@ import {
   Loader2,
   Package,
   Shield,
-  Sparkles,
   XCircle,
 } from 'lucide-react';
 
 import {
-  fetchArtifactFile,
   fetchPatchVersions,
   fetchSolutionReview,
   submitSolutionReviewDecision,
   type PatchVersionItem,
-  type SolutionReviewImpactAssessment,
   type SolutionReviewPayload,
   type SplitTaskDraft,
   type SolutionReviewRepoRow,
 } from '../../../api/meetingRoomService';
+import { ImpactAssessmentPanel } from './ImpactAssessmentPanel';
 import {
   SearchableVirtualSelect,
   type SearchableOption,
 } from '@/components/product/SearchableVirtualSelect';
 import { ReviewMarkdown } from './ReviewMarkdown';
+import { Stage2ArtifactsPanel } from './Stage2ArtifactsPanel';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -95,83 +91,6 @@ function formatScoreBreakdownValue(value: unknown): string {
     return `${Math.round(value)} 分`;
   }
   return String(value ?? '—');
-}
-
-/** 与函数级方案模板 §1.10.1–1.10.7 列定义一致 */
-const IMPACT_ASSESSMENT_SECTIONS: {
-  key: keyof SolutionReviewImpactAssessment;
-  label: string;
-  sectionTitle: string;
-  headers: string[];
-}[] = [
-  {
-    key: 'performance',
-    label: '1.10.1 性能影响分析',
-    sectionTitle: '1.10.1 性能影响分析',
-    headers: ['变更点', '性能影响类型', '影响程度', '无法规避原因', '规避措施'],
-  },
-  {
-    key: 'functional',
-    label: '1.10.2 功能影响分析',
-    sectionTitle: '1.10.2 功能影响分析',
-    headers: ['影响类型', '影响模块', '影响说明', '影响范围', '备注'],
-  },
-  {
-    key: 'config',
-    label: '1.10.3 配置变更说明',
-    sectionTitle: '1.10.3 配置变更说明',
-    headers: ['配置项', '变更类型', '配置位置', '影响范围', '变更说明'],
-  },
-  {
-    key: 'upgrade_risk',
-    label: '1.10.4 升级风险',
-    sectionTitle: '1.10.4 升级风险',
-    headers: ['风险类型', '风险描述', '风险等级', '规避措施', '回滚预案'],
-  },
-  {
-    key: 'security',
-    label: '1.10.5 安全影响',
-    sectionTitle: '1.10.5 安全影响',
-    headers: ['安全维度', '影响说明', '影响程度', '安全措施', '备注'],
-  },
-  {
-    key: 'compatibility',
-    label: '1.10.6 兼容性影响',
-    sectionTitle: '1.10.6 兼容性影响',
-    headers: ['兼容类型', '兼容项', '当前版本', '目标版本', '兼容性评估', '说明'],
-  },
-  {
-    key: 'ui_ue',
-    label: '1.10.7 UI/UE设计',
-    sectionTitle: '1.10.7 UI/UE设计',
-    headers: ['界面元素', '变更类型', '变更说明', '设计注意事项', '验收要点'],
-  },
-];
-
-function impactTableColumns(headers: string[]): TableColumnsType<Record<string, string>> {
-  return headers.map((h) => ({ title: h, dataIndex: h, key: h, ellipsis: true }));
-}
-
-function resolveTableHeaders(
-  rows: Record<string, string>[],
-  preferred: string[],
-): string[] {
-  const fromRows = new Set<string>();
-  for (const row of rows) {
-    for (const k of Object.keys(row)) {
-      if (k.trim()) fromRows.add(k.trim());
-    }
-  }
-  const ordered = preferred.filter((h) => fromRows.has(h));
-  const rest = [...fromRows].filter((h) => !ordered.includes(h));
-  return ordered.length > 0 ? [...ordered, ...rest] : preferred;
-}
-
-function tableFromRows(rows: Record<string, string>[] | undefined, headers: string[]) {
-  if (!rows?.length) return null;
-  const cols = impactTableColumns(resolveTableHeaders(rows, headers));
-  const data = rows.map((r, i) => ({ ...r, key: String(i) }));
-  return <Table size="small" columns={cols} dataSource={data} pagination={false} scroll={{ x: true }} />;
 }
 
 function repoBranchId(row: SolutionReviewRepoRow): string {
@@ -441,107 +360,6 @@ const SplitPreviewCard: React.FC<{
   );
 };
 
-// ─── 产出物浏览（仅已纳入）────────────────────────────────────────────
-
-const Stage2ArtifactsPanel: React.FC<{
-  artifacts: NonNullable<SolutionReviewPayload['inputs']>['stage2_artifacts'];
-  synapseApiBase: string;
-  roomId: string;
-}> = ({ artifacts, synapseApiBase, roomId }) => {
-  const included = useMemo(
-    () => (artifacts ?? []).filter((a) => a.included !== false && a.relative_path),
-    [artifacts],
-  );
-  const [activePath, setActivePath] = useState<string | null>(null);
-  const [content, setContent] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!included.length) {
-      setActivePath(null);
-      setContent('');
-      return;
-    }
-    const first = included[0].relative_path!;
-    if (!activePath || !included.some((a) => a.relative_path === activePath)) {
-      setActivePath(first);
-    }
-  }, [included, activePath]);
-
-  useEffect(() => {
-    if (!activePath || !synapseApiBase || !roomId) return;
-    let cancelled = false;
-    setLoading(true);
-    void fetchArtifactFile(synapseApiBase, roomId, activePath)
-      .then((file) => {
-        if (!cancelled) setContent(file.content);
-      })
-      .catch(() => {
-        if (!cancelled) message.error('无法读取产出物');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activePath, synapseApiBase, roomId]);
-
-  if (!included.length) {
-    return (
-      <div className="rounded-xl border border-dashed border-border/50 px-6 py-10 text-center text-muted-foreground text-sm">
-        暂无已纳入评审的需求设计产出物
-      </div>
-    );
-  }
-
-  const active = included.find((a) => a.relative_path === activePath);
-
-  return (
-    <div className="flex flex-col lg:flex-row gap-4 min-h-[240px]">
-      <div className="lg:w-52 shrink-0 space-y-1">
-        {included.map((a) => {
-          const selected = a.relative_path === activePath;
-          return (
-            <button
-              key={`${a.node_id}-${a.artifact}`}
-              type="button"
-              className={`w-full text-left rounded-xl px-3 py-2.5 text-sm transition-all duration-200 border ${
-                selected
-                  ? 'border-cyan-500/40 bg-cyan-500/10 text-foreground shadow-[0_0_20px_rgba(34,211,238,0.08)]'
-                  : 'border-transparent hover:bg-muted/20 text-muted-foreground hover:text-foreground'
-              }`}
-              onClick={() => a.relative_path && setActivePath(a.relative_path)}
-            >
-              <FileText className={`inline h-3.5 w-3.5 mr-1.5 ${selected ? 'text-cyan-400' : ''}`} />
-              <span className="block font-medium truncate">{a.node_name || a.node_id}</span>
-              <span className="block text-[11px] opacity-70 truncate mt-0.5">{a.artifact}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div className="flex-1 min-w-0 rounded-2xl border border-border/50 overflow-hidden bg-gradient-to-br from-[#0a0e14] via-[color:var(--panel)] to-[#0a1018] shadow-lg shadow-black/20">
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-border/40 bg-gradient-to-r from-blue-500/[0.08] to-cyan-500/[0.04]">
-          <Sparkles className="h-4 w-4 text-cyan-400" />
-          <span className="text-sm font-medium truncate">
-            {active ? `${active.node_name || active.node_id} / ${active.artifact}` : '预览'}
-          </span>
-        </div>
-        <div className="p-4 overflow-auto max-h-[360px] custom-scrollbar min-h-[180px]">
-          {loading ? (
-            <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground">
-              <Loader2 className="h-5 w-5 animate-spin text-cyan-400" />
-              正在加载…
-            </div>
-          ) : (
-            <ReviewMarkdown content={content} />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
 // ─── 主面板 ───────────────────────────────────────────────────────────
 
 export function SolutionReviewPanel({
@@ -589,20 +407,6 @@ export function SolutionReviewPanel({
 
   const repos = payload?.func_solution_parsed?.repos ?? [];
   const impact = payload?.func_solution_parsed?.impact_assessment;
-  const impactCollapseItems = useMemo(() => {
-    if (!impact) return [];
-    return IMPACT_ASSESSMENT_SECTIONS.map((spec) => {
-      const rows = impact[spec.key];
-      if (!rows?.length) return null;
-      const table = tableFromRows(rows, spec.headers);
-      if (!table) return null;
-      return {
-        key: spec.key,
-        label: spec.label,
-        children: table,
-      };
-    }).filter((item): item is NonNullable<typeof item> => item != null);
-  }, [impact]);
   const whale = payload?.whale_review;
   const artifacts = payload?.inputs?.stage2_artifacts ?? [];
   const tasks = payload?.split_tasks_draft ?? [];
@@ -833,33 +637,14 @@ export function SolutionReviewPanel({
           )}
         </section>
 
-        {/* 影响评估：仅展示从函数级方案 §1.10.1–1.10.7 解析出的表格 */}
-        <section className="rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-500/[0.04] to-orange-500/[0.02] p-5">
-          <SectionHeader
-            icon={<Shield className="h-5 w-5 text-amber-400" />}
-            title="影响评估"
-            subtitle="仅展示函数级方案 §1.10.1–1.10.7 已解析内容"
-            accent="amber"
-          />
-          {impactCollapseItems.length > 0 ? (
-            <Collapse
-              className="mt-4 [&_.ant-collapse-header]:text-foreground!"
-              defaultActiveKey={impactCollapseItems.slice(0, 3).map((i) => i.key)}
-              items={impactCollapseItems}
-            />
-          ) : (
-            <p className="mt-4 text-sm text-muted-foreground italic">
-              未在函数级方案中解析到 §1.10 影响评估表格，请确认归档文档已按模板填写 1.10.1–1.10.7 各节。
-            </p>
-          )}
-        </section>
+        <ImpactAssessmentPanel impact={impact} />
 
         {/* 需求设计产出物（仅已纳入） */}
         <section className="rounded-2xl border border-border/50 p-5 bg-[color:var(--panel)]/80">
           <SectionHeader
             icon={<FileText className="h-5 w-5" />}
             title="需求设计阶段产出物"
-            subtitle="仅展示已纳入本次评审的归档文档"
+            subtitle="顶部切换文档 · 左侧为 Markdown 目录 · 右侧滚动阅读"
             accent="cyan"
           />
           <div className="mt-4">

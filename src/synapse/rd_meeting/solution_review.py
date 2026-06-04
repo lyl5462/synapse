@@ -107,26 +107,28 @@ def _filter_content_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return out
 
 
-def _section_title_matches(title: str, heading_prefix: str) -> bool:
-    t = title.strip()
-    p = heading_prefix.strip()
-    if not t or not p:
-        return False
-    return t == p or t.startswith(p) or p in t
+_HEADING_NUM_PREFIX_RE = re.compile(r"^[\d]+(?:\.[\d]+)*\s*")
 
 
-def _extract_section(md: str, heading_prefix: str) -> str:
-    """提取标题匹配 heading_prefix 的章节正文（到下一同级或更高级标题为止）。"""
+def _normalize_heading_title(raw: str) -> str:
+    """去掉标题前的章节编号，只保留语义标题（如「性能影响分析」）。"""
+    return _HEADING_NUM_PREFIX_RE.sub("", (raw or "").strip()).strip()
+
+
+def _extract_section(md: str, title_keyword: str) -> str:
+    """按标题关键词精确匹配章节正文（到下一同级或更高级标题为止）。"""
     lines = (md or "").splitlines()
     start = -1
     level = 0
+    norm_kw = _normalize_heading_title(title_keyword)
     for i, line in enumerate(lines):
         m = _SECTION_RE.match(line.strip())
         if not m:
             continue
         title = m.group(1).strip()
         lv = len(line) - len(line.lstrip("#"))
-        if start < 0 and _section_title_matches(title, heading_prefix):
+        norm = _normalize_heading_title(title)
+        if start < 0 and (norm == norm_kw or (norm_kw and norm.startswith(norm_kw))):
             start = i + 1
             level = lv
             continue
@@ -145,94 +147,139 @@ def _extract_section(md: str, heading_prefix: str) -> str:
     return "\n".join(lines[start:end]).strip()
 
 
-# 与 skills/whalecloud-dev-tool-doc-generate/templates/函数级方案.md §1.10.1–1.10.7 对齐
-IMPACT_SECTION_SPECS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    (
-        "performance",
-        "1.10.1 性能影响分析",
-        ("变更点", "性能影响类型", "影响程度", "无法规避原因", "规避措施"),
-    ),
-    (
-        "functional",
-        "1.10.2 功能影响分析",
-        ("影响类型", "影响模块", "影响说明", "影响范围", "备注"),
-    ),
-    (
-        "config",
-        "1.10.3 配置变更说明",
-        ("配置项", "变更类型", "配置位置", "影响范围", "变更说明"),
-    ),
-    (
-        "upgrade_risk",
-        "1.10.4 升级风险",
-        ("风险类型", "风险描述", "风险等级", "规避措施", "回滚预案"),
-    ),
-    (
-        "security",
-        "1.10.5 安全影响",
-        ("安全维度", "影响说明", "影响程度", "安全措施", "备注"),
-    ),
-    (
-        "compatibility",
-        "1.10.6 兼容性影响",
-        ("兼容类型", "兼容项", "当前版本", "目标版本", "兼容性评估", "说明"),
-    ),
-    (
-        "ui_ue",
-        "1.10.7 UI/UE设计",
-        ("界面元素", "变更类型", "变更说明", "设计注意事项", "验收要点"),
-    ),
+def _list_markdown_headings(md: str) -> list[dict[str, Any]]:
+    lines = (md or "").splitlines()
+    out: list[dict[str, Any]] = []
+    for i, line in enumerate(lines):
+        m = _SECTION_RE.match(line.strip())
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        out.append(
+            {
+                "index": i,
+                "level": len(line) - len(line.lstrip("#")),
+                "title": raw,
+                "norm": _normalize_heading_title(raw),
+            }
+        )
+    return out
+
+
+def _body_after_heading(md: str, headings: list[dict[str, Any]], target: dict[str, Any]) -> str:
+    lines = md.splitlines()
+    start = int(target["index"]) + 1
+    level = int(target["level"])
+    end = len(lines)
+    for h in headings:
+        if int(h["index"]) <= int(target["index"]):
+            continue
+        if int(h["level"]) <= level:
+            end = int(h["index"])
+            break
+    return "\n".join(lines[start:end]).strip()
+
+
+def _is_impact_parent(norm: str) -> bool:
+    return norm == "影响评估" or norm.endswith("影响评估")
+
+
+def _is_impact_subsection(norm: str) -> bool:
+    if not norm or _is_impact_parent(norm):
+        return False
+    hints = (
+        "性能影响",
+        "功能影响",
+        "配置变更",
+        "升级风险",
+        "安全影响",
+        "兼容性",
+        "UI/UE",
+        "UI设计",
+        "UE设计",
+        "界面",
+    )
+    return any(h in norm for h in hints)
+
+
+# 拆单字段映射（仅内部汇总用）；展示以文档 sections 为准
+_TITLE_TO_LEGACY_KEY: tuple[tuple[str, str], ...] = (
+    ("性能影响", "performance"),
+    ("功能影响", "functional"),
+    ("配置变更", "config"),
+    ("升级风险", "upgrade_risk"),
+    ("安全影响", "security"),
+    ("兼容性", "compatibility"),
+    ("UI/UE", "ui_ue"),
+    ("界面", "ui_ue"),
 )
 
 
-def _extract_impact_subsection(md: str, section_title: str) -> str:
-    """优先按 #### 子标题抽取；失败时在 §1.10 父章节内再匹配一次。"""
-    for prefix in (section_title, section_title.split(maxsplit=1)[0]):
-        body = _extract_section(md, prefix)
-        if body.strip():
-            return body
-    parent = _extract_section(md, "1.10 影响评估")
-    if not parent.strip():
-        return ""
-    lines = parent.splitlines()
-    start = -1
-    level = 0
-    for i, line in enumerate(lines):
-        m = _SECTION_RE.match(line.strip())
-        if not m:
-            continue
-        title = m.group(1).strip()
-        lv = len(line) - len(line.lstrip("#"))
-        if start < 0 and _section_title_matches(title, section_title):
-            start = i + 1
-            level = lv
-            continue
-        if start >= 0 and lv <= level:
+def _title_to_legacy_key(norm_title: str) -> str | None:
+    for hint, key in _TITLE_TO_LEGACY_KEY:
+        if hint in norm_title:
+            return key
+    return None
+
+
+def _scan_impact_sections(md: str) -> list[dict[str, Any]]:
+    """在「影响评估」父节下按文档顺序扫描子标题；无编号、可缺节。"""
+    headings = _list_markdown_headings(md)
+    if not headings:
+        return []
+
+    parent: dict[str, Any] | None = None
+    for h in headings:
+        if _is_impact_parent(str(h.get("norm") or "")):
+            parent = h
             break
-    if start < 0:
-        return ""
-    end = len(lines)
-    for j in range(start, len(lines)):
-        m = _SECTION_RE.match(lines[j].strip())
-        if m:
-            lv = len(lines[j]) - len(lines[j].lstrip("#"))
-            if lv <= level:
-                end = j
+
+    subs: list[dict[str, Any]] = []
+    if parent is not None:
+        p_level = int(parent["level"])
+        p_pos = headings.index(parent)
+        candidates = []
+        for h in headings[p_pos + 1 :]:
+            if int(h["level"]) <= p_level:
                 break
-    return "\n".join(lines[start:end]).strip()
+            candidates.append(h)
+        if candidates:
+            sub_level = min(int(h["level"]) for h in candidates)
+            subs = [h for h in candidates if int(h["level"]) == sub_level]
+    else:
+        subs = [h for h in headings if _is_impact_subsection(str(h.get("norm") or ""))]
+
+    sections: list[dict[str, Any]] = []
+    for h in subs:
+        body = _body_after_heading(md, headings, h)
+        rows = _parse_md_table_rows(body)
+        if not rows:
+            continue
+        norm = str(h.get("norm") or "").strip()
+        sections.append(
+            {
+                "title": norm or str(h.get("title") or "").strip(),
+                "heading": str(h.get("title") or "").strip(),
+                "rows": rows,
+            }
+        )
+    return sections
 
 
-def parse_func_solution_impact_assessment(md: str) -> dict[str, list[dict[str, str]]]:
-    """仅解析 §1.10 影响评估（1.10.1–1.10.7 表格）。"""
-    impact: dict[str, list[dict[str, str]]] = {}
-    for key, title, _headers in IMPACT_SECTION_SPECS:
-        impact[key] = _parse_md_table_rows(_extract_impact_subsection(md, title))
-    return impact
+def parse_func_solution_impact_assessment(md: str) -> dict[str, Any]:
+    """按文档标题扫描影响评估：仅返回文中实际出现的子节。"""
+    sections = _scan_impact_sections(md)
+    out: dict[str, Any] = {"sections": sections}
+    for sec in sections:
+        legacy = _title_to_legacy_key(str(sec.get("title") or ""))
+        if legacy:
+            out[legacy] = sec["rows"]
+    return out
 
 
 def parse_func_solution_md(md: str) -> dict[str, Any]:
     """从函数级方案 Markdown 抽取 §1.3 仓库表与 §1.10 影响评估。"""
-    repos_raw = _parse_md_table_rows(_extract_section(md, "1.3 涉及仓库"))
+    repos_raw = _parse_md_table_rows(_extract_section(md, "涉及仓库"))
     repos: list[dict[str, Any]] = []
     for row in repos_raw:
         repos.append(
@@ -256,15 +303,23 @@ def parse_func_solution_md(md: str) -> dict[str, Any]:
 
 def _merge_impact_assessment(
     prev: dict[str, Any] | None,
-    extracted: dict[str, list[dict[str, str]]],
-) -> dict[str, list[dict[str, str]]]:
-    """归档 Markdown 解析结果优先；仅当某维度无行时保留 JSON 内已有行。"""
-    out: dict[str, list[dict[str, str]]] = {}
+    extracted: dict[str, Any],
+) -> dict[str, Any]:
+    """归档 Markdown 解析结果优先（以 sections 列表为准）。"""
     prev_dict = prev if isinstance(prev, dict) else {}
-    for key, _title, _headers in IMPACT_SECTION_SPECS:
-        from_md = extracted.get(key) if isinstance(extracted.get(key), list) else []
-        from_prev = prev_dict.get(key) if isinstance(prev_dict.get(key), list) else []
-        out[key] = from_md if from_md else from_prev
+    ext_sections = extracted.get("sections") if isinstance(extracted.get("sections"), list) else []
+    if ext_sections:
+        return dict(extracted)
+    if prev_dict.get("sections"):
+        return dict(prev_dict)
+    out: dict[str, Any] = {"sections": []}
+    for hint, key in _TITLE_TO_LEGACY_KEY:
+        _ = hint
+        rows = extracted.get(key) if isinstance(extracted.get(key), list) else []
+        if not rows:
+            rows = prev_dict.get(key) if isinstance(prev_dict.get(key), list) else []
+        if rows:
+            out[key] = rows
     return out
 
 
@@ -374,13 +429,31 @@ def _summarize_impact_table(rows: list[dict[str, str]], *, keys: list[str]) -> s
     return "\n".join(parts) if parts else "（无显式影响项，见函数级方案 §1.10）"
 
 
+def _impact_rows_by_hint(impact: dict[str, Any], hint: str) -> list[dict[str, str]]:
+    sections = impact.get("sections")
+    if isinstance(sections, list):
+        for sec in sections:
+            if not isinstance(sec, dict):
+                continue
+            title = str(sec.get("title") or "")
+            if hint in title:
+                rows = sec.get("rows")
+                return rows if isinstance(rows, list) else []
+    legacy = _title_to_legacy_key(hint)
+    if legacy:
+        rows = impact.get(legacy)
+        if isinstance(rows, list):
+            return rows
+    return []
+
+
 def _build_impact_strings(impact: dict[str, Any]) -> dict[str, str]:
-    perf = impact.get("performance") if isinstance(impact.get("performance"), list) else []
-    func = impact.get("functional") if isinstance(impact.get("functional"), list) else []
-    cfg = impact.get("config") if isinstance(impact.get("config"), list) else []
-    risk = impact.get("upgrade_risk") if isinstance(impact.get("upgrade_risk"), list) else []
-    sec = impact.get("security") if isinstance(impact.get("security"), list) else []
-    compat = impact.get("compatibility") if isinstance(impact.get("compatibility"), list) else []
+    perf = _impact_rows_by_hint(impact, "性能影响")
+    func = _impact_rows_by_hint(impact, "功能影响")
+    cfg = _impact_rows_by_hint(impact, "配置变更")
+    risk = _impact_rows_by_hint(impact, "升级风险")
+    sec = _impact_rows_by_hint(impact, "安全影响")
+    compat = _impact_rows_by_hint(impact, "兼容性")
     return {
         "performanceImpact": _summarize_impact_table(
             perf,
@@ -410,7 +483,7 @@ def _build_impact_strings(impact: dict[str, Any]) -> dict[str, str]:
 
 
 def _default_task_impact_desc(impact: dict[str, Any]) -> str:
-    func = impact.get("functional") if isinstance(impact.get("functional"), list) else []
+    func = _impact_rows_by_hint(impact, "功能影响")
     lines = []
     for row in func[:5]:
         if isinstance(row, dict):

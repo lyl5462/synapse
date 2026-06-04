@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -7,6 +7,8 @@ export interface MarkdownHeading {
   level: number;
   text: string;
   slug: string;
+  /** 正文中 h1–h6 的序号（用于可靠跳转） */
+  index: number;
 }
 
 function slugifyHeading(text: string): string {
@@ -17,18 +19,6 @@ function slugifyHeading(text: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-export function extractMarkdownHeadings(md: string): MarkdownHeading[] {
-  const out: MarkdownHeading[] = [];
-  for (const line of (md || '').split('\n')) {
-    const m = /^(#{1,6})\s+(.+)$/.exec(line.trim());
-    if (!m) continue;
-    const text = m[2].replace(/[#*`[\]]/g, '').trim();
-    if (!text) continue;
-    out.push({ level: m[1].length, text, slug: slugifyHeading(text) });
-  }
-  return out;
-}
-
 function flattenText(node: React.ReactNode): string {
   if (typeof node === 'string') return node;
   if (typeof node === 'number') return String(node);
@@ -37,42 +27,107 @@ function flattenText(node: React.ReactNode): string {
   return '';
 }
 
+function makeSlugAssigner() {
+  const slugCounts = new Map<string, number>();
+  return (plain: string) => {
+    const base = slugifyHeading(plain) || 'section';
+    const n = slugCounts.get(base) ?? 0;
+    slugCounts.set(base, n + 1);
+    return n === 0 ? base : `${base}-${n}`;
+  };
+}
+
+/** 从已渲染的正文 DOM 读取目录（与锚点 id / data-md-heading 一致） */
+export function collectMarkdownHeadingsFromDom(root: HTMLElement): MarkdownHeading[] {
+  const nodes = root.querySelectorAll('h1,h2,h3,h4,h5,h6');
+  const out: MarkdownHeading[] = [];
+  nodes.forEach((node, index) => {
+    if (!(node instanceof HTMLElement)) return;
+    const text = (node.textContent || '').trim();
+    if (!text) return;
+    const level = Number(node.tagName.slice(1)) || 1;
+    const slug = (node.id || '').trim() || `heading-${index}`;
+    out.push({ level, text, slug, index });
+  });
+  return out;
+}
+
+/** 与 react-markdown 渲染前一致的标题纯文本（供其它面板做粗算目录） */
+export function stripHeadingMarkup(raw: string): string {
+  let t = (raw || '').trim();
+  t = t.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+  t = t.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+  t = t.replace(/`([^`]+)`/g, '$1');
+  t = t.replace(/\*\*([^*]+)\*\*/g, '$1');
+  t = t.replace(/\*([^*]+)\*/g, '$1');
+  t = t.replace(/[#*`[\]]/g, '').trim();
+  return t;
+}
+
+export function buildHeadingSlugMap(md: string): MarkdownHeading[] {
+  const raw: { level: number; text: string }[] = [];
+  let inFence = false;
+  for (const line of (md || '').split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    if (!m) continue;
+    const text = stripHeadingMarkup(m[2]);
+    if (!text) continue;
+    raw.push({ level: m[1].length, text });
+  }
+  const assignSlug = makeSlugAssigner();
+  return raw.map(({ level, text }, index) => ({
+    level,
+    text,
+    slug: assignSlug(text),
+    index,
+  }));
+}
+
+export function extractMarkdownHeadings(md: string): MarkdownHeading[] {
+  return buildHeadingSlugMap(md);
+}
+
 function buildMarkdownComponents(compact: boolean): Components {
+  const assignSlug = makeSlugAssigner();
+  let headingIndex = 0;
   const h1 = compact ? 'text-lg' : 'text-2xl';
   const h2 = compact ? 'text-base' : 'text-xl';
   const h3 = compact ? 'text-sm' : 'text-lg';
+  const h4 = compact ? 'text-[13px]' : 'text-base';
+  const h5 = compact ? 'text-xs' : 'text-sm';
+  const h6 = compact ? 'text-xs' : 'text-sm';
+
+  const mkHeading =
+    (Tag: 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6', className: string) =>
+    ({ children }: { children?: React.ReactNode }) => {
+      const idx = headingIndex++;
+      const slug = assignSlug(flattenText(children));
+      return (
+        <Tag id={slug} data-md-heading={String(idx)} className={className}>
+          {children}
+        </Tag>
+      );
+    };
 
   return {
-    h1: ({ children }) => {
-      const slug = slugifyHeading(flattenText(children));
-      return (
-        <h1
-          id={slug}
-          className={`${h1} font-bold mt-6 mb-4 pb-2 border-b border-cyan-500/25 bg-gradient-to-r from-blue-100 via-cyan-100 to-emerald-100 bg-clip-text text-transparent scroll-mt-24`}
-        >
-          {children}
-        </h1>
-      );
-    },
-    h2: ({ children }) => {
-      const slug = slugifyHeading(flattenText(children));
-      return (
-        <h2
-          id={slug}
-          className={`${h2} font-semibold mt-5 mb-2 pl-3 border-l-[3px] border-cyan-400/80 text-cyan-50/95 scroll-mt-24`}
-        >
-          {children}
-        </h2>
-      );
-    },
-    h3: ({ children }) => {
-      const slug = slugifyHeading(flattenText(children));
-      return (
-        <h3 id={slug} className={`${h3} font-semibold mt-4 mb-1.5 text-foreground/90 scroll-mt-24`}>
-          {children}
-        </h3>
-      );
-    },
+    h1: mkHeading(
+      'h1',
+      `${h1} font-bold mt-6 mb-4 pb-2 border-b border-cyan-500/25 bg-gradient-to-r from-blue-100 via-cyan-100 to-emerald-100 bg-clip-text text-transparent`,
+    ),
+    h2: mkHeading(
+      'h2',
+      `${h2} font-semibold mt-5 mb-2 pl-3 border-l-[3px] border-cyan-400/80 text-cyan-50/95`,
+    ),
+    h3: mkHeading('h3', `${h3} font-semibold mt-4 mb-1.5 text-foreground/90`),
+    h4: mkHeading('h4', `${h4} font-semibold mt-3 mb-1 text-foreground/85`),
+    h5: mkHeading('h5', `${h5} font-medium mt-2.5 mb-1 text-foreground/80`),
+    h6: mkHeading('h6', `${h6} font-medium mt-2 mb-0.5 text-foreground/75`),
     p: ({ children }) => (
       <p className="my-2.5 leading-[1.75] text-foreground/88">{children}</p>
     ),
@@ -155,10 +210,17 @@ export function ReviewMarkdown({
   compact?: boolean;
   className?: string;
 }) {
-  const components = useMemo(() => buildMarkdownComponents(compact), [compact]);
+  // 每次渲染重建 components，避免 useMemo 导致标题 id / 序号在二次渲染时错位
+  const components = buildMarkdownComponents(compact);
+
   return (
     <div className={`review-markdown ${className}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
+      <ReactMarkdown
+        key={content.slice(0, 64) + content.length}
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={components}
+      >
         {content || '_（空文档）_'}
       </ReactMarkdown>
     </div>
@@ -178,8 +240,8 @@ export function MarkdownToc({
     <nav className="rounded-xl border border-border/40 bg-black/25 p-3 text-[11px]">
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2 font-medium">目录</div>
       <ul className="space-y-1 max-h-[220px] overflow-y-auto custom-scrollbar">
-        {items.map((h) => (
-          <li key={`${h.slug}-${h.text}`} style={{ paddingLeft: h.level === 3 ? 12 : 0 }}>
+        {items.map((h, i) => (
+          <li key={`${h.slug}-${i}`} style={{ paddingLeft: h.level === 3 ? 12 : 0 }}>
             <button
               type="button"
               onClick={() => onJump(h.slug)}

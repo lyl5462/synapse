@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from synapse.rd_meeting.solution_review import (
-    IMPACT_SECTION_SPECS,
     apply_human_decision,
     enrich_payload_from_archive,
     parse_func_solution_impact_assessment,
@@ -27,55 +26,30 @@ SAMPLE_FUNC_SOLUTION = """# 函数级方案
 |-----------|---------|---------|
 | 4531 | https://git.example.com/repo.git | 改造计费模块 |
 
-### 1.10 影响评估
+### 影响评估
 
-#### 1.10.1 性能影响分析
+#### 性能影响分析
 | 变更点 | 性能影响类型 | 影响程度 | 无法规避原因 | 规避措施 |
 |--------|-------------|----------|-------------|----------|
 | 查询接口 | 延迟 | 低 | 数据量增长 | 加索引 |
 
-#### 1.10.5 安全影响
+#### 安全影响
 | 安全维度 | 影响说明 | 影响程度 | 安全措施 | 备注 |
 |---------|---------|---------|---------|------|
 | 鉴权 | 新增接口需鉴权 | 中 | 沿用现有网关 | |
 """
 
-FULL_IMPACT_MD = """### 1.10 影响评估
+TITLE_ONLY_PARTIAL = """### 影响评估
 
-#### 1.10.1 性能影响分析
+#### 性能影响分析
 | 变更点 | 性能影响类型 | 影响程度 | 无法规避原因 | 规避措施 |
 |--------|-------------|----------|-------------|----------|
-| A | 延迟 | 低 | — | 缓存 |
+| 查询 | 延迟 | 低 | 数据量 | 索引 |
 
-#### 1.10.2 功能影响分析
-| 影响类型 | 影响模块 | 影响说明 | 影响范围 | 备注 |
-|---------|---------|---------|---------|------|
-| 增强 | 计费 | 新增字段 | 单模块 | |
-
-#### 1.10.3 配置变更说明
+#### 配置变更说明
 | 配置项 | 变更类型 | 配置位置 | 影响范围 | 变更说明 |
 |--------|----------|---------|---------|----------|
-| timeout | 修改 | app.yml | 全局 | 调大超时 |
-
-#### 1.10.4 升级风险
-| 风险类型 | 风险描述 | 风险等级 | 规避措施 | 回滚预案 |
-|---------|---------|---------|---------|----------|
-| 数据 | 迁移失败 | 中 | 灰度 | 回滚脚本 |
-
-#### 1.10.5 安全影响
-| 安全维度 | 影响说明 | 影响程度 | 安全措施 | 备注 |
-|---------|---------|---------|---------|------|
-| 鉴权 | 新接口 | 中 | 网关 | |
-
-#### 1.10.6 兼容性影响
-| 兼容类型 | 兼容项 | 当前版本 | 目标版本 | 兼容性评估 | 说明 |
-|---------|--------|---------|---------|-----------|------|
-| API | REST | v1 | v2 | 向后兼容 | |
-
-#### 1.10.7 UI/UE设计
-| 界面元素 | 变更类型 | 变更说明 | 设计注意事项 | 验收要点 |
-|---------|---------|---------|-------------|----------|
-| 列表页 | 调整 | 新增列 | 对齐规范 | 可访问性 |
+| pool.size | 修改 | application.yml | 全局 | 调大连接池 |
 """
 
 
@@ -83,49 +57,53 @@ def test_parse_func_solution_md_repos_and_security():
     parsed = parse_func_solution_md(SAMPLE_FUNC_SOLUTION)
     assert len(parsed["repos"]) == 1
     assert parsed["repos"][0]["branch_version_id"] == "4531"
-    assert len(parsed["impact_assessment"]["security"]) == 1
-    assert len(parsed["impact_assessment"]["performance"]) == 1
+    impact = parsed["impact_assessment"]
+    sections = impact["sections"]
+    assert len(sections) == 2
+    assert sections[0]["title"] == "性能影响分析"
+    assert sections[0]["rows"][0]["变更点"] == "查询接口"
+    assert sections[1]["title"] == "安全影响"
+    assert "配置" not in sections[0]["title"]
 
 
-def test_parse_func_solution_impact_all_template_sections():
-    impact = parse_func_solution_impact_assessment(FULL_IMPACT_MD)
-    assert len(IMPACT_SECTION_SPECS) == 7
-    for key, _title, _headers in IMPACT_SECTION_SPECS:
-        assert len(impact[key]) >= 1, key
+def test_parse_impact_by_title_not_section_number():
+    """无章节编号、仅部分子节：按标题切分，不错位。"""
+    impact = parse_func_solution_impact_assessment(TITLE_ONLY_PARTIAL)
+    sections = impact["sections"]
+    assert len(sections) == 2
+    assert sections[0]["title"] == "性能影响分析"
+    assert sections[0]["rows"][0].get("变更点") == "查询"
+    assert sections[1]["title"] == "配置变更说明"
+    assert sections[1]["rows"][0].get("配置项") == "pool.size"
+    perf_rows = sections[0]["rows"][0]
+    assert "配置项" not in perf_rows
 
 
 def test_enrich_payload_from_archive_reparses_impact(tmp_path, monkeypatch):
     scope_id = "enrich-impact"
     archive_func = tmp_path / scope_id / "archive" / "需求设计" / "func_solution"
     archive_func.mkdir(parents=True)
-    (archive_func / "函数级方案.md").write_text(
-        SAMPLE_FUNC_SOLUTION + "\n" + FULL_IMPACT_MD,
-        encoding="utf-8",
-    )
+    (archive_func / "函数级方案.md").write_text(SAMPLE_FUNC_SOLUTION, encoding="utf-8")
     archive_review = tmp_path / scope_id / "archive" / "需求设计" / "solution_review"
     archive_review.mkdir(parents=True)
     payload = {
         "func_solution_parsed": {
             "repos": [{"branch_version_id": "4531"}],
-            "impact_assessment": {},
+            "impact_assessment": {"sections": [], "performance": []},
         }
     }
     (archive_review / "solution_review.json").write_text(
-        __import__("json").dumps(payload, ensure_ascii=False),
+        json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
     )
 
-    def _func_path(sid: str) -> Path:
-        return archive_func / "函数级方案.md"
-
     monkeypatch.setattr(
         "synapse.rd_meeting.solution_review._func_solution_archive_path",
-        _func_path,
+        lambda sid: archive_func / "函数级方案.md",
     )
     out = enrich_payload_from_archive(scope_id, payload)
-    impact = out["func_solution_parsed"]["impact_assessment"]
-    assert len(impact["ui_ue"]) == 1
-    assert len(impact["performance"]) >= 1
+    sections = out["func_solution_parsed"]["impact_assessment"]["sections"]
+    assert len(sections) == 2
 
 
 def test_apply_human_decision_reject_writes_conclusion(tmp_path, monkeypatch):

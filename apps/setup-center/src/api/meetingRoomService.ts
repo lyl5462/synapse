@@ -345,7 +345,17 @@ export interface SolutionReviewRepoRow {
   branch_version_name?: string;
 }
 
+/** 影响评估单节：标题来自文档子标题，rows 为原文表格解析结果 */
+export interface SolutionReviewImpactSection {
+  title: string;
+  heading?: string;
+  rows: Record<string, string>[];
+}
+
 export interface SolutionReviewImpactAssessment {
+  /** 按文档顺序；仅含文中实际出现的子节 */
+  sections?: SolutionReviewImpactSection[];
+  /** 兼容旧 payload / 拆单汇总 */
   performance?: Record<string, string>[];
   functional?: Record<string, string>[];
   config?: Record<string, string>[];
