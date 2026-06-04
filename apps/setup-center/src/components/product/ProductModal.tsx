@@ -554,11 +554,11 @@ export function ProductModal({
           toast.error(t("workbench.products.modal.prodBranchRequired"));
           return;
         }
-        const pbVals = formState.repositories.map((r) => r.prodBranch?.trim() ?? "").filter(Boolean);
-        if (new Set(pbVals).size !== pbVals.length) {
-          toast.error(t("workbench.products.modal.prodBranchDuplicate"));
-          return;
-        }
+        // const pbVals = formState.repositories.map((r) => r.prodBranch?.trim() ?? "").filter(Boolean);
+        // if (new Set(pbVals).size !== pbVals.length) {
+        //   toast.error(t("workbench.products.modal.prodBranchDuplicate"));
+        //   return;
+        // }
         const badRepoBranch = formState.repositories.some((r) => !isValidRepoBranchComposite(r.branch));
         if (badRepoBranch) {
           toast.error(t("workbench.products.modal.repoBranchCompositeRequired"));

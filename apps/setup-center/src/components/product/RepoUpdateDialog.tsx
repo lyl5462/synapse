@@ -342,11 +342,11 @@ export function RepoUpdateDialog({
         toast.error(t("workbench.products.modal.repoModuleDuplicate"));
         return;
       }
-      const pbVals = rows.map((r) => r.prodBranch?.trim() ?? "").filter(Boolean);
-      if (new Set(pbVals).size !== pbVals.length) {
-        toast.error(t("workbench.products.modal.prodBranchDuplicate"));
-        return;
-      }
+      // const pbVals = rows.map((r) => r.prodBranch?.trim() ?? "").filter(Boolean);
+      // if (new Set(pbVals).size !== pbVals.length) {
+      //   toast.error(t("workbench.products.modal.prodBranchDuplicate"));
+      //   return;
+      // }
     }
 
     setSaving(true);
