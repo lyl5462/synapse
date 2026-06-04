@@ -130,3 +130,38 @@ def test_format_prior_section_in_runtime_header(
 def test_format_prior_section_empty_for_first_node():
     section = format_prior_sop_outputs_section("x", "pending")
     assert section == ""
+
+
+def test_format_prior_section_omits_disabled_and_skipped_nodes(
+    isolated_config_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from synapse.rd_meeting.config_store import save_meeting_room_config
+
+    scope_id = "D-omit"
+    save_meeting_room_config({"node_overrides": {"boundary": {"enabled": False}}})
+
+    work = tmp_path / scope_id
+    archive = work / "archive" / "需求分析" / "req_clarify"
+    archive.mkdir(parents=True)
+    (archive / "需求澄清.md").write_text("# 需求澄清\n\n正文。" * 20, encoding="utf-8")
+
+    monkeypatch.setattr("synapse.rd_meeting.paths.scope_dir", lambda sid: work)
+    monkeypatch.setattr(
+        "synapse.rd_meeting.prior_outputs.archive_node_dir",
+        lambda sid, stg, nid: work / "archive" / stg / nid,
+    )
+
+    section = format_prior_sop_outputs_section(
+        scope_id,
+        "module_func",
+        skipped_node_ids={"pending"},
+    )
+
+    assert "`需求澄清.md`" in section
+    assert "boundary" not in section
+    assert "pending" not in section
+    assert "不可用" not in section
+    assert "环节已关闭" not in section
+    assert "环节已跳过" not in section

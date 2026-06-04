@@ -136,7 +136,8 @@ def format_prior_sop_outputs_section(
         current_node_id,
         skipped_node_ids=skipped_node_ids,
     )
-    if not rows:
+    display_rows = [r for r in rows if r.node_enabled and not r.node_skipped]
+    if not display_rows:
         return ""
 
     lines: list[str] = [
@@ -151,7 +152,7 @@ def format_prior_sop_outputs_section(
     ]
 
     current_source = ""
-    for row in rows:
+    for row in display_rows:
         if row.source_node_id != current_source:
             current_source = row.source_node_id
             switch = _node_switch_label(row)
@@ -167,8 +168,6 @@ def format_prior_sop_outputs_section(
             usage = f"**{mode_label}**"
             if row.use_note:
                 usage += f"（{row.use_note}）"
-        elif not row.node_enabled or row.node_skipped:
-            usage = "不可用（环节已关闭或已跳过）"
         elif not row.file_exists:
             usage = "待前序环节归档后再引用"
         else:
