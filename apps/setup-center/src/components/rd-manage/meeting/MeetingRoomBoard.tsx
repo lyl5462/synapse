@@ -50,6 +50,7 @@ import { CrossNodeReprocessIcon } from './CrossNodeReprocessIcon';
 import { StopNodeRunIcon } from './StopNodeRunIcon';
 import {
   effectiveHumanConfirmByType,
+  resolveHitlTargetNodeId,
   resolveMeetingInterventionPanel,
   type InterventionPanelKind,
 } from './meetingInterventionPanel';
@@ -149,6 +150,8 @@ interface MeetingRoom {
   interventionPanel?: InterventionPanelKind | string | null;
   solutionReviewPayload?: SolutionReviewPayload | null;
   solutionReviewBlocked?: boolean;
+  /** pending_delivery.node_id：当前人工门控所属节点 */
+  hitlPendingNodeId?: string | null;
   hitlLocked?: boolean;
   hitlSubmission?: { values?: Record<string, unknown>; submitted_at?: string } | null;
   participants?: MeetingRoomParticipantWire[];
@@ -348,6 +351,51 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
     ? `${localState} · ${live.current_node_name}`
     : room.brief;
   const displayLogs = filterLogsForNodeExact(allChatLogs, nextNodeId);
+  const pendingDelivery = live.pending_delivery as
+    | {
+        node_id?: string;
+        review_payload?: NodeReviewPayload;
+        solution_review_payload?: SolutionReviewPayload;
+        report_body?: string;
+      }
+    | undefined;
+  const interventionKind = live.intervention_kind ?? room.interventionKind ?? null;
+  const likelySolutionReview =
+    interventionKind === 'solution_review' ||
+    Boolean(pendingDelivery?.solution_review_payload) ||
+    room.interventionPanel === 'solution_review' ||
+    Boolean(room.solutionReviewPayload);
+  const interventionPanel =
+    (live.intervention_panel as InterventionPanelKind | undefined) ??
+    room.interventionPanel ??
+    resolveMeetingInterventionPanel(
+      {
+        status: uiStatus && ['processing', 'human_intervention', 'completed', 'failed', 'stopped'].includes(uiStatus)
+          ? uiStatus
+          : room.status,
+        currentNode: nextNodeId,
+        interventionKind,
+        interventionPanel: room.interventionPanel,
+        hitlFormSchema:
+          live.hitl_form_schema !== undefined
+            ? live.hitl_form_schema
+            : room.hitlFormSchema,
+        hitlLocked: live.hitl_locked ?? room.hitlLocked,
+        reviewPayload: likelySolutionReview
+          ? null
+          : pendingDelivery?.review_payload ?? room.reviewPayload,
+        solutionReviewPayload:
+          pendingDelivery?.solution_review_payload ?? room.solutionReviewPayload,
+        hitlPendingNodeId:
+          pendingDelivery?.node_id != null
+            ? String(pendingDelivery.node_id)
+            : room.hitlPendingNodeId,
+      },
+      undefined,
+      nextNodeId,
+    );
+  const isSolutionReview =
+    interventionKind === 'solution_review' || interventionPanel === 'solution_review';
   return {
     ...room,
     currentNode: nextNodeId,
@@ -373,21 +421,23 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
     hitlLocked: live.hitl_locked ?? room.hitlLocked,
     hitlSubmission:
       (live.hitl_submission as MeetingRoom['hitlSubmission']) ?? room.hitlSubmission ?? null,
-    hitlPendingSummary:
-      live.pending_delivery?.report_body ?? room.hitlPendingSummary ?? null,
-    reviewPayload:
-      ((live.pending_delivery as { review_payload?: NodeReviewPayload } | undefined)
-        ?.review_payload as NodeReviewPayload | undefined) ?? room.reviewPayload ?? null,
-    interventionKind: live.intervention_kind ?? room.interventionKind ?? null,
-    interventionPanel:
-      (live.intervention_panel as InterventionPanelKind | undefined) ??
-      room.interventionPanel ??
-      null,
-    solutionReviewPayload:
-      ((live.pending_delivery as { solution_review_payload?: SolutionReviewPayload } | undefined)
-        ?.solution_review_payload as SolutionReviewPayload | undefined) ??
-      room.solutionReviewPayload ??
-      null,
+    hitlPendingSummary: pendingDelivery?.report_body ?? room.hitlPendingSummary ?? null,
+    hitlPendingNodeId:
+      pendingDelivery?.node_id != null
+        ? String(pendingDelivery.node_id)
+        : room.hitlPendingNodeId ?? null,
+    reviewPayload: isSolutionReview
+      ? null
+      : ((pendingDelivery?.review_payload as NodeReviewPayload | undefined) ??
+        (live.pending_delivery !== undefined ? null : room.reviewPayload ?? null)),
+    interventionKind,
+    interventionPanel,
+    solutionReviewPayload: isSolutionReview
+      ? ((pendingDelivery?.solution_review_payload as SolutionReviewPayload | undefined) ??
+        (live.pending_delivery !== undefined ? null : room.solutionReviewPayload ?? null))
+      : live.pending_delivery !== undefined
+        ? null
+        : room.solutionReviewPayload ?? null,
     solutionReviewBlocked: Boolean(
       live.solution_review_blocked ?? room.solutionReviewBlocked,
     ),
@@ -468,11 +518,34 @@ function mapDetailToRoom(item: MeetingRoomDetail): MeetingRoom {
       (item.room_state?.hitl_submission as MeetingRoom['hitlSubmission']) ?? null,
     hitlPendingSummary:
       (item.room_state?.pending_delivery as { report_body?: string } | undefined)?.report_body ?? null,
+    hitlPendingNodeId: String(
+      (item.room_state?.pending_delivery as { node_id?: string } | undefined)?.node_id ||
+        item.current_node_id ||
+        '',
+    ),
     reviewPayload:
-      ((item.room_state?.pending_delivery as { review_payload?: NodeReviewPayload } | undefined)
-        ?.review_payload as NodeReviewPayload | undefined) ?? null,
+      (item.room_state?.intervention_kind as string) === 'solution_review'
+        ? null
+        : (((item.room_state?.pending_delivery as { review_payload?: NodeReviewPayload } | undefined)
+            ?.review_payload as NodeReviewPayload | undefined) ?? null),
     interventionKind: (item.room_state?.intervention_kind as string | undefined) ?? null,
-    interventionPanel: null,
+    interventionPanel: resolveMeetingInterventionPanel(
+      {
+        status: item.status,
+        currentNode: item.current_node_id,
+        interventionKind: item.room_state?.intervention_kind as string | undefined,
+        hitlFormSchema: item.room_state?.hitl_form_schema,
+        hitlLocked: Boolean(item.room_state?.hitl_locked),
+        reviewPayload: (item.room_state?.pending_delivery as { review_payload?: unknown })
+          ?.review_payload as { node_id?: string } | null,
+        solutionReviewPayload: (item.room_state?.pending_delivery as {
+          solution_review_payload?: unknown;
+        })?.solution_review_payload,
+        hitlPendingNodeId: (item.room_state?.pending_delivery as { node_id?: string })?.node_id,
+      },
+      undefined,
+      item.current_node_id,
+    ),
     solutionReviewPayload:
       ((item.room_state?.pending_delivery as { solution_review_payload?: SolutionReviewPayload })
         ?.solution_review_payload as SolutionReviewPayload | undefined) ?? null,
@@ -1284,7 +1357,7 @@ const InterventionDialog = ({
 
   const chatNodeId = selectedNodeId || room?.currentNode || 'pending';
   /** 人工确认表单/结果确认仅归属当前流水线节点（或 review_payload 指定节点） */
-  const hitlTargetNodeId = (room?.reviewPayload?.node_id ?? room?.currentNode ?? '').trim();
+  const hitlTargetNodeId = room ? resolveHitlTargetNodeId(room) : '';
   const isViewingHitlNode = Boolean(hitlTargetNodeId && chatNodeId === hitlTargetNodeId);
 
   const hitlLocked = Boolean(room?.hitlLocked);
@@ -1316,14 +1389,15 @@ const InterventionDialog = ({
 
   const hitlFocusKey = useMemo(() => {
     if (!hitlAvailable || !room) return null;
+    const gateNode = hitlTargetNodeId || room.currentNode;
     const schema = room.hitlFormSchema as { title?: string; questions?: unknown[] } | null | undefined;
     const schemaSig = schema
       ? `${schema.title ?? ''}:${schema.questions?.length ?? 0}`
       : interventionPanel
-        ? `${interventionPanel}:${room.reviewPayload?.node_id ?? room.currentNode}`
+        ? `${interventionPanel}:${gateNode}`
         : 'hitl';
-    return `${room.id}:${room.currentNode}:${schemaSig}`;
-  }, [hitlAvailable, room, interventionPanel]);
+    return `${room.id}:${gateNode}:${schemaSig}`;
+  }, [hitlAvailable, room, interventionPanel, hitlTargetNodeId]);
 
   const displayChatLogs = useMemo(
     () => (room ? filterLogsForNodeExact(room.allChatLogs ?? room.logs, chatNodeId) : []),
@@ -1521,11 +1595,14 @@ const InterventionDialog = ({
     if (hitlAutoFocusRef.current === hitlFocusKey) return;
     hitlAutoFocusRef.current = hitlFocusKey;
     setCenterTab('hitl');
-    if (room?.currentNode && !userPinnedNodeRef.current) {
-      setSelectedNodeId(room.currentNode);
-      setViewStageId(stageIdForNodeId(room.currentNode) || room.stageIndex);
+    if (!userPinnedNodeRef.current && room) {
+      const target = resolveHitlTargetNodeId(room);
+      if (target) {
+        setSelectedNodeId(target);
+        setViewStageId(stageIdForNodeId(target) || room.stageIndex);
+      }
     }
-  }, [open, hitlAvailable, hitlFocusKey, room?.currentNode]);
+  }, [open, hitlAvailable, hitlFocusKey, room]);
 
   /** 切换到历史节点时离开「人工确认」Tab，避免在非待确认节点展示表单 */
   useEffect(() => {

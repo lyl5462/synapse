@@ -146,6 +146,59 @@ def test_delegation_roles() -> None:
     assert done["speakerRole"] == "worker"
 
 
+def test_human_gate_structured_card() -> None:
+    rows = expand_history_event_to_chat(
+        {
+            "event": "human_gate",
+            "room_id": "mr_d_1",
+            "node_id": "module_func",
+            "text": "模块级方案 需人工处理",
+            "intervention_kind": "gate",
+            "agent_id": "default",
+            "ts": "2026-05-21T12:00:00",
+        },
+        8,
+    )
+    assert len(rows) == 1
+    assert rows[0]["displayKind"] == "human_gate"
+    assert "模块级方案" in rows[0]["text"]
+    assert rows[0]["payload"]["node_id"] == "module_func"
+
+
+def test_solution_review_skips_duplicate_human_gate() -> None:
+    assert expand_history_event_to_chat(
+        {
+            "event": "human_gate",
+            "node_id": "solution_review",
+            "intervention_kind": "solution_review",
+            "text": "方案评审 待人工",
+            "agent_id": "default",
+        },
+        9,
+    ) == []
+
+
+def test_solution_review_gate_structured_card() -> None:
+    rows = expand_history_event_to_chat(
+        {
+            "event": "solution_review_gate",
+            "room_id": "mr_d_1",
+            "node_id": "solution_review",
+            "text": "方案评审 待人工方案评审",
+            "intervention_kind": "solution_review",
+            "duration_seconds": 120,
+            "tokens_used": 5000,
+            "agent_id": "default",
+            "ts": "2026-05-21T12:01:00",
+        },
+        10,
+    )
+    assert len(rows) == 1
+    assert rows[0]["displayKind"] == "solution_review_gate"
+    assert rows[0]["payload"]["intervention_kind"] == "solution_review"
+    assert "120s" in rows[0]["text"]
+
+
 def test_chat_log_ids_are_scoped_by_node_id() -> None:
     logs = history_to_chat_logs(
         [

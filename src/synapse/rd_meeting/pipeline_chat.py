@@ -156,6 +156,8 @@ def format_event_chat_display(event: dict[str, Any]) -> str:
         if summary and summary not in lines[0]:
             lines.append(f"返回摘要：\n{summary[:2000]}")
         return "\n".join(lines)
+    if et == "solution_review_gate":
+        return str(event.get("text") or "").strip()
 
     text = str(event.get("text") or event.get("message") or "").strip()
     if text and not text.startswith("{"):

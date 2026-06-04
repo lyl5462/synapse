@@ -6,10 +6,13 @@ import {
   Database,
   FileText,
   FolderGit2,
+  Hand,
   Server,
   Users,
   XCircle,
 } from 'lucide-react';
+import { ALL_NODES } from '../../../rd-sop/constants';
+import { interventionKindLabel } from './meetingInterventionPanel';
 import { ReviewMarkdown } from './ReviewMarkdown';
 import {
   HOST_PROFILE_ID,
@@ -363,6 +366,76 @@ export function PendingConfirmCard({ payload, text }: { payload: Record<string, 
   );
 }
 
+function sopNodeLabel(nodeId: string): string {
+  const nid = nodeId.trim();
+  if (!nid) return '';
+  return ALL_NODES.find((n) => n.id === nid)?.name || nid;
+}
+
+export function HumanGateCard({
+  payload,
+  title,
+}: {
+  payload: Record<string, unknown>;
+  title: string;
+}) {
+  const nodeId = String(payload.node_id || '').trim();
+  const nodeLabel =
+    String(payload.node_label || '').trim() || sopNodeLabel(nodeId) || nodeId || '—';
+  const kindLabel =
+    String(payload.intervention_kind_label || '').trim() ||
+    interventionKindLabel(String(payload.intervention_kind || ''));
+  const reason = String(payload.reason || title || '').trim();
+
+  return (
+    <div className="rd-chat-card rd-chat-card--gate">
+      <SectionTitle icon={<Hand className="w-4 h-4" />}>{title.split('\n')[0] || '人工门控'}</SectionTitle>
+      {reason && reason !== title.split('\n')[0] ? (
+        <p className="rd-chat-card__desc">{reason}</p>
+      ) : null}
+      <dl className="rd-chat-card__kv">
+        {nodeId ? (
+          <>
+            <dt>节点</dt>
+            <dd>
+              {nodeLabel}
+              <span className="rd-chat-card__mono"> ({nodeId})</span>
+            </dd>
+          </>
+        ) : null}
+        {kindLabel ? (
+          <>
+            <dt>门控类型</dt>
+            <dd>{kindLabel}</dd>
+          </>
+        ) : null}
+        {payload.duration_seconds != null ? (
+          <>
+            <dt>已运行</dt>
+            <dd>{String(payload.duration_seconds)}s</dd>
+          </>
+        ) : null}
+        {payload.tokens_used != null ? (
+          <>
+            <dt>Token</dt>
+            <dd>{String(payload.tokens_used)}</dd>
+          </>
+        ) : null}
+      </dl>
+    </div>
+  );
+}
+
+export function SolutionReviewGateCard({
+  payload,
+  title,
+}: {
+  payload: Record<string, unknown>;
+  title: string;
+}) {
+  return <HumanGateCard payload={payload} title={title || '方案评审门控'} />;
+}
+
 export function FlowMetaCard({ payload, title }: { payload: Record<string, unknown>; title: string }) {
   const keys = Object.keys(payload)
     .filter((k) => !['message', 'tokens_used', 'tokens_used_hint', 'tokens_note'].includes(k))
@@ -409,6 +482,10 @@ export function StructuredChatBody({ log }: { log: MeetingChatLog }) {
       return <HitlToolCard text={log.text} />;
     case 'pending_confirm':
       return <PendingConfirmCard payload={payload} text={log.text} />;
+    case 'human_gate':
+      return <HumanGateCard payload={payload} title={log.text} />;
+    case 'solution_review_gate':
+      return <SolutionReviewGateCard payload={payload} title={log.text} />;
     case 'flow_meta':
       return <FlowMetaCard payload={payload} title={log.text || '流程元数据'} />;
     default:

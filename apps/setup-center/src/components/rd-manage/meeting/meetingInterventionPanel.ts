@@ -26,9 +26,55 @@ export type MeetingInterventionRoomSlice = {
   interventionPanel?: string | null;
   hitlFormSchema?: unknown;
   hitlLocked?: boolean;
-  reviewPayload?: unknown;
+  reviewPayload?: { node_id?: string } | null;
   solutionReviewPayload?: unknown;
+  /** pending_delivery.node_id：人工门控所属 SOP 节点（优先于 currentNode） */
+  hitlPendingNodeId?: string | null;
 };
+
+const INTERVENTION_KIND_LABELS: Record<string, string> = {
+  solution_review: '方案评审',
+  result_confirm: '结果确认',
+  interactive: '会中澄清',
+  exception: '异常裁决',
+  gate: '流程门控',
+};
+
+export function interventionKindLabel(kind: string | null | undefined): string {
+  const k = (kind || '').trim().toLowerCase();
+  return INTERVENTION_KIND_LABELS[k] || k || '人工处理';
+}
+
+/**
+ * 人工确认 Tab / 高亮应绑定的 SOP 节点。
+ * 方案评审必须用 pending_delivery.node_id，不能误用上一节点的 review_payload.node_id。
+ */
+export function resolveHitlTargetNodeId(room: MeetingInterventionRoomSlice): string {
+  const pendingNid = (room.hitlPendingNodeId || '').trim();
+  const current = (room.currentNode || '').trim();
+  const kind = (room.interventionKind || '').trim().toLowerCase();
+  const panel = (room.interventionPanel || '').trim();
+
+  if (
+    kind === 'solution_review' ||
+    panel === 'solution_review' ||
+    room.solutionReviewPayload
+  ) {
+    return pendingNid || current || 'solution_review';
+  }
+
+  if (panel === 'node_review' || kind === 'result_confirm') {
+    const fromReview = (room.reviewPayload?.node_id || '').trim();
+    return fromReview || pendingNid || current;
+  }
+
+  if (kind === 'interactive' || kind === 'exception' || room.hitlFormSchema) {
+    return pendingNid || current;
+  }
+
+  const fromReview = (room.reviewPayload?.node_id || '').trim();
+  return pendingNid || fromReview || current;
+}
 
 /**
  * 中栏「人工确认」Tab 应渲染的面板。

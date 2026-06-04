@@ -13,6 +13,8 @@ export type ChatDisplayKind =
   | 'human_report'
   | 'hitl_tool'
   | 'pending_confirm'
+  | 'human_gate'
+  | 'solution_review_gate'
   | 'flow_meta'
   | 'pipeline'
   | 'plain';
@@ -58,6 +60,8 @@ const STRUCTURED_KINDS: ChatDisplayKind[] = [
   'human_report',
   'hitl_tool',
   'pending_confirm',
+  'human_gate',
+  'solution_review_gate',
   'flow_meta',
 ];
 

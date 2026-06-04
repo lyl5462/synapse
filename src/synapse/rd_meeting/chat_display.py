@@ -158,6 +158,80 @@ def _host_row(
     )
 
 
+_INTERVENTION_KIND_LABELS: dict[str, str] = {
+    "solution_review": "方案评审",
+    "result_confirm": "结果确认",
+    "interactive": "会中澄清",
+    "exception": "异常裁决",
+    "gate": "流程门控",
+}
+
+
+def _intervention_kind_label(kind: str) -> str:
+    k = (kind or "").strip()
+    return _INTERVENTION_KIND_LABELS.get(k, k or "人工处理")
+
+
+def _expand_intervention_gate(
+    ev: dict[str, Any], index: int, host_id: str
+) -> list[dict[str, Any]]:
+    from synapse.rd_sop.nodes import node_display_name
+
+    et = str(ev.get("event") or "")
+    node_id = str(ev.get("node_id") or "").strip()
+    kind = str(ev.get("intervention_kind") or "").strip()
+    node_label = node_display_name(node_id) if node_id else node_id
+    reason = str(ev.get("text") or ev.get("chat_text") or "").strip()
+
+    if et == "solution_review_gate":
+        title = reason or (
+            f"{node_label} 待人工方案评审（补丁选择 + 通过/不通过）"
+            if node_id
+            else "待人工方案评审"
+        )
+        display_kind = "solution_review_gate"
+    else:
+        title = reason or (f"{node_label} 需人工处理" if node_id else "需要人工处理")
+        display_kind = "human_gate"
+
+    lines = [title]
+    if node_id:
+        lines.append(f"节点：{node_label}（{node_id}）")
+    if kind:
+        lines.append(f"类型：{_intervention_kind_label(kind)}")
+
+    dur = ev.get("duration_seconds")
+    if dur is not None and str(dur).strip() not in ("", "None"):
+        lines.append(f"本节点已运行 {dur}s")
+    tok = ev.get("tokens_used")
+    if tok is not None and str(tok).strip() not in ("", "None"):
+        lines.append(f"Token 消耗：{tok}")
+
+    payload: dict[str, Any] = {
+        "room_id": str(ev.get("room_id") or ""),
+        "node_id": node_id,
+        "node_label": node_label,
+        "intervention_kind": kind,
+        "intervention_kind_label": _intervention_kind_label(kind),
+        "reason": reason or title,
+    }
+    if dur is not None:
+        payload["duration_seconds"] = dur
+    if tok is not None:
+        payload["tokens_used"] = tok
+
+    return [
+        _host_row(
+            ev,
+            index,
+            text="\n".join(lines),
+            display_kind=display_kind,
+            host_id=host_id,
+            payload=payload,
+        )
+    ]
+
+
 def _participants_payload(ev: dict[str, Any]) -> dict[str, Any]:
     binding = ev.get("binding") if isinstance(ev.get("binding"), dict) else {}
     participants = ev.get("participants") if isinstance(ev.get("participants"), list) else []
@@ -465,6 +539,12 @@ def expand_history_event_to_chat(ev: dict[str, Any], index: int) -> list[dict[st
                 payload=payload,
             )
         ]
+
+    if et == "human_gate" and str(ev.get("intervention_kind") or "") == "solution_review":
+        return []
+
+    if et in ("human_gate", "solution_review_gate"):
+        return _expand_intervention_gate(ev, index, host_id)
 
     if et == "host_llm_begin":
         display = format_event_chat_display(ev)
