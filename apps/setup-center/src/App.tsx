@@ -43,6 +43,10 @@ const OrderManagementView = lazy(() =>
   import("./views/rd-manage/OrderManagementView").then((m) => ({ default: m.OrderManagementView })),
 );
 
+const TeamViewView = lazy(() =>
+  import("./views/rd-view/TeamViewView").then((m) => ({ default: m.TeamViewView })),
+);
+
 import { FeedbackModal, type FeedbackPrefill } from "./views/FeedbackModal";
 import { IMConfigView } from "./views/IMConfigView";
 import { AgentSystemView } from "./views/AgentSystemView";
@@ -6243,7 +6247,7 @@ export function App() {
       return <WorkbenchPlaceholderView titleKey="sidebar.workbenchSandbox" />;
     }
     if (view === "workbench_team") {
-      return <WorkbenchPlaceholderView titleKey="sidebar.workbenchTeam" />;
+      return <TeamViewView synapseApiBase={httpApiBase()} />;
     }
     if (view === "workbench_dev_tools") {
       return disabledViews.includes("skills") ? (
