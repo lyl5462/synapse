@@ -11,10 +11,20 @@ logger = logging.getLogger(__name__)
 
 MeetingRole = Literal["host", "worker"]
 
+# Todo 四件套（Agent 模式任务跟踪；Plan 模式工具 create_plan_file / exit_plan_mode 不暴露）
+MEETING_TODO_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "create_todo",
+        "update_todo_step",
+        "get_todo_status",
+        "complete_todo",
+    }
+)
+
 # 任务级工具白名单（与 dev_iwhalecloud_knowledge 的 _slim_tools 同思路；不含 list_skills）
 MEETING_COMMON_TOOL_NAMES: frozenset[str] = frozenset(
     {
-        "create_todo",
+        *MEETING_TODO_TOOL_NAMES,
         "run_shell",
         "read_file",
         "write_file",

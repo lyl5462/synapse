@@ -906,7 +906,10 @@ def build_meeting_runtime_header(
             _append_host_duties_with_collaborators(lines)
     else:
         lines.append("## 协作专家职责")
-        lines.append("- 必须调用并优先调用 `create_todo` 工具创建任务计划，然后再执行具体操作")
+        lines.append(
+            "- 必须调用并优先调用 `create_todo` 创建任务计划；每完成一步用 `update_todo_step` 更新状态，"
+            "需要时用 `get_todo_status` 查看进度，全部完成后 `complete_todo` 收尾，然后再执行具体操作"
+        )
         lines.append("- 必须熟悉本工单对应的产品信息（产品文档 / 仓库代码 / 历史工单），所有决策都要基于产品事实；缺少产品事实时可以拒绝或报错，**不得臆造**。")
         lines.append("- 你是子 Agent，**禁止再发起委派**（不要调用 delegate_to_agent / delegate_parallel），也无法直接联系其他 Worker；任何「需要别人配合」的诉求都改为在产出里向小鲸说明。")
         lines.append("- 仅在「你的能力档案」描述的能力边界内执行任务；超出边界时**坦诚向小鲸说明**并建议改派，不要勉强执行、不要伪造结果。")
@@ -922,7 +925,8 @@ def build_meeting_runtime_header(
     lines.append("## 工具与技能使用")
     lines.append(
         "- **可用工具**（本会话已裁剪，仅暴露任务所需项；禁止伪造工具输出）："
-        "run_shell / read_file / write_file / list_directory / web_search / create_todo "
+        "run_shell / read_file / write_file / list_directory / web_search / "
+        "create_todo / update_todo_step / get_todo_status / complete_todo "
         "get_skill_info / run_skill_script / get_skill_reference 等。"
     )
     if role == "host":

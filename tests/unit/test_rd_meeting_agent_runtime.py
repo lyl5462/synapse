@@ -10,6 +10,7 @@ from synapse.agents.profile import AgentProfile, SkillsMode
 from synapse.rd_meeting.agent_runtime import (
     MEETING_COMMON_TOOL_NAMES,
     MEETING_HOST_ONLY_TOOL_NAMES,
+    MEETING_TODO_TOOL_NAMES,
     apply_meeting_agent_runtime,
     apply_meeting_slim_tools,
     format_meeting_skill_guidance_section,
@@ -22,8 +23,10 @@ from synapse.rd_meeting.agent_runtime import (
 def test_meeting_tool_names_exclude_list_skills():
     host = meeting_tool_names_for_role("host")
     worker = meeting_tool_names_for_role("worker")
-    assert "create_todo" in host
-    assert "create_todo" in worker
+    assert MEETING_TODO_TOOL_NAMES <= host
+    assert MEETING_TODO_TOOL_NAMES <= worker
+    assert "create_plan_file" not in host
+    assert "exit_plan_mode" not in worker
     assert "list_skills" not in host
     assert "list_skills" not in worker
     assert "delegate_to_agent" in host
@@ -37,6 +40,8 @@ def test_apply_meeting_slim_tools_filters_and_restores():
     agent = MagicMock()
     agent._tools = [
         {"name": "run_shell"},
+        {"name": "create_todo"},
+        {"name": "update_todo_step"},
         {"name": "list_skills"},
         {"name": "delegate_to_agent"},
         {"name": "browser_navigate"},
@@ -50,11 +55,13 @@ def test_apply_meeting_slim_tools_filters_and_restores():
     assert "list_skills" not in names
     assert "browser_navigate" not in names
     assert "run_shell" in names
+    assert "create_todo" in names
+    assert "update_todo_step" in names
     assert "delegate_to_agent" in names
-    assert len(agent._meeting_orig_tools) == 4
+    assert len(agent._meeting_orig_tools) == 6
 
     restore_meeting_slim_tools(agent)
-    assert len(agent._tools) == 4
+    assert len(agent._tools) == 6
     assert agent._meeting_orig_tools is None
 
 
