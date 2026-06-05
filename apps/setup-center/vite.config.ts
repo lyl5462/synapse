@@ -52,6 +52,7 @@ export default defineConfig({
         __dirname,
         "../../src/synapse/llm/registries/providers.json",
       ),
+      "@rd-view": path.resolve(__dirname, "./src/components/rd-view"),
     },
     // Force a single instance of React + react-dom across the dep graph.
     // Without this, lazy-loaded views (e.g. PluginManagerView / OrgEditorView) can end up
