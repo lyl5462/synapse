@@ -34,6 +34,7 @@ import { toast } from "sonner";
 import { IS_TAURI } from "@/platform";
 import {
   changeRepoInfo,
+  fetchIwhalecloudUserinfoSummary,
   fetchModuleNameList,
   fetchProductBranchList,
   fetchRepoDetailByProdBranch,
@@ -114,14 +115,35 @@ export function RepoUpdateDialog({
   const [modulesLoading, setModulesLoading] = useState(false);
   const [prodBranchOptions, setProdBranchOptions] = useState<SearchableOption[]>([]);
   const [prodBranchLoading, setProdBranchLoading] = useState(false);
+  /** 研发云 userinfo.access_token，新增仓库行时预填 repo.token（用户可改） */
+  const [defaultRepoAccessToken, setDefaultRepoAccessToken] = useState("");
 
   useEffect(() => {
     if (!open) {
       setRepoDetailByProdBranchVid({});
       setRepoDetailLoadingVid({});
       repoDetailFetchStartedRef.current = new Set();
+      setDefaultRepoAccessToken("");
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const summary = await fetchIwhalecloudUserinfoSummary(synapseApiBase);
+        if (!cancelled) {
+          setDefaultRepoAccessToken((summary.access_token || "").trim());
+        }
+      } catch {
+        if (!cancelled) setDefaultRepoAccessToken("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, synapseApiBase]);
 
   useEffect(() => {
     if (open && product) {
@@ -284,7 +306,7 @@ export function RepoUpdateDialog({
         branch: "",
         repoModule: "",
         purpose: "",
-        token: "",
+        token: defaultRepoAccessToken || "",
         codePath: "",
         isMain: isFirst,
         prodBranch: "",
