@@ -26,6 +26,7 @@ JSON_NAME = "solution_review.json"
 SPLIT_PLAN_NAME = "split_plan.json"
 CONCLUSION_NAME = "方案评审结论.md"
 SCHEMA_VERSION = 1
+MIN_HUMAN_REVIEW_COMMENT_LEN = 50
 
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|$")
 _SECTION_RE = re.compile(r"^#{1,4}\s+(.+)$")
@@ -617,6 +618,15 @@ def apply_patch_selections(
 HumanDecision = Literal["approve", "reject"]
 
 
+def validate_human_review_comment(comment: str) -> None:
+    """人工评审意见不少于 MIN_HUMAN_REVIEW_COMMENT_LEN 字（按 Unicode 字符计）。"""
+    text = (comment or "").strip()
+    if len(text) < MIN_HUMAN_REVIEW_COMMENT_LEN:
+        raise ValueError(
+            f"human_review_comment_too_short:{MIN_HUMAN_REVIEW_COMMENT_LEN}"
+        )
+
+
 def apply_human_decision(
     scope_id: str,
     *,
@@ -626,6 +636,7 @@ def apply_human_decision(
     demand_no: str = "",
 ) -> dict[str, Any]:
     """写入人工裁决、拆单计划与评审结论；返回更新后的 payload。"""
+    validate_human_review_comment(comment)
     payload = load_solution_review_payload(scope_id) or {}
     if not demand_no:
         demand_no = str(payload.get("demand_no") or scope_id).strip()

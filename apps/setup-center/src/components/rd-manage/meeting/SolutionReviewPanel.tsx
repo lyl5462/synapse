@@ -44,6 +44,8 @@ import { Stage2ArtifactsPanel } from './Stage2ArtifactsPanel';
 const { TextArea } = Input;
 const { Text } = Typography;
 
+const MIN_HUMAN_REVIEW_COMMENT_LEN = 50;
+
 interface Props {
   synapseApiBase: string;
   roomId: string;
@@ -470,9 +472,14 @@ export function SolutionReviewPanel({
     [repos, tasks, patchByBranch, demandNo, requirementName],
   );
 
+  const humanCommentLen = humanComment.trim().length;
+  const humanCommentTooShort = humanCommentLen < MIN_HUMAN_REVIEW_COMMENT_LEN;
+
   const submit = async (decision: 'approve' | 'reject') => {
-    if (!humanComment.trim() && decision === 'reject') {
-      message.warning('不通过时请填写人工评审意见');
+    if (humanCommentTooShort) {
+      message.warning(
+        `请填写不少于 ${MIN_HUMAN_REVIEW_COMMENT_LEN} 字的人工评审意见（当前 ${humanCommentLen} 字）`,
+      );
       return;
     }
     if (decision === 'approve') {
@@ -728,11 +735,19 @@ export function SolutionReviewPanel({
           </div>
           <TextArea
             rows={4}
-            placeholder="填写人工评审意见（不通过时必填）"
+            placeholder={`填写人工评审意见（提交时必填，不少于 ${MIN_HUMAN_REVIEW_COMMENT_LEN} 字）`}
             value={humanComment}
             onChange={(e) => setHumanComment(e.target.value)}
             disabled={readOnly}
+            status={!readOnly && humanComment.trim() && humanCommentTooShort ? 'warning' : undefined}
           />
+          {!readOnly ? (
+            <div className="mt-1 flex justify-end text-xs text-muted-foreground">
+              <span className={humanCommentTooShort ? 'text-amber-500' : 'text-emerald-500'}>
+                {humanCommentLen} / {MIN_HUMAN_REVIEW_COMMENT_LEN} 字
+              </span>
+            </div>
+          ) : null}
         </section>
       </div>
 

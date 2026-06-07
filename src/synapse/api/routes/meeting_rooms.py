@@ -692,7 +692,7 @@ async def submit_solution_review_decision(
     except ValueError as exc:
         msg = str(exc)
         code = 400
-        if msg.startswith("patch_required"):
+        if msg.startswith("patch_required") or msg.startswith("human_review_comment_too_short"):
             code = 422
         return error_response(code, msg)
     except Exception as exc:

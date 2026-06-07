@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 
 from synapse.rd_meeting.solution_review import (
+    MIN_HUMAN_REVIEW_COMMENT_LEN,
     apply_human_decision,
     enrich_payload_from_archive,
     parse_func_solution_impact_assessment,
     parse_func_solution_md,
     render_conclusion_markdown,
+    validate_human_review_comment,
     validate_solution_review_json,
 )
 
@@ -106,6 +108,14 @@ def test_enrich_payload_from_archive_reparses_impact(tmp_path, monkeypatch):
     assert len(sections) == 2
 
 
+def test_validate_human_review_comment_min_length():
+    short = "a" * (MIN_HUMAN_REVIEW_COMMENT_LEN - 1)
+    with pytest.raises(ValueError, match="human_review_comment_too_short"):
+        validate_human_review_comment(short)
+    ok = "a" * MIN_HUMAN_REVIEW_COMMENT_LEN
+    validate_human_review_comment(ok)
+
+
 def test_apply_human_decision_reject_writes_conclusion(tmp_path, monkeypatch):
     scope_id = "test-demand-001"
     work = tmp_path / scope_id
@@ -156,10 +166,16 @@ def test_apply_human_decision_reject_writes_conclusion(tmp_path, monkeypatch):
         lambda sid: archive / "方案评审结论.md",
     )
 
+    reject_comment = (
+        "方案改造范围过大，涉及多个模块联动，当前阶段无法一次性收敛，"
+        "建议先收缩到计费核心链路并补充回归测试计划后再提交评审。"
+    )
+    assert len(reject_comment.strip()) >= MIN_HUMAN_REVIEW_COMMENT_LEN
+
     out = apply_human_decision(
         scope_id,
         decision="reject",
-        comment="范围过大，需收缩",
+        comment=reject_comment,
         demand_no=scope_id,
     )
     assert out["human_review"]["status"] == "rejected"
