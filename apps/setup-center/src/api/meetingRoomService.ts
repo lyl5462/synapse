@@ -1,5 +1,10 @@
 /** 研发会议室 API（Phase 0/1/2） */
 
+/** 整场会议 token 预算（看板卡片进度条分母） */
+export const MEETING_ROOM_TOKEN_BUDGET = 20_000_000;
+/** 单个 SOP 节点 token 预算（会议室顶栏节点指标分母） */
+export const MEETING_NODE_TOKEN_BUDGET = 3_000_000;
+
 type SynapseWire = { errorcode: number; message?: string; data?: unknown };
 
 export type MeetingRoomScopeType = 'demand' | 'task';
@@ -708,12 +713,17 @@ export async function reprocessMeetingRoom(
   synapseApiBase: string,
   roomId: string,
   nodeId?: string,
+  reason?: string,
 ): Promise<MeetingRoomDetail> {
   const base = synapseApiBase.replace(/\/$/, '');
+  const body: { node_id?: string; reason?: string } = {};
+  if (nodeId) body.node_id = nodeId;
+  const trimmedReason = (reason || '').trim();
+  if (trimmedReason) body.reason = trimmedReason;
   return apiPost<MeetingRoomDetail>(
     base,
     `/api/dev/meeting-rooms/${encodeURIComponent(roomId)}/reprocess`,
-    nodeId ? { node_id: nodeId } : {},
+    body,
   );
 }
 

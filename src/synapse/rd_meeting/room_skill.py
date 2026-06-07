@@ -663,6 +663,31 @@ def _format_hitl_artifact_lines(
         f"``whalecloud-dev-tool-doc-generate`` 的 ``CONTEXT_JSON`` 应指向该文件；**禁止**自写 ``clarify_context.json`` 等替代台账。",
     ]
 
+def format_reprocess_instruction(scope_id: str, node_id: str) -> str:
+    """若存在一次性重处理原因，渲染须注入 system 的说明段。"""
+    from synapse.rd_meeting.room_runtime import load_room_state
+
+    sid = (scope_id or "").strip()
+    nid = (node_id or "").strip()
+    if not sid:
+        return ""
+    rs = load_room_state(sid) or {}
+    reason = str(rs.get("reprocess_reason") or "").strip()
+    if not reason:
+        return ""
+
+    node_label = f"`{nid}`" if nid else "当前节点"
+    lines = [
+        "## 重新处理指令（用户发起，必须遵循）",
+        "",
+        f"- **状态**：本节点 {node_label} 正处于**重新处理**流程（非首次执行）。",
+        f"- **用户要求**：{reason}",
+        "- **硬性约束**：你必须按照上述用户重处理的想法与意图进行处理，"
+        "不得以旧结论搪塞；若与历史产出冲突，以用户本次重处理要求为准。",
+    ]
+    return "\n".join(lines)
+
+
 def _format_meeting_outputs(binding: dict[str, Any] | None) -> str:
     """从 binding.node_outputs 渲染「会议产出」展示串（与归档强约束一一对应）。"""
     if not isinstance(binding, dict):
@@ -853,6 +878,10 @@ def build_meeting_runtime_header(
     lines.append(f"- **会议任务**：{context.stage_name}阶段的{context.node_name}任务")
     lines.append(f"- **会议产出**：{meeting_outputs_label}（最终归档文件名必须**完全等于**这里列出的名字；详见下方归档约束）")
     lines.append(f"- **会议目标**：{context.node_intent}")
+    reprocess_block = format_reprocess_instruction(context.scope_id, context.node_id)
+    if reprocess_block:
+        lines.append("")
+        lines.append(reprocess_block)
     lines.append(f"- **人工确认**：{confirm_label}")
     lines.extend(
         _format_hitl_artifact_lines(

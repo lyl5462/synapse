@@ -29,6 +29,53 @@
   min-height: 5.75rem;
 }
 
+/* 左侧工单卡片底部进度条流光（CSS 动画，比 Motion 的 backgroundPosition 更稳定可见） */
+.rdOrdersRoot .rd-order-ticket-progress-track {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+  pointer-events: none;
+}
+
+.rdOrdersRoot .rd-order-ticket-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.5s ease-out;
+}
+
+.rdOrdersRoot .rd-order-ticket-progress-fill--done {
+  background: var(--success, #22c55e);
+}
+
+.rdOrdersRoot .rd-order-ticket-progress-fill--idle {
+  background: color-mix(in srgb, var(--primary) 72%, transparent);
+}
+
+.rdOrdersRoot .rd-order-ticket-progress-fill--shimmer {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--primary) 35%, transparent) 0%,
+    color-mix(in srgb, var(--primary) 88%, white) 42%,
+    var(--primary) 50%,
+    color-mix(in srgb, var(--primary) 88%, white) 58%,
+    color-mix(in srgb, var(--primary) 35%, transparent) 100%
+  );
+  background-size: 220% 100%;
+  animation: rd-order-progress-shimmer 2s linear infinite;
+}
+
+@keyframes rd-order-progress-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
 /* 流水线节点卡片：避免在 flex 容器内高度塌陷 */
 .rdOrdersRoot .node-card {
   flex-shrink: 0;

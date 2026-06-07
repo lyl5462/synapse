@@ -10,6 +10,7 @@ from synapse.rd_meeting.agent_activity import aggregate_node_activity_tokens, ag
 from synapse.rd_meeting.dev_status import load_dev_status, save_dev_status
 from synapse.rd_meeting.paths import agent_node_dir
 from synapse.rd_meeting.room_runtime import (
+    DEFAULT_NODE_TOKEN_BUDGET,
     DEFAULT_TOKEN_BUDGET,
     compute_node_metrics_seconds,
     compute_stage_elapsed_seconds,
@@ -173,6 +174,7 @@ def test_refresh_node_metrics_writes_node_tokens() -> None:
     assert after is not None
     assert int(after["node_metrics"][node_id]["tokens"]) == 3000
     assert DEFAULT_TOKEN_BUDGET == 20_000_000
+    assert DEFAULT_NODE_TOKEN_BUDGET == 3_000_000
 
 
 def test_build_meeting_summary_nodes_prefers_activity_over_legacy_256() -> None:

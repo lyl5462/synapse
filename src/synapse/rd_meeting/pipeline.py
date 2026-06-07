@@ -1062,6 +1062,21 @@ def clear_room_state_for_node_reprocess(
     return rs
 
 
+def _clear_reprocess_context_if_done(scope_id: str, finished_node_id: str) -> None:
+    """重处理原因一次性生效：收尾到锚点节点后清除 room_state 中的注入字段。"""
+    sid = (scope_id or "").strip()
+    nid = (finished_node_id or "").strip()
+    if not sid or not nid:
+        return
+    rs = dict(load_room_state(sid) or {})
+    until = str(rs.get("reprocess_until_node_id") or "").strip()
+    if not until or until != nid:
+        return
+    rs.pop("reprocess_reason", None)
+    rs.pop("reprocess_until_node_id", None)
+    save_room_state(sid, rs)
+
+
 def _step_reprocess_prep(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
     """重新处理准备：清理当前节点过程目录、归档产出与 room_state 介入态。"""
     sid = ctx.scope_id
@@ -1097,8 +1112,19 @@ def _step_reprocess_prep(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None
     reset_human_confirm_lifecycle(sid)
     clear_pending_questionnaire(sid)
 
+    reason = str(pctx.get("reprocess_reason") or "").strip()
+    until_node = str(pctx.get("reprocess_until_node_id") or run_node).strip() or run_node
+    pctx.pop("reprocess_reason", None)
+    pctx.pop("reprocess_until_node_id", None)
+
     extra = [n for n in range_ids if n != run_node] if historical else None
     ctx.room_state = clear_room_state_for_node_reprocess(sid, run_node, extra_node_ids=extra)
+    if reason:
+        rs = dict(load_room_state(sid) or {})
+        rs["reprocess_reason"] = reason
+        rs["reprocess_until_node_id"] = until_node
+        save_room_state(sid, rs)
+        ctx.room_state = rs
     pipe.set_phase("running", sync_room_state=False)
     if historical:
         pctx.pop("reprocess_node_ids", None)
@@ -1278,6 +1304,9 @@ def _step_node_finish(pipe: MeetingPipeline, ctx: PipelineRunContext) -> None:
     if last_node_id and isinstance(pctx, dict):
         pctx.pop("last_finished_node_id", None)
         pipe._data["context"] = pctx
+
+    if last_node_id:
+        _clear_reprocess_context_if_done(sid, last_node_id)
 
     append_history_event(
         sid,

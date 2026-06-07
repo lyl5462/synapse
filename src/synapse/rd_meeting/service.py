@@ -44,6 +44,7 @@ from synapse.rd_meeting.room_runtime import (
     append_history_event,
     build_meeting_summary_nodes,
     compute_stage_elapsed_seconds,
+    DEFAULT_NODE_TOKEN_BUDGET,
     DEFAULT_TOKEN_BUDGET,
     extract_skipped_node_ids,
     history_to_chat_logs,
@@ -324,7 +325,11 @@ class MeetingRoomService:
                     or 0
                 )
             ),
-            "tokenBudget": detail.get("tokenBudget") or DEFAULT_TOKEN_BUDGET,
+            "tokenBudget": (
+                DEFAULT_NODE_TOKEN_BUDGET
+                if view_nid
+                else (detail.get("tokenBudget") or DEFAULT_TOKEN_BUDGET)
+            ),
             "stageDuration": detail.get("stageDuration"),
             "meetingStartedAt": detail.get("meetingStartedAt"),
             "agents_active": agents_active,
@@ -536,6 +541,7 @@ class MeetingRoomService:
         self,
         room_id: str,
         *,
+        reason: str | None = None,
         agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         """重新处理当前 SOP 节点：清理过程数据、当前节点归档产出后从 node_init 重跑。"""
@@ -573,7 +579,17 @@ class MeetingRoomService:
             detail=dict(detail),
         )
 
+        rs = load_room_state(sid) or {}
+        current = str(
+            rs.get("current_node_id") or detail.get("current_node_id") or "pending"
+        ).strip()
+
         pipe = MeetingPipeline.load(sid)
+        self._stash_reprocess_reason_on_pipeline(
+            pipe,
+            reason=reason,
+            until_node_id=current,
+        )
         pipe.set_flow_step(STEP_REPROCESS_PREP, reason="用户触发重新处理")
         pipe.save()
 
@@ -583,11 +599,32 @@ class MeetingRoomService:
         titles = build_title_index()
         return self._room_detail_payload(dev, sid, titles)
 
+    @staticmethod
+    def _stash_reprocess_reason_on_pipeline(
+        pipe: MeetingPipeline,
+        *,
+        reason: str | None,
+        until_node_id: str,
+    ) -> None:
+        """将一次性重处理原因写入 pipeline context，供 reprocess_prep 落盘到 room_state。"""
+        reason_text = (reason or "").strip()
+        if not reason_text:
+            return
+        pctx = pipe._data.get("context")
+        if not isinstance(pctx, dict):
+            pctx = {}
+        pctx["reprocess_reason"] = reason_text
+        until = (until_node_id or "").strip()
+        if until:
+            pctx["reprocess_until_node_id"] = until
+        pipe._data["context"] = pctx
+
     def reprocess_node(
         self,
         room_id: str,
         *,
         node_id: str | None = None,
+        reason: str | None = None,
         agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         """重新处理指定节点：当前节点或同阶段历史节点，prep→node_init 重跑。"""
@@ -604,13 +641,14 @@ class MeetingRoomService:
         ).strip()
         target = (node_id or current).strip() or current
         if target == current:
-            return self.reprocess_current_node(rid, agent_pool=agent_pool)
+            return self.reprocess_current_node(rid, reason=reason, agent_pool=agent_pool)
         return self._reprocess_historical_node(
             rid,
             sid,
             target=target,
             current=current,
             detail=detail,
+            reason=reason,
             agent_pool=agent_pool,
         )
 
@@ -646,6 +684,7 @@ class MeetingRoomService:
         target: str,
         current: str,
         detail: dict[str, Any],
+        reason: str | None = None,
         agent_pool: Any | None = None,
     ) -> dict[str, Any]:
         """历史节点重处理：回退光标到 target，清理 [target..current] 区间后从 node_init 重跑。"""
@@ -695,6 +734,10 @@ class MeetingRoomService:
             pctx = {}
         pctx["reprocess_node_ids"] = node_range
         pctx["reprocess_historical_target"] = target
+        reason_text = (reason or "").strip()
+        if reason_text:
+            pctx["reprocess_reason"] = reason_text
+            pctx["reprocess_until_node_id"] = current
         pipe._data["context"] = pctx
         pipe._data["current_node_id"] = target
         pipe.set_flow_step(

@@ -7414,6 +7414,39 @@ class ReasoningEngine:
         except Exception as e:
             logger.warning(f"[ReAct-Stream][BgFarewell] 后台收尾异常: {e}")
 
+    def _record_meeting_llm_usage(
+        self,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        model: str = "",
+    ) -> None:
+        """会议室上下文：将 ReAct 每轮 LLM token 写入 activity.jsonl（与 execute_task 对齐）。"""
+        if not (input_tokens or output_tokens):
+            return
+        agent = getattr(self._tool_executor, "_agent_ref", None)
+        if agent is None or not getattr(agent, "_org_context", False):
+            return
+        usage_scene = ""
+        bound = getattr(agent, "_rd_meeting_activity", None)
+        if isinstance(bound, dict):
+            sid = str(bound.get("scope_id") or "").strip()
+            nid = str(bound.get("node_id") or "").strip()
+            if sid and nid:
+                usage_scene = f"rd_meeting_{sid}_{nid}"
+        try:
+            from synapse.rd_meeting.agent_activity import try_record_llm_usage_from_agent
+
+            try_record_llm_usage_from_agent(
+                agent,
+                input_tokens=int(input_tokens or 0),
+                output_tokens=int(output_tokens or 0),
+                usage_scene=usage_scene,
+                model=str(model or ""),
+            )
+        except Exception as exc:
+            logger.debug("meeting llm usage record failed: %s", exc)
+
     # ==================== 流式推理 ====================
 
     _HEARTBEAT_INTERVAL = 15  # 秒：无事件时心跳间隔
@@ -7525,10 +7558,15 @@ class ReasoningEngine:
             post_process_streamed_decision(decision)
 
             if acc.usage:
-                in_tok = acc.usage.get("input_tokens", 0)
-                out_tok = acc.usage.get("output_tokens", 0)
+                in_tok = int(acc.usage.get("input_tokens", 0) or 0)
+                out_tok = int(acc.usage.get("output_tokens", 0) or 0)
                 span.set_attribute("input_tokens", in_tok)
                 span.set_attribute("output_tokens", out_tok)
+                self._record_meeting_llm_usage(
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
+                    model=current_model,
+                )
 
             span.set_attribute("decision_type", decision.type.value)
             span.set_attribute("tool_count", len(decision.tool_calls))
@@ -7678,6 +7716,14 @@ class ReasoningEngine:
                     agent_profile_id=agent_profile_id,
                 )
             )
+            _agent = getattr(self._tool_executor, "_agent_ref", None)
+            if _agent is not None and getattr(_agent, "_org_context", False):
+                try:
+                    from synapse.rd_meeting.agent_activity import mark_llm_call_start
+
+                    mark_llm_call_start(_agent)
+                except Exception as _mark_exc:
+                    logger.debug("mark_llm_call_start failed: %s", _mark_exc)
             try:
                 response = await self._brain.messages_create_async(
                     use_thinking=use_thinking,
@@ -7694,9 +7740,18 @@ class ReasoningEngine:
                 reset_tracking_context(_tt)
 
             # 记录 token 使用
+            _in_tokens = 0
+            _out_tokens = 0
             if hasattr(response, "usage"):
-                span.set_attribute("input_tokens", getattr(response.usage, "input_tokens", 0))
-                span.set_attribute("output_tokens", getattr(response.usage, "output_tokens", 0))
+                _in_tokens = int(getattr(response.usage, "input_tokens", 0) or 0)
+                _out_tokens = int(getattr(response.usage, "output_tokens", 0) or 0)
+                span.set_attribute("input_tokens", _in_tokens)
+                span.set_attribute("output_tokens", _out_tokens)
+            self._record_meeting_llm_usage(
+                input_tokens=_in_tokens,
+                output_tokens=_out_tokens,
+                model=current_model,
+            )
 
             decision = self._parse_decision(response)
             span.set_attribute("decision_type", decision.type.value)

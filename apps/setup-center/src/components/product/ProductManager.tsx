@@ -61,7 +61,7 @@ export function ProductManager({ synapseApiBase = "http://127.0.0.1:18900" }: { 
   const [products, setProducts] = useState<Product[]>(() => (IS_TAURI ? [] : MOCK_PRODUCTS));
   const [listLoading, setListLoading] = useState(IS_TAURI);
   const [listRefreshing, setListRefreshing] = useState(false);
-  const [listAutoRefresh, setListAutoRefresh] = useState(false);
+  const [listAutoRefresh, setListAutoRefresh] = useState(true);
   const [projectSpaces, setProjectSpaces] = useState<{label: string, value: string}[] | null>(null);
   /** Tauri：本地 owner_info 密文（trim）；失败或未启用桌面端为 null；成功但为空串表示无凭据 */
   const [localOwnerInfo, setLocalOwnerInfo] = useState<string | null>(null);

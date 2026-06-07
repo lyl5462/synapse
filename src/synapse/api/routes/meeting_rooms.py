@@ -179,6 +179,10 @@ class ReprocessBody(BaseModel):
         None,
         description="要重新处理的 SOP 节点；缺省为流水线当前节点。历史节点须与当前节点同阶段",
     )
+    reason: str | None = Field(
+        None,
+        description="本次重新处理的原因与处理要求（一次性注入提示词，不持久落地）",
+    )
 
 
 @router.post("/api/dev/meeting-rooms/{room_id}/reprocess")
@@ -190,8 +194,14 @@ async def reprocess_meeting_room(
     """重新处理 SOP 节点：当前节点清理过程数据并从 node_init 重跑。"""
     pool = getattr(request.app.state, "agent_pool", None)
     node_id = (body.node_id if body else None) or None
+    reason = (body.reason if body else None) or None
     try:
-        item = _service.reprocess_node(room_id, node_id=node_id, agent_pool=pool)
+        item = _service.reprocess_node(
+            room_id,
+            node_id=node_id,
+            reason=reason,
+            agent_pool=pool,
+        )
         return success_response(item)
     except ValueError as exc:
         msg = str(exc)

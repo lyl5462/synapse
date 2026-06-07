@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { ConfigProvider, theme, Avatar, Modal, Button, Tag, Badge, Tooltip, Progress } from 'antd';
+import { ConfigProvider, theme, Avatar, Modal, Button, Tag, Badge, Tooltip, Progress, Input } from 'antd';
 import {
   fetchMeetingRoomDetail,
   fetchMeetingRoomLive,
@@ -8,6 +8,8 @@ import {
   fetchMeetingNodeParticipants,
   fetchMeetingRoomConfig,
   interveneMeetingRoom,
+  MEETING_NODE_TOKEN_BUDGET,
+  MEETING_ROOM_TOKEN_BUDGET,
   reprocessMeetingRoom,
   stopMeetingRoom,
   type MeetingRoomChatLogWire,
@@ -414,8 +416,12 @@ function applyLivePatch(room: MeetingRoom, live: MeetingRoomLivePayload): Meetin
     allChatLogs,
     logs: displayLogs,
     agents,
-    tokenConsumed: live.view_node_id ? room.tokenConsumed : (live.tokenConsumed ?? room.tokenConsumed),
-    tokenBudget: live.view_node_id ? room.tokenBudget : (live.tokenBudget ?? room.tokenBudget),
+    tokenConsumed: live.view_node_id
+      ? (typeof live.view_node_token === 'number' ? live.view_node_token : room.tokenConsumed)
+      : (live.tokenConsumed ?? room.tokenConsumed),
+    tokenBudget: live.view_node_id
+      ? (live.tokenBudget ?? MEETING_NODE_TOKEN_BUDGET)
+      : (live.tokenBudget ?? room.tokenBudget),
     stageDuration: live.stageDuration || room.stageDuration,
     meetingStartedAt: live.meetingStartedAt || room.meetingStartedAt,
     hitlFormSchema:
@@ -511,7 +517,7 @@ function mapDetailToRoom(item: MeetingRoomDetail): MeetingRoom {
     stageDuration: item.stageDuration || '—',
     meetingStartedAt: item.meetingStartedAt,
     tokenConsumed: item.tokenConsumed ?? 0,
-    tokenBudget: item.tokenBudget ?? 20_000_000,
+    tokenBudget: item.tokenBudget ?? MEETING_ROOM_TOKEN_BUDGET,
     agents: buildAgentsFromDetail(item),
     allChatLogs: allChatLogs.length ? allChatLogs : logs,
     logs,
@@ -960,7 +966,7 @@ const MeetingRoomTitleBar = ({
   onBack: () => void;
 }) => {
   const isPipelineCurrent = viewNodeId === room.currentNode;
-  const tokenBudget = room.tokenBudget;
+  const tokenBudget = MEETING_NODE_TOKEN_BUDGET;
   const tokenConsumed = viewNodeToken;
   const tokenPct = tokenBudget > 0
     ? Math.min(100, (tokenConsumed / tokenBudget) * 100)
@@ -1337,7 +1343,7 @@ const InterventionDialog = ({
   onClose: () => void;
   /** 仅中栏人工确认表单提交时使用，协作流只读 */
   onHitlSubmit?: (text: string) => void;
-  onReprocess?: (nodeId: string) => void;
+  onReprocess?: (nodeId: string, reason?: string) => void;
   onStopRun?: () => void;
   /** 按 SOP 节点合并协作流（来自 agents/<node_id>/room_history.jsonl） */
   onMergeNodeChat?: (nodeId: string, logs: LogEntry[]) => void;
@@ -1350,6 +1356,24 @@ const InterventionDialog = ({
   const [disabledSopNodeIds, setDisabledSopNodeIds] = useState<Set<string>>(() => new Set());
   const [contextOpen, setContextOpen] = useState(false);
   const [contextAgent, setContextAgent] = useState<AgentContextTarget | null>(null);
+  const [reprocessModalOpen, setReprocessModalOpen] = useState(false);
+  const [reprocessTargetNodeId, setReprocessTargetNodeId] = useState<string | null>(null);
+  const [reprocessReason, setReprocessReason] = useState('');
+
+  const openReprocessModal = (nodeId: string) => {
+    setReprocessTargetNodeId(nodeId);
+    setReprocessReason('');
+    setReprocessModalOpen(true);
+  };
+
+  const confirmReprocess = () => {
+    const nodeId = (reprocessTargetNodeId || '').trim();
+    if (!nodeId) return;
+    setReprocessModalOpen(false);
+    onReprocess?.(nodeId, reprocessReason.trim() || undefined);
+    setReprocessTargetNodeId(null);
+    setReprocessReason('');
+  };
 
   const [viewNodeToken, setViewNodeToken] = useState(0);
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -1805,7 +1829,7 @@ const InterventionDialog = ({
                         className="rd-meeting-node-reprocess-btn absolute bottom-2 right-2 z-10 flex h-7 w-7 items-center justify-center rounded-full text-amber-400 disabled:opacity-50 disabled:cursor-not-allowed"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onReprocess?.(node.id);
+                          openReprocessModal(node.id);
                         }}
                       >
                         <CrossNodeReprocessIcon className="h-5 w-5" spinning={room.reprocessing} />
@@ -1919,7 +1943,7 @@ const InterventionDialog = ({
                   danger={room.status === 'failed'}
                   icon={<RotateCw className={`w-4 h-4 ${room.reprocessing ? 'animate-spin' : ''}`} />}
                   loading={room.reprocessing}
-                  onClick={() => selectedNode && onReprocess?.(selectedNode.id)}
+                  onClick={() => selectedNode && openReprocessModal(selectedNode.id)}
                   className={MEETING_TAB_BAR_ANT_BTN}
                 >
                   重新处理
@@ -2161,6 +2185,35 @@ const InterventionDialog = ({
         roomId={room.id}
         agent={contextAgent}
       />
+
+      <Modal
+        title="重新处理"
+        open={reprocessModalOpen}
+        onCancel={() => {
+          setReprocessModalOpen(false);
+          setReprocessTargetNodeId(null);
+          setReprocessReason('');
+        }}
+        onOk={confirmReprocess}
+        okText="开始重新处理"
+        cancelText="取消"
+        okButtonProps={{ disabled: room.reprocessing }}
+        destroyOnClose
+        centered
+        width={520}
+      >
+        <p className="text-sm text-muted-foreground mb-3">
+          将清理目标节点的过程数据后从节点初始化重跑。可填写本次重处理的原因与处理要求，系统会一次性注入智能体提示词。
+        </p>
+        <Input.TextArea
+          value={reprocessReason}
+          onChange={(e) => setReprocessReason(e.target.value)}
+          placeholder="例如：上次遗漏了 XX 模块边界，请重新梳理并补充接口契约…（可选）"
+          autoSize={{ minRows: 4, maxRows: 10 }}
+          disabled={room.reprocessing}
+          className="!bg-black/30 !text-foreground !border-border/60"
+        />
+      </Modal>
     </Modal>
   );
 };
@@ -2362,13 +2415,13 @@ export const MeetingRoomBoard = ({ synapseApiBase }: { synapseApiBase?: string }
     });
   }, []);
 
-  const handleReprocess = (nodeId: string) => {
+  const handleReprocess = (nodeId: string, reason?: string) => {
     if (!activeRoom) return;
     const base = (synapseApiBase || '').trim();
     if (!base) return;
 
     setActiveRoom((prev) => (prev ? { ...prev, reprocessing: true } : prev));
-    void reprocessMeetingRoom(base, activeRoom.id, nodeId)
+    void reprocessMeetingRoom(base, activeRoom.id, nodeId, reason)
       .then((detail) => {
         const updatedRoom = mapDetailToRoom(detail);
         updatedRoom.brief = '正在重新处理节点…';

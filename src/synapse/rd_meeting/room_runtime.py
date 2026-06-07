@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 ScopeType = Literal["demand", "task"]
 RoomStatus = Literal["processing", "human_intervention", "completed", "failed", "stopped"]
 ROOM_STATE_SCHEMA_VERSION = 1
-DEFAULT_TOKEN_BUDGET = 20_000_000
+DEFAULT_TOKEN_BUDGET = 20_000_000  # 整场会议 token 预算（看板卡片）
+DEFAULT_NODE_TOKEN_BUDGET = 3_000_000  # 单个 SOP 节点 token 预算（会议室顶栏）
 
 
 def _now_iso() -> str:

@@ -56,6 +56,7 @@ import {
   openMeetingRoom,
   type MeetingRoomArchiveEntry,
   type MeetingRoomConfigPayload,
+  type MeetingRoomListItem,
   type MeetingSummaryPayload,
 } from '../../api/meetingRoomService';
 import { setMeetingRoomFocus } from '../../rd-meeting/focus';
@@ -608,7 +609,15 @@ export const OrderManagement: React.FC<{
   const [meetingSummaryErr, setMeetingSummaryErr] = useState<string | null>(null);
   const [roomScopeIndex, setRoomScopeIndex] = useState<Map<string, string>>(new Map());
   const [roomMetricsByScope, setRoomMetricsByScope] = useState<
-    Map<string, { tokens: number; stageDuration: string; meetingStartedAt?: string }>
+    Map<
+      string,
+      {
+        tokens: number;
+        stageDuration: string;
+        meetingStartedAt?: string;
+        status?: MeetingRoomListItem['status'];
+      }
+    >
   >(new Map());
   const [disabledSopNodeIds, setDisabledSopNodeIds] = useState<Set<string>>(() => new Set());
   const [meetingRoomConfig, setMeetingRoomConfig] = useState<MeetingRoomConfigPayload | null>(null);
@@ -741,7 +750,15 @@ export const OrderManagement: React.FC<{
     return fetchMeetingRooms(base)
       .then((list) => {
         const m = new Map<string, string>();
-        const metrics = new Map<string, { tokens: number; stageDuration: string; meetingStartedAt?: string }>();
+        const metrics = new Map<
+          string,
+          {
+            tokens: number;
+            stageDuration: string;
+            meetingStartedAt?: string;
+            status?: MeetingRoomListItem['status'];
+          }
+        >();
         for (const r of list) {
           const key = `${r.scope_type}:${r.scope_id}`;
           if (r.room_id) m.set(key, r.room_id);
@@ -749,6 +766,7 @@ export const OrderManagement: React.FC<{
             tokens: r.tokenConsumed ?? 0,
             stageDuration: r.stageDuration || '—',
             meetingStartedAt: r.meetingStartedAt,
+            status: r.status,
           });
         }
         setRoomScopeIndex(m);
@@ -778,13 +796,20 @@ export const OrderManagement: React.FC<{
     [tickets],
   );
 
+  const hasActiveRoomScopes = useMemo(() => {
+    for (const m of roomMetricsByScope.values()) {
+      if (m.status === 'processing') return true;
+    }
+    return false;
+  }, [roomMetricsByScope]);
+
   useEffect(() => {
-    if (!hasActiveMeetingTickets) return;
+    if (!hasActiveMeetingTickets && !hasActiveRoomScopes) return;
     const timer = window.setInterval(() => {
       void refreshRoomMetricsIndex();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [hasActiveMeetingTickets, refreshRoomMetricsIndex]);
+  }, [hasActiveMeetingTickets, hasActiveRoomScopes, refreshRoomMetricsIndex]);
 
   const activeMeetingRoomId = useMemo(() => {
     if (!sopMeetingScope?.scopeId) return '';
@@ -1788,6 +1813,20 @@ export const OrderManagement: React.FC<{
                 const openMeetingBusyKey = `${isWorkItem ? 'task' : 'demand'}:${item.id}`;
                 const cardScopeType = isWorkItem ? ('task' as const) : ('demand' as const);
                 const cardScopeMetrics = roomMetricsByScope.get(`${cardScopeType}:${item.id}`);
+                /** 流光/Token 动效仅以 room_state.status 为准；userwork 快照 local_process_state 可与会议室不同步（failed 仍标处理中、无 dev.status 则无会议室条目） */
+                const rowTokenAnimating = cardScopeMetrics?.status === 'processing';
+                const progressBarWidth =
+                  ticket.status === 'completed'
+                    ? '100%'
+                    : ticket.status === 'pending' ||
+                        ticket.status === 'prepare' ||
+                        ticket.status === 'full_manual'
+                      ? rowTokenAnimating
+                        ? '12%'
+                        : '0%'
+                      : rowTokenAnimating
+                        ? `${Math.max(progressPercent, 8)}%`
+                        : `${progressPercent}%`;
                 const cardTotalTokens = cardScopeMetrics?.tokens ?? 0;
                 const cardTokenLabel =
                   cardTotalTokens >= 1_000_000
@@ -1956,7 +1995,7 @@ export const OrderManagement: React.FC<{
                           <span className={ticket.status === 'processing' || rowHitl ? 'text-amber-500' : 'text-amber-600/70 dark:text-amber-400/70'}>
                             {cardTokenLabel}
                           </span>
-                          {(ticket.status === 'processing' || rowHitl) && (
+                          {rowTokenAnimating && (
                             <motion.div
                               initial={{ y: 5, opacity: 0 }}
                               animate={{ y: -10, opacity: [0, 1, 0] }}
@@ -1971,12 +2010,16 @@ export const OrderManagement: React.FC<{
                     </div>
 
                     {/* Background Progress Bar */}
-                    <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-border/40">
-                      <motion.div 
-                        className={`h-full ${ticket.status === 'completed' ? 'bg-green-500' : 'bg-gradient-to-r from-primary via-primary/70 to-primary bg-[length:200%_100%]'}`}
-                        style={{ width: ticket.status === 'completed' ? '100%' : ticket.status === 'pending' || ticket.status === 'prepare' || ticket.status === 'full_manual' ? '0%' : `${progressPercent}%` }} 
-                        animate={(ticket.status === 'processing' || rowHitl) ? { backgroundPosition: ['100% 0', '-100% 0'] } : {}}
-                        transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
+                    <div className="rd-order-ticket-progress-track" aria-hidden>
+                      <div
+                        className={`rd-order-ticket-progress-fill ${
+                          ticket.status === 'completed'
+                            ? 'rd-order-ticket-progress-fill--done'
+                            : rowTokenAnimating
+                              ? 'rd-order-ticket-progress-fill--shimmer'
+                              : 'rd-order-ticket-progress-fill--idle'
+                        }`}
+                        style={{ width: progressBarWidth }}
                       />
                     </div>
                   </motion.div>

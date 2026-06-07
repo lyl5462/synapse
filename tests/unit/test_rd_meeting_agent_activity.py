@@ -470,3 +470,40 @@ def test_resolve_agent_billable_tokens_falls_back_to_last_usage_for_tests():
 def test_resolve_agent_billable_tokens_returns_zero_when_missing():
     assert resolve_agent_billable_tokens(SimpleNamespace()) == 0
     assert resolve_agent_billable_tokens(SimpleNamespace(_last_usage_summary={})) == 0
+
+
+def test_reasoning_engine_records_worker_llm_usage_to_activity(activity_work):
+    """子智能体走 ReasoningEngine 时也应写入 activity.jsonl（节点确认总结依赖此数据）。"""
+    from synapse.core.reasoning_engine import ReasoningEngine
+
+    agent = MagicMock()
+    agent._org_context = True
+    agent._rd_meeting_activity = {
+        "scope_id": "scope1",
+        "node_id": "node_a",
+        "profile_id": "worker_1",
+        "host_profile_id": "host_pid",
+        "role": "worker",
+        "room_id": "room1",
+    }
+    tool_executor = MagicMock()
+    tool_executor._agent_ref = agent
+
+    engine = ReasoningEngine(
+        brain=MagicMock(),
+        tool_executor=tool_executor,
+        context_manager=MagicMock(),
+        response_handler=MagicMock(),
+        agent_state=MagicMock(),
+    )
+    engine._record_meeting_llm_usage(
+        input_tokens=200,
+        output_tokens=50,
+        model="worker-model",
+    )
+
+    rows = read_activity_log("scope1", "node_a", "worker_1")
+    assert len(rows) == 1
+    assert rows[0]["category"] == "llm_usage"
+    assert rows[0]["total_tokens"] == 250
+    assert rows[0]["usage_scene"] == "rd_meeting_scope1_node_a"
